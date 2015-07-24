@@ -1,5 +1,5 @@
 # Build time setting
-%define rhev 1
+%define rhev 0
 
 %bcond_with     guest_agent     # disabled
 
@@ -2830,6 +2830,8 @@ Patch1390: kvm-cirrus-fix-blit-region-check.patch
 Patch1391: kvm-cirrus-don-t-overflow-CirrusVGAState-cirrus_bltbuf.patch
 # For bz#1198958 - Add rhel-6.6.0 machine type to RHEL 7.1.z to support RHEL 6.6 to RHEL 7.1 live migration
 Patch1392: kvm-pc-add-rhel6.6.0-machine-type.patch
+#For starve patch 1
+Patch1393: qemu-kvm.aostar.tag.patch
 
 
 BuildRequires: zlib-devel
@@ -4430,6 +4432,7 @@ cp %{SOURCE18} pc-bios # keep "make check" happy
 %patch1390 -p1
 %patch1391 -p1
 %patch1392 -p1
+%patch1393 -p1
 
 %build
 buildarch="%{kvm_target}-softmmu"
@@ -4495,7 +4498,7 @@ dobuild() {
 %else
         --disable-guest-agent \
 %endif
-%if %{rhev}
+%if 1
         --enable-live-block-ops \
 %else
         --disable-live-block-ops \
