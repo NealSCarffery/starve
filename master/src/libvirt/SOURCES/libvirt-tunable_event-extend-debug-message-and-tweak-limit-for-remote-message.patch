@@ -1,0 +1,52 @@
+From 986b2b102eb0ea4de849ef1a4f83eeb31a672ce0 Mon Sep 17 00:00:00 2001
+Message-Id: <986b2b102eb0ea4de849ef1a4f83eeb31a672ce0@dist-git>
+From: Pavel Hrdina <phrdina@redhat.com>
+Date: Fri, 26 Sep 2014 12:43:56 +0200
+Subject: [PATCH] tunable_event: extend debug message and tweak limit for
+ remote message
+
+It would be nice to also print a params pointer and number of params in
+the debug message and the previous limit for number of params in the rpc
+message was too large. The 2048 params will be enough for future events.
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+(cherry picked from commit ceb7c90e6908096d52acc260fe22723f3f1fc137)
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1115898
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ daemon/remote.c              | 4 ++--
+ src/remote/remote_protocol.x | 2 +-
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/daemon/remote.c b/daemon/remote.c
+index fc43c69..0112a32 100644
+--- a/daemon/remote.c
++++ b/daemon/remote.c
+@@ -990,8 +990,8 @@ remoteRelayDomainEventTunable(virConnectPtr conn,
+         !remoteRelayDomainEventCheckACL(callback->client, conn, dom))
+         return -1;
+ 
+-    VIR_DEBUG("Relaying domain tunable event %s %d, callback %d",
+-              dom->name, dom->id, callback->callbackID);
++    VIR_DEBUG("Relaying domain tunable event %s %d, callback %d, params %p %d",
++              dom->name, dom->id, callback->callbackID, params, nparams);
+ 
+     /* build return data */
+     memset(&data, 0, sizeof(data));
+diff --git a/src/remote/remote_protocol.x b/src/remote/remote_protocol.x
+index e7ee2e8..da724d1 100644
+--- a/src/remote/remote_protocol.x
++++ b/src/remote/remote_protocol.x
+@@ -245,7 +245,7 @@ const REMOTE_NETWORK_DHCP_LEASES_MAX = 65536;
+ const REMOTE_CONNECT_GET_ALL_DOMAIN_STATS_MAX = 4096;
+ 
+ /* Upper limit of message size for tunable event. */
+-const REMOTE_DOMAIN_EVENT_TUNABLE_MAX = 8388608;
++const REMOTE_DOMAIN_EVENT_TUNABLE_MAX = 2048;
+ 
+ /* UUID.  VIR_UUID_BUFLEN definition comes from libvirt.h */
+ typedef opaque remote_uuid[VIR_UUID_BUFLEN];
+-- 
+2.1.1
+

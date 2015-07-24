@@ -1,0 +1,92 @@
+From 98e3449d18692ac45ddf1637ed3e01363a91c8e4 Mon Sep 17 00:00:00 2001
+Message-Id: <98e3449d18692ac45ddf1637ed3e01363a91c8e4@dist-git>
+From: Michal Privoznik <mprivozn@redhat.com>
+Date: Wed, 19 Nov 2014 18:59:15 +0100
+Subject: [PATCH] qemu: Drop OVMF whitelist
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1165782
+
+As discussed on the upstream list, it's better not to make this
+kind of predictions in libvirt. It may happen that qemu learns
+how to enable OVMF on other architectures too and we shouldn't
+try to chase that.
+
+Signed-off-by: Michal Privoznik <mprivozn@redhat.com>
+(cherry picked from commit 36148120c1c1e6ad7f4eb6f0995eb7b18ba95922)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_capabilities.c |  9 +++------
+ src/qemu/qemu_command.c      | 10 ----------
+ 2 files changed, 3 insertions(+), 16 deletions(-)
+
+diff --git a/src/qemu/qemu_capabilities.c b/src/qemu/qemu_capabilities.c
+index a10bc8c..e0c1b31 100644
+--- a/src/qemu/qemu_capabilities.c
++++ b/src/qemu/qemu_capabilities.c
+@@ -3616,7 +3616,6 @@ virQEMUCapsGetDefaultMachine(virQEMUCapsPtr qemuCaps)
+ static int
+ virQEMUCapsFillDomainLoaderCaps(virQEMUCapsPtr qemuCaps,
+                                 virDomainCapsLoaderPtr capsLoader,
+-                                virArch arch,
+                                 char **loader,
+                                 size_t nloader)
+ {
+@@ -3644,8 +3643,7 @@ virQEMUCapsFillDomainLoaderCaps(virQEMUCapsPtr qemuCaps,
+     VIR_DOMAIN_CAPS_ENUM_SET(capsLoader->type,
+                              VIR_DOMAIN_LOADER_TYPE_ROM);
+ 
+-    if (arch == VIR_ARCH_X86_64 &&
+-        virQEMUCapsGet(qemuCaps, QEMU_CAPS_DRIVE) &&
++    if (virQEMUCapsGet(qemuCaps, QEMU_CAPS_DRIVE) &&
+         virQEMUCapsGet(qemuCaps, QEMU_CAPS_DRIVE_FORMAT))
+         VIR_DOMAIN_CAPS_ENUM_SET(capsLoader->type,
+                                  VIR_DOMAIN_LOADER_TYPE_PFLASH);
+@@ -3662,14 +3660,13 @@ virQEMUCapsFillDomainLoaderCaps(virQEMUCapsPtr qemuCaps,
+ static int
+ virQEMUCapsFillDomainOSCaps(virQEMUCapsPtr qemuCaps,
+                             virDomainCapsOSPtr os,
+-                            virArch arch,
+                             char **loader,
+                             size_t nloader)
+ {
+     virDomainCapsLoaderPtr capsLoader = &os->loader;
+ 
+     os->device.supported = true;
+-    if (virQEMUCapsFillDomainLoaderCaps(qemuCaps, capsLoader, arch,
++    if (virQEMUCapsFillDomainLoaderCaps(qemuCaps, capsLoader,
+                                         loader, nloader) < 0)
+         return -1;
+     return 0;
+@@ -3765,7 +3762,7 @@ virQEMUCapsFillDomainCaps(virDomainCapsPtr domCaps,
+ 
+     domCaps->maxvcpus = maxvcpus;
+ 
+-    if (virQEMUCapsFillDomainOSCaps(qemuCaps, os, domCaps->arch,
++    if (virQEMUCapsFillDomainOSCaps(qemuCaps, os,
+                                     loader, nloader) < 0 ||
+         virQEMUCapsFillDomainDeviceDiskCaps(qemuCaps, disk) < 0 ||
+         virQEMUCapsFillDomainDeviceHostdevCaps(qemuCaps, hostdev) < 0)
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 2b8eae0..c161824 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -7642,16 +7642,6 @@ qemuBuildDomainLoaderCommandLine(virCommandPtr cmd,
+         break;
+ 
+     case VIR_DOMAIN_LOADER_TYPE_PFLASH:
+-        /* UEFI is supported only for x86_64 currently */
+-        if (def->os.arch != VIR_ARCH_X86_64 &&
+-            def->os.arch != VIR_ARCH_ARMV7L &&
+-            def->os.arch != VIR_ARCH_AARCH64) {
+-            virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+-                           _("pflash is not supported for %s guest architecture"),
+-                           virArchToString(def->os.arch));
+-            goto cleanup;
+-        }
+-
+         if (!virQEMUCapsGet(qemuCaps, QEMU_CAPS_DRIVE)) {
+             virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                            _("this QEMU binary doesn't support -drive"));
+-- 
+2.1.3
+

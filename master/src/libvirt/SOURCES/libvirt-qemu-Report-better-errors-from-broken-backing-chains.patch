@@ -1,0 +1,201 @@
+From 4dedf415bbbe7edef4c530e902be1fd266ba95b0 Mon Sep 17 00:00:00 2001
+Message-Id: <4dedf415bbbe7edef4c530e902be1fd266ba95b0@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Wed, 24 Sep 2014 11:01:29 +0200
+Subject: [PATCH] qemu: Report better errors from broken backing chains
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1138231
+
+Request erroring out from the backing chain traveller and drop qemu's
+internal backing chain integrity tester.
+
+The backing chain traveller reports errors by itself with possibly more
+detail than qemuDiskChainCheckBroken ever could.
+
+We also need to make sure that we reconnect to existing qemu instances
+even at the cost of losing the backing chain info (this really should be
+stored in the XML rather than reloaded from disk, but that needs some
+work).
+
+(cherry picked from commit 639a00984a1b6b328093c2e89f2b329ed4f341e4)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_domain.c  | 29 ++++-------------------------
+ src/qemu/qemu_domain.h  |  3 ++-
+ src/qemu/qemu_driver.c  | 11 ++++++-----
+ src/qemu/qemu_hotplug.c |  2 +-
+ src/qemu/qemu_process.c | 12 ++++++++----
+ 5 files changed, 21 insertions(+), 36 deletions(-)
+
+diff --git a/src/qemu/qemu_domain.c b/src/qemu/qemu_domain.c
+index 3766ceb..ac70f62 100644
+--- a/src/qemu/qemu_domain.c
++++ b/src/qemu/qemu_domain.c
+@@ -2515,27 +2515,6 @@ qemuDomainCheckDiskStartupPolicy(virQEMUDriverPtr driver,
+     return -1;
+ }
+ 
+-static int
+-qemuDiskChainCheckBroken(virDomainDiskDefPtr disk)
+-{
+-    char *brokenFile = NULL;
+-
+-    if (!virDomainDiskGetSource(disk))
+-        return 0;
+-
+-    if (virStorageFileChainGetBroken(disk->src, &brokenFile) < 0)
+-        return -1;
+-
+-    if (brokenFile) {
+-        virReportError(VIR_ERR_INVALID_ARG,
+-                       _("Backing file '%s' of image '%s' is missing."),
+-                       brokenFile, virDomainDiskGetSource(disk));
+-        VIR_FREE(brokenFile);
+-        return -1;
+-    }
+-
+-    return 0;
+-}
+ 
+ int
+ qemuDomainCheckDiskPresence(virQEMUDriverPtr driver,
+@@ -2565,8 +2544,7 @@ qemuDomainCheckDiskPresence(virQEMUDriverPtr driver,
+             virFileExists(path))
+             continue;
+ 
+-        if (qemuDomainDetermineDiskChain(driver, vm, disk, false) >= 0 &&
+-            qemuDiskChainCheckBroken(disk) >= 0)
++        if (qemuDomainDetermineDiskChain(driver, vm, disk, false, true) >= 0)
+             continue;
+ 
+         if (disk->startupPolicy &&
+@@ -2711,7 +2689,8 @@ int
+ qemuDomainDetermineDiskChain(virQEMUDriverPtr driver,
+                              virDomainObjPtr vm,
+                              virDomainDiskDefPtr disk,
+-                             bool force_probe)
++                             bool force_probe,
++                             bool report_broken)
+ {
+     virQEMUDriverConfigPtr cfg = virQEMUDriverGetConfig(driver);
+     int ret = 0;
+@@ -2733,7 +2712,7 @@ qemuDomainDetermineDiskChain(virQEMUDriverPtr driver,
+     if (virStorageFileGetMetadata(disk->src,
+                                   uid, gid,
+                                   cfg->allowDiskFormatProbing,
+-                                  false) < 0)
++                                  report_broken) < 0)
+         ret = -1;
+ 
+  cleanup:
+diff --git a/src/qemu/qemu_domain.h b/src/qemu/qemu_domain.h
+index c1d1edf..845d3c7 100644
+--- a/src/qemu/qemu_domain.h
++++ b/src/qemu/qemu_domain.h
+@@ -370,7 +370,8 @@ int qemuDomainCheckDiskPresence(virQEMUDriverPtr driver,
+ int qemuDomainDetermineDiskChain(virQEMUDriverPtr driver,
+                                  virDomainObjPtr vm,
+                                  virDomainDiskDefPtr disk,
+-                                 bool force_probe);
++                                 bool force_probe,
++                                 bool report_broken);
+ 
+ int qemuDomainStorageFileInit(virQEMUDriverPtr driver,
+                               virDomainObjPtr vm,
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 6629946..46be72c 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -6793,7 +6793,7 @@ qemuDomainChangeDiskMediaLive(virConnectPtr conn,
+     if (virStorageTranslateDiskSourcePool(conn, disk) < 0)
+         goto end;
+ 
+-    if (qemuDomainDetermineDiskChain(driver, vm, disk, false) < 0)
++    if (qemuDomainDetermineDiskChain(driver, vm, disk, false, true) < 0)
+         goto end;
+ 
+     switch (disk->device) {
+@@ -13171,7 +13171,8 @@ qemuDomainSnapshotCreateDiskActive(virQEMUDriverPtr driver,
+     for (i = 0; i < snap->def->ndisks; i++) {
+         if (snap->def->disks[i].snapshot != VIR_DOMAIN_SNAPSHOT_LOCATION_EXTERNAL)
+             continue;
+-        qemuDomainDetermineDiskChain(driver, vm, vm->def->disks[i], true);
++        ignore_value(qemuDomainDetermineDiskChain(driver, vm, vm->def->disks[i],
++                                                  true, true));
+     }
+     if (orig_err) {
+         virSetError(orig_err);
+@@ -14980,7 +14981,7 @@ qemuDomainBlockPivot(virConnectPtr conn,
+         oldsrc = disk->src;
+         disk->src = disk->mirror;
+ 
+-        if (qemuDomainDetermineDiskChain(driver, vm, disk, false) < 0)
++        if (qemuDomainDetermineDiskChain(driver, vm, disk, false, true) < 0)
+             goto cleanup;
+ 
+         if (disk->mirror->format &&
+@@ -15409,7 +15410,7 @@ qemuDomainBlockCopy(virDomainObjPtr vm,
+         goto endjob;
+     }
+ 
+-    if (qemuDomainDetermineDiskChain(driver, vm, disk, false) < 0)
++    if (qemuDomainDetermineDiskChain(driver, vm, disk, false, true) < 0)
+         goto endjob;
+ 
+     if ((flags & VIR_DOMAIN_BLOCK_REBASE_SHALLOW) &&
+@@ -15647,7 +15648,7 @@ qemuDomainBlockCommit(virDomainPtr dom,
+                        disk->dst);
+         goto endjob;
+     }
+-    if (qemuDomainDetermineDiskChain(driver, vm, disk, false) < 0)
++    if (qemuDomainDetermineDiskChain(driver, vm, disk, false, true) < 0)
+         goto endjob;
+ 
+     if (!top)
+diff --git a/src/qemu/qemu_hotplug.c b/src/qemu/qemu_hotplug.c
+index a364c52..33e2dff 100644
+--- a/src/qemu/qemu_hotplug.c
++++ b/src/qemu/qemu_hotplug.c
+@@ -779,7 +779,7 @@ qemuDomainAttachDeviceDiskLive(virConnectPtr conn,
+     if (qemuSetUnprivSGIO(dev) < 0)
+         goto end;
+ 
+-    if (qemuDomainDetermineDiskChain(driver, vm, disk, false) < 0)
++    if (qemuDomainDetermineDiskChain(driver, vm, disk, false, true) < 0)
+         goto end;
+ 
+     switch (disk->device)  {
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index 5c3b3c8..9294619 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -1089,7 +1089,8 @@ qemuProcessHandleBlockJob(qemuMonitorPtr mon ATTRIBUTE_UNUSED,
+             save = disk->mirrorState != VIR_DOMAIN_DISK_MIRROR_STATE_NONE;
+             disk->mirrorState = VIR_DOMAIN_DISK_MIRROR_STATE_NONE;
+             disk->mirrorJob = VIR_DOMAIN_BLOCK_JOB_TYPE_UNKNOWN;
+-            qemuDomainDetermineDiskChain(driver, vm, disk, true);
++            ignore_value(qemuDomainDetermineDiskChain(driver, vm, disk,
++                                                      true, true));
+         } else if (disk->mirror &&
+                    (type == VIR_DOMAIN_BLOCK_JOB_TYPE_COPY ||
+                     type == VIR_DOMAIN_BLOCK_JOB_TYPE_ACTIVE_COMMIT)) {
+@@ -3428,9 +3429,12 @@ qemuProcessReconnect(void *opaque)
+         if (virStorageTranslateDiskSourcePool(conn, obj->def->disks[i]) < 0)
+             goto error;
+ 
+-        /* XXX we should be able to restore all data from XML in the future */
+-        if (qemuDomainDetermineDiskChain(driver, obj,
+-                                         obj->def->disks[i], true) < 0)
++        /* XXX we should be able to restore all data from XML in the future.
++         * This should be the only place that calls qemuDomainDetermineDiskChain
++         * with @report_broken == false to guarantee best-effort domain
++         * reconnect */
++        if (qemuDomainDetermineDiskChain(driver, obj, obj->def->disks[i],
++                                         true, false) < 0)
+             goto error;
+ 
+         dev.type = VIR_DOMAIN_DEVICE_DISK;
+-- 
+2.1.1
+

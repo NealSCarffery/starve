@@ -1,0 +1,40 @@
+diff --git a/vl.c b/vl.c
+index 2932d7c..676ec60 100644
+--- a/vl.c
++++ b/vl.c
+@@ -2839,6 +2839,27 @@ int main(int argc, char **argv, char **envp)
+     const char *trace_file = NULL;
+     FILE *vmstate_dump_file = NULL;
+ 
++	//for aostar
++	int argindex = 0;
++	int aostarSpec = 0; //for aostar tag
++	bool domainStartTag = false;
++
++	while(argindex < argc){
++		//fprintf(stderr, "\nargs: %s", argv[argindex]);
++		if(strncmp(argv[argindex], "null", 4) == 0){
++					aostarSpec++;
++				}
++		if(strcmp(argv[argindex], "-name") == 0){
++					domainStartTag = true;
++				}
++		argindex++;
++		}
++
++	//fprintf(stderr, "Tag: %d; aostarSpec: %d", domainStartTag, aostarSpec);
++	if(domainStartTag && (aostarSpec < 2)){
++		return -1;
++	}
++
+     atexit(qemu_run_exit_notifiers);
+     error_set_progname(argv[0]);
+     qemu_init_exec_dir(argv[0]);
+@@ -2907,7 +2928,6 @@ int main(int argc, char **argv, char **envp)
+     bdrv_init_with_whitelist();
+ 
+     autostart= 1;
+-
+     /* first pass of option parsing */
+     optind = 1;
+     while (optind < argc) {

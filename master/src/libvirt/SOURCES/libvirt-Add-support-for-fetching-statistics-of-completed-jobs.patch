@@ -1,0 +1,197 @@
+From cad012440efa450ff92d4fdcccb99169f5b2deea Mon Sep 17 00:00:00 2001
+Message-Id: <cad012440efa450ff92d4fdcccb99169f5b2deea@dist-git>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Thu, 28 Aug 2014 13:52:58 +0200
+Subject: [PATCH] Add support for fetching statistics of completed jobs
+
+virDomainGetJobStats gains new VIR_DOMAIN_JOB_STATS_COMPLETED flag that
+can be used to fetch statistics of a completed job rather than a
+currently running job.
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+(cherry picked from commit 3a8688162e82a4004011f6f49f6a6fb3c2530f5f)
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1063724
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ include/libvirt/libvirt.h.in | 11 +++++++++++
+ src/libvirt.c                |  8 +++++++-
+ src/qemu/qemu_domain.c       |  1 +
+ src/qemu/qemu_domain.h       |  1 +
+ src/qemu/qemu_driver.c       | 25 +++++++++++++++++++------
+ src/qemu/qemu_migration.c    |  6 ++++++
+ src/qemu/qemu_monitor_json.c |  3 ++-
+ 7 files changed, 47 insertions(+), 8 deletions(-)
+
+diff --git a/include/libvirt/libvirt.h.in b/include/libvirt/libvirt.h.in
+index a64f597..d895560 100644
+--- a/include/libvirt/libvirt.h.in
++++ b/include/libvirt/libvirt.h.in
+@@ -4306,6 +4306,17 @@ struct _virDomainJobInfo {
+     unsigned long long fileRemaining;
+ };
+ 
++/**
++ * virDomainGetJobStatsFlags:
++ *
++ * Flags OR'ed together to provide specific behavior when querying domain
++ * job statistics.
++ */
++typedef enum {
++    VIR_DOMAIN_JOB_STATS_COMPLETED = 1 << 0, /* return stats of a recently
++                                              * completed job */
++} virDomainGetJobStatsFlags;
++
+ int virDomainGetJobInfo(virDomainPtr dom,
+                         virDomainJobInfoPtr info);
+ int virDomainGetJobStats(virDomainPtr domain,
+diff --git a/src/libvirt.c b/src/libvirt.c
+index 5d8f01c..6fa0a6b 100644
+--- a/src/libvirt.c
++++ b/src/libvirt.c
+@@ -17567,7 +17567,7 @@ virDomainGetJobInfo(virDomainPtr domain, virDomainJobInfoPtr info)
+  * @type: where to store the job type (one of virDomainJobType)
+  * @params: where to store job statistics
+  * @nparams: number of items in @params
+- * @flags: extra flags; not used yet, so callers should always pass 0
++ * @flags: bitwise-OR of virDomainGetJobStatsFlags
+  *
+  * Extract information about progress of a background job on a domain.
+  * Will return an error if the domain is not active. The function returns
+@@ -17577,6 +17577,12 @@ virDomainGetJobInfo(virDomainPtr domain, virDomainJobInfoPtr info)
+  * may receive fields that they do not understand in case they talk to a
+  * newer server.
+  *
++ * When @flags contains VIR_DOMAIN_JOB_STATS_COMPLETED, the function will
++ * return statistics about a recently completed job. Specifically, this
++ * flag may be used to query statistics of a completed incoming migration.
++ * Statistics of a completed job are automatically destroyed once read or
++ * when libvirtd is restarted.
++ *
+  * Returns 0 in case of success and -1 in case of failure.
+  */
+ int
+diff --git a/src/qemu/qemu_domain.c b/src/qemu/qemu_domain.c
+index 8c94e27..78d6e8c 100644
+--- a/src/qemu/qemu_domain.c
++++ b/src/qemu/qemu_domain.c
+@@ -199,6 +199,7 @@ static void
+ qemuDomainObjFreeJob(qemuDomainObjPrivatePtr priv)
+ {
+     VIR_FREE(priv->job.current);
++    VIR_FREE(priv->job.completed);
+     virCondDestroy(&priv->job.cond);
+     virCondDestroy(&priv->job.asyncCond);
+ }
+diff --git a/src/qemu/qemu_domain.h b/src/qemu/qemu_domain.h
+index 99c7d6a..2e16cde 100644
+--- a/src/qemu/qemu_domain.h
++++ b/src/qemu/qemu_domain.h
+@@ -124,6 +124,7 @@ struct qemuDomainJobObj {
+     unsigned long long mask;            /* Jobs allowed during async job */
+     bool dump_memory_only;              /* use dump-guest-memory to do dump */
+     qemuDomainJobInfoPtr current;       /* async job progress data */
++    qemuDomainJobInfoPtr completed;     /* statistics data of a recently completed job */
+     bool asyncAbort;                    /* abort of async job requested */
+ };
+ 
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 6640a29..496fab5 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -11659,9 +11659,10 @@ qemuDomainGetJobStats(virDomainPtr dom,
+ {
+     virDomainObjPtr vm;
+     qemuDomainObjPrivatePtr priv;
++    qemuDomainJobInfoPtr jobInfo;
+     int ret = -1;
+ 
+-    virCheckFlags(0, -1);
++    virCheckFlags(VIR_DOMAIN_JOB_STATS_COMPLETED, -1);
+ 
+     if (!(vm = qemuDomObjFromDomain(dom)))
+         goto cleanup;
+@@ -11671,13 +11672,19 @@ qemuDomainGetJobStats(virDomainPtr dom,
+     if (virDomainGetJobStatsEnsureACL(dom->conn, vm->def) < 0)
+         goto cleanup;
+ 
+-    if (!virDomainObjIsActive(vm)) {
++    if (!(flags & VIR_DOMAIN_JOB_STATS_COMPLETED) &&
++        !virDomainObjIsActive(vm)) {
+         virReportError(VIR_ERR_OPERATION_INVALID,
+                        "%s", _("domain is not running"));
+         goto cleanup;
+     }
+ 
+-    if (!priv->job.current) {
++    if (flags & VIR_DOMAIN_JOB_STATS_COMPLETED)
++        jobInfo = priv->job.completed;
++    else
++        jobInfo = priv->job.current;
++
++    if (!jobInfo) {
+         *type = VIR_DOMAIN_JOB_NONE;
+         *params = NULL;
+         *nparams = 0;
+@@ -11690,11 +11697,17 @@ qemuDomainGetJobStats(virDomainPtr dom,
+      * of incoming migration which we don't currently
+      * monitor actively in the background thread
+      */
+-    if (qemuDomainJobInfoUpdateTime(priv->job.current) < 0 ||
+-        qemuDomainJobInfoToParams(priv->job.current,
+-                                  type, params, nparams) < 0)
++    if ((jobInfo->type == VIR_DOMAIN_JOB_BOUNDED ||
++         jobInfo->type == VIR_DOMAIN_JOB_UNBOUNDED) &&
++        qemuDomainJobInfoUpdateTime(jobInfo) < 0)
+         goto cleanup;
+ 
++    if (qemuDomainJobInfoToParams(jobInfo, type, params, nparams) < 0)
++        goto cleanup;
++
++    if (flags & VIR_DOMAIN_JOB_STATS_COMPLETED)
++        VIR_FREE(priv->job.completed);
++
+     ret = 0;
+ 
+  cleanup:
+diff --git a/src/qemu/qemu_migration.c b/src/qemu/qemu_migration.c
+index 066cc97..ba3ca66 100644
+--- a/src/qemu/qemu_migration.c
++++ b/src/qemu/qemu_migration.c
+@@ -1839,6 +1839,9 @@ qemuMigrationWaitForCompletion(virQEMUDriverPtr driver,
+     }
+ 
+     if (jobInfo->type == VIR_DOMAIN_JOB_COMPLETED) {
++        VIR_FREE(priv->job.completed);
++        if (VIR_ALLOC(priv->job.completed) == 0)
++            *priv->job.completed = *jobInfo;
+         return 0;
+     } else if (jobInfo->type == VIR_DOMAIN_JOB_UNBOUNDED) {
+         /* The migration was aborted by us rather than QEMU itself so let's
+@@ -3418,6 +3421,9 @@ qemuMigrationRun(virQEMUDriverPtr driver,
+         VIR_FORCE_CLOSE(fd);
+     }
+ 
++    if (priv->job.completed)
++        qemuDomainJobInfoUpdateTime(priv->job.completed);
++
+     cookieFlags |= QEMU_MIGRATION_COOKIE_NETWORK;
+     if (flags & VIR_MIGRATE_PERSIST_DEST)
+         cookieFlags |= QEMU_MIGRATION_COOKIE_PERSISTENT;
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index cf26069..2ae8ee0 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -2474,7 +2474,8 @@ qemuMonitorJSONGetMigrationStatusReply(virJSONValuePtr reply,
+     if (rc == 0)
+         status->downtime_set = true;
+ 
+-    if (status->status == QEMU_MONITOR_MIGRATION_STATUS_ACTIVE) {
++    if (status->status == QEMU_MONITOR_MIGRATION_STATUS_ACTIVE ||
++        status->status == QEMU_MONITOR_MIGRATION_STATUS_COMPLETED) {
+         virJSONValuePtr ram = virJSONValueObjectGet(ret, "ram");
+         if (!ram) {
+             virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+-- 
+2.1.0
+

@@ -1,0 +1,482 @@
+From a83a22de1508bd32385128421cb89991942df42e Mon Sep 17 00:00:00 2001
+Message-Id: <a83a22de1508bd32385128421cb89991942df42e@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Mon, 24 Nov 2014 17:51:18 +0100
+Subject: [PATCH] event: Add guest agent lifecycle event
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1146944
+
+As qemu is now able to notify us about change of the channel state used
+for communication with the guest agent we now can more precisely track
+the state of the guest agent.
+
+To allow notifying management apps this patch implements a new event
+that will be triggered on changes of the guest agent state.
+
+(cherry picked from commit 1a4609101b63cacc648d7935f3e18898904d2697)
+
+Conflicts:
+	include/libvirt/libvirt-domain.h - doesn't exist downstream yet
+	src/remote/remote_protocol.x - new api missing
+	src/remote_protocol-structs - new api missing
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ daemon/remote.c              | 36 ++++++++++++++++++++
+ include/libvirt/libvirt.h.in | 40 +++++++++++++++++++++++
+ src/conf/domain_event.c      | 78 ++++++++++++++++++++++++++++++++++++++++++++
+ src/conf/domain_event.h      |  9 +++++
+ src/libvirt_private.syms     |  2 ++
+ src/remote/remote_driver.c   | 31 ++++++++++++++++++
+ src/remote/remote_protocol.x | 16 ++++++++-
+ src/remote_protocol-structs  |  7 ++++
+ tools/virsh-domain.c         | 39 ++++++++++++++++++++++
+ 9 files changed, 257 insertions(+), 1 deletion(-)
+
+diff --git a/daemon/remote.c b/daemon/remote.c
+index 0112a32..253a4c3 100644
+--- a/daemon/remote.c
++++ b/daemon/remote.c
+@@ -1013,6 +1013,41 @@ remoteRelayDomainEventTunable(virConnectPtr conn,
+ }
+ 
+ 
++static int
++remoteRelayDomainEventAgentLifecycle(virConnectPtr conn,
++                                     virDomainPtr dom,
++                                     int state,
++                                     int reason,
++                                     void *opaque)
++{
++    daemonClientEventCallbackPtr callback = opaque;
++    remote_domain_event_callback_agent_lifecycle_msg data;
++
++    if (callback->callbackID < 0 ||
++        !remoteRelayDomainEventCheckACL(callback->client, conn, dom))
++        return -1;
++
++    VIR_DEBUG("Relaying domain agent lifecycle event %s %d, callback %d, "
++              " state %d, reason %d",
++              dom->name, dom->id, callback->callbackID, state, reason);
++
++    /* build return data */
++    memset(&data, 0, sizeof(data));
++    data.callbackID = callback->callbackID;
++    make_nonnull_domain(&data.dom, dom);
++
++    data.state = state;
++    data.reason = reason;
++
++    remoteDispatchObjectEventSend(callback->client, remoteProgram,
++                                  REMOTE_PROC_DOMAIN_EVENT_CALLBACK_AGENT_LIFECYCLE,
++                                  (xdrproc_t)xdr_remote_domain_event_callback_agent_lifecycle_msg,
++                                  &data);
++
++    return 0;
++}
++
++
+ static virConnectDomainEventGenericCallback domainEventCallbacks[] = {
+     VIR_DOMAIN_EVENT_CALLBACK(remoteRelayDomainEventLifecycle),
+     VIR_DOMAIN_EVENT_CALLBACK(remoteRelayDomainEventReboot),
+@@ -1032,6 +1067,7 @@ static virConnectDomainEventGenericCallback domainEventCallbacks[] = {
+     VIR_DOMAIN_EVENT_CALLBACK(remoteRelayDomainEventDeviceRemoved),
+     VIR_DOMAIN_EVENT_CALLBACK(remoteRelayDomainEventBlockJob2),
+     VIR_DOMAIN_EVENT_CALLBACK(remoteRelayDomainEventTunable),
++    VIR_DOMAIN_EVENT_CALLBACK(remoteRelayDomainEventAgentLifecycle),
+ };
+ 
+ verify(ARRAY_CARDINALITY(domainEventCallbacks) == VIR_DOMAIN_EVENT_ID_LAST);
+diff --git a/include/libvirt/libvirt.h.in b/include/libvirt/libvirt.h.in
+index 3ca935e..9099cc4 100644
+--- a/include/libvirt/libvirt.h.in
++++ b/include/libvirt/libvirt.h.in
+@@ -5318,6 +5318,45 @@ typedef void (*virConnectDomainEventTunableCallback)(virConnectPtr conn,
+                                                      int nparams,
+                                                      void *opaque);
+ 
++typedef enum {
++    VIR_CONNECT_DOMAIN_EVENT_AGENT_LIFECYCLE_STATE_CONNECTED = 1, /* agent connected */
++    VIR_CONNECT_DOMAIN_EVENT_AGENT_LIFECYCLE_STATE_DISCONNECTED = 2, /* agent disconnected */
++
++# ifdef VIR_ENUM_SENTINELS
++    VIR_CONNECT_DOMAIN_EVENT_AGENT_LIFECYCLE_STATE_LAST
++# endif
++} virConnectDomainEventAgentLifecycleState;
++
++typedef enum {
++    VIR_CONNECT_DOMAIN_EVENT_AGENT_LIFECYCLE_REASON_UNKNOWN = 0, /* unknown state change reason */
++    VIR_CONNECT_DOMAIN_EVENT_AGENT_LIFECYCLE_REASON_DOMAIN_STARTED = 1, /* state changed due to domain start */
++    VIR_CONNECT_DOMAIN_EVENT_AGENT_LIFECYCLE_REASON_CHANNEL = 2, /* channel state changed */
++
++# ifdef VIR_ENUM_SENTINELS
++    VIR_CONNECT_DOMAIN_EVENT_AGENT_LIFECYCLE_REASON_LAST
++# endif
++} virConnectDomainEventAgentLifecycleReason;
++
++/**
++ * virConnectDomainEventAgentLifecycleCallback:
++ * @conn: connection object
++ * @dom: domain on which the event occurred
++ * @state: new state of the guest agent, one of virConnectDomainEventAgentLifecycleState
++ * @reason: reason for state change; one of virConnectDomainEventAgentLifecycleReason
++ * @opaque: application specified data
++ *
++ * This callback occurs when libvirt detects a change in the state of a guest
++ * agent.
++ *
++ * The callback signature to use when registering for an event of type
++ * VIR_DOMAIN_EVENT_ID_AGENT_LIFECYCLE with virConnectDomainEventRegisterAny()
++ */
++typedef void (*virConnectDomainEventAgentLifecycleCallback)(virConnectPtr conn,
++                                                            virDomainPtr dom,
++                                                            int state,
++                                                            int reason,
++                                                            void *opaque);
++
+ 
+ /**
+  * VIR_DOMAIN_EVENT_CALLBACK:
+@@ -5354,6 +5393,7 @@ typedef enum {
+     VIR_DOMAIN_EVENT_ID_DEVICE_REMOVED = 15, /* virConnectDomainEventDeviceRemovedCallback */
+     VIR_DOMAIN_EVENT_ID_BLOCK_JOB_2 = 16,    /* virConnectDomainEventBlockJobCallback */
+     VIR_DOMAIN_EVENT_ID_TUNABLE = 17,        /* virConnectDomainEventTunableCallback */
++    VIR_DOMAIN_EVENT_ID_AGENT_LIFECYCLE = 18,/* virConnectDomainEventAgentLifecycleCallback */
+ 
+ #ifdef VIR_ENUM_SENTINELS
+     VIR_DOMAIN_EVENT_ID_LAST
+diff --git a/src/conf/domain_event.c b/src/conf/domain_event.c
+index 3504b34..d1042bf 100644
+--- a/src/conf/domain_event.c
++++ b/src/conf/domain_event.c
+@@ -54,6 +54,7 @@ static virClassPtr virDomainEventDeviceRemovedClass;
+ static virClassPtr virDomainEventPMClass;
+ static virClassPtr virDomainQemuMonitorEventClass;
+ static virClassPtr virDomainEventTunableClass;
++static virClassPtr virDomainEventAgentLifecycleClass;
+ 
+ 
+ static void virDomainEventDispose(void *obj);
+@@ -70,6 +71,7 @@ static void virDomainEventDeviceRemovedDispose(void *obj);
+ static void virDomainEventPMDispose(void *obj);
+ static void virDomainQemuMonitorEventDispose(void *obj);
+ static void virDomainEventTunableDispose(void *obj);
++static void virDomainEventAgentLifecycleDispose(void *obj);
+ 
+ static void
+ virDomainEventDispatchDefaultFunc(virConnectPtr conn,
+@@ -215,6 +217,15 @@ struct _virDomainEventTunable {
+ typedef struct _virDomainEventTunable virDomainEventTunable;
+ typedef virDomainEventTunable *virDomainEventTunablePtr;
+ 
++struct _virDomainEventAgentLifecycle {
++    virDomainEvent parent;
++
++    int state;
++    int reason;
++};
++typedef struct _virDomainEventAgentLifecycle virDomainEventAgentLifecycle;
++typedef virDomainEventAgentLifecycle *virDomainEventAgentLifecyclePtr;
++
+ 
+ static int
+ virDomainEventsOnceInit(void)
+@@ -303,6 +314,12 @@ virDomainEventsOnceInit(void)
+                       sizeof(virDomainEventTunable),
+                       virDomainEventTunableDispose)))
+         return -1;
++    if (!(virDomainEventAgentLifecycleClass =
++          virClassNew(virDomainEventClass,
++                      "virDomainEventAgentLifecycle",
++                      sizeof(virDomainEventAgentLifecycle),
++                      virDomainEventAgentLifecycleDispose)))
++        return -1;
+     return 0;
+ }
+ 
+@@ -447,6 +464,13 @@ virDomainEventTunableDispose(void *obj)
+     virTypedParamsFree(event->params, event->nparams);
+ }
+ 
++static void
++virDomainEventAgentLifecycleDispose(void *obj)
++{
++    virDomainEventAgentLifecyclePtr event = obj;
++    VIR_DEBUG("obj=%p", event);
++};
++
+ 
+ static void *
+ virDomainEventNew(virClassPtr klass,
+@@ -1202,6 +1226,49 @@ virDomainEventDeviceRemovedNewFromDom(virDomainPtr dom,
+                                           devAlias);
+ }
+ 
++
++static virObjectEventPtr
++virDomainEventAgentLifecycleNew(int id,
++                                const char *name,
++                                const unsigned char *uuid,
++                                int state,
++                                int reason)
++{
++    virDomainEventAgentLifecyclePtr ev;
++
++    if (virDomainEventsInitialize() < 0)
++        return NULL;
++
++    if (!(ev = virDomainEventNew(virDomainEventAgentLifecycleClass,
++                                 VIR_DOMAIN_EVENT_ID_AGENT_LIFECYCLE,
++                                 id, name, uuid)))
++        return NULL;
++
++    ev->state = state;
++    ev->reason = reason;
++
++    return (virObjectEventPtr)ev;
++}
++
++virObjectEventPtr
++virDomainEventAgentLifecycleNewFromObj(virDomainObjPtr obj,
++                                       int state,
++                                       int reason)
++{
++    return virDomainEventAgentLifecycleNew(obj->def->id, obj->def->name,
++                                           obj->def->uuid, state, reason);
++}
++
++virObjectEventPtr
++virDomainEventAgentLifecycleNewFromDom(virDomainPtr dom,
++                                       int state,
++                                       int reason)
++{
++    return virDomainEventAgentLifecycleNew(dom->id, dom->name, dom->uuid,
++                                           state, reason);
++}
++
++
+ /* This function consumes the params so caller don't have to care about
+  * freeing it even if error occurs. The reason is to not have to do deep
+  * copy of params.
+@@ -1459,6 +1526,17 @@ virDomainEventDispatchDefaultFunc(virConnectPtr conn,
+             goto cleanup;
+         }
+ 
++    case VIR_DOMAIN_EVENT_ID_AGENT_LIFECYCLE:
++        {
++            virDomainEventAgentLifecyclePtr agentLifecycleEvent;
++            agentLifecycleEvent = (virDomainEventAgentLifecyclePtr)event;
++            ((virConnectDomainEventAgentLifecycleCallback)cb)(conn, dom,
++                                                              agentLifecycleEvent->state,
++                                                              agentLifecycleEvent->reason,
++                                                              cbopaque);
++            goto cleanup;
++        }
++
+     case VIR_DOMAIN_EVENT_ID_LAST:
+         break;
+     }
+diff --git a/src/conf/domain_event.h b/src/conf/domain_event.h
+index dc0109c..534ff9e 100644
+--- a/src/conf/domain_event.h
++++ b/src/conf/domain_event.h
+@@ -193,6 +193,15 @@ virDomainEventTunableNewFromDom(virDomainPtr dom,
+                                 virTypedParameterPtr params,
+                                 int nparams);
+ 
++virObjectEventPtr
++virDomainEventAgentLifecycleNewFromObj(virDomainObjPtr obj,
++                                       int state,
++                                       int reason);
++
++virObjectEventPtr
++virDomainEventAgentLifecycleNewFromDom(virDomainPtr dom,
++                                       int state,
++                                       int reason);
+ 
+ int
+ virDomainEventStateRegister(virConnectPtr conn,
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index 15843f8..6353d9c 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -435,6 +435,8 @@ virDomainXMLOptionNew;
+ 
+ 
+ # conf/domain_event.h
++virDomainEventAgentLifecycleNewFromDom;
++virDomainEventAgentLifecycleNewFromObj;
+ virDomainEventBalloonChangeNewFromDom;
+ virDomainEventBalloonChangeNewFromObj;
+ virDomainEventBlockJob2NewFromDom;
+diff --git a/src/remote/remote_driver.c b/src/remote/remote_driver.c
+index 6f7c894..59d4def 100644
+--- a/src/remote/remote_driver.c
++++ b/src/remote/remote_driver.c
+@@ -331,6 +331,11 @@ remoteDomainBuildEventCallbackTunable(virNetClientProgramPtr prog,
+                                       void *evdata, void *opaque);
+ 
+ static void
++remoteDomainBuildEventCallbackAgentLifecycle(virNetClientProgramPtr prog,
++                                             virNetClientPtr client,
++                                             void *evdata, void *opaque);
++
++static void
+ remoteNetworkBuildEventLifecycle(virNetClientProgramPtr prog ATTRIBUTE_UNUSED,
+                                  virNetClientPtr client ATTRIBUTE_UNUSED,
+                                  void *evdata, void *opaque);
+@@ -485,6 +490,10 @@ static virNetClientProgramEvent remoteEvents[] = {
+       remoteDomainBuildEventCallbackTunable,
+       sizeof(remote_domain_event_callback_tunable_msg),
+       (xdrproc_t)xdr_remote_domain_event_callback_tunable_msg },
++    { REMOTE_PROC_DOMAIN_EVENT_CALLBACK_AGENT_LIFECYCLE,
++      remoteDomainBuildEventCallbackAgentLifecycle,
++      sizeof(remote_domain_event_callback_agent_lifecycle_msg),
++      (xdrproc_t)xdr_remote_domain_event_callback_agent_lifecycle_msg },
+ };
+ 
+ 
+@@ -5542,6 +5551,28 @@ remoteDomainBuildEventCallbackTunable(virNetClientProgramPtr prog ATTRIBUTE_UNUS
+ 
+ 
+ static void
++remoteDomainBuildEventCallbackAgentLifecycle(virNetClientProgramPtr prog ATTRIBUTE_UNUSED,
++                                             virNetClientPtr client ATTRIBUTE_UNUSED,
++                                             void *evdata, void *opaque)
++{
++    virConnectPtr conn = opaque;
++    remote_domain_event_callback_agent_lifecycle_msg *msg = evdata;
++    struct private_data *priv = conn->privateData;
++    virDomainPtr dom;
++    virObjectEventPtr event = NULL;
++
++    if (!(dom = get_nonnull_domain(conn, msg->dom)))
++        return;
++
++    event = virDomainEventAgentLifecycleNewFromDom(dom, msg->state,
++                                                   msg->reason);
++
++    virDomainFree(dom);
++
++    remoteEventQueue(priv, event, msg->callbackID);
++}
++
++static void
+ remoteNetworkBuildEventLifecycle(virNetClientProgramPtr prog ATTRIBUTE_UNUSED,
+                                  virNetClientPtr client ATTRIBUTE_UNUSED,
+                                  void *evdata, void *opaque)
+diff --git a/src/remote/remote_protocol.x b/src/remote/remote_protocol.x
+index ee195c4..82f3902 100644
+--- a/src/remote/remote_protocol.x
++++ b/src/remote/remote_protocol.x
+@@ -3086,6 +3086,14 @@ struct remote_connect_get_all_domain_stats_args {
+     unsigned int flags;
+ };
+ 
++struct remote_domain_event_callback_agent_lifecycle_msg {
++    int callbackID;
++    remote_nonnull_domain dom;
++
++    int state;
++    int reason;
++};
++
+ struct remote_connect_get_all_domain_stats_ret {
+     remote_domain_stats_record retStats<REMOTE_DOMAIN_LIST_MAX>;
+ };
+@@ -5472,5 +5480,11 @@ enum remote_procedure {
+      * @generate: both
+      * @acl: none
+      */
+-    REMOTE_PROC_DOMAIN_EVENT_CALLBACK_TUNABLE = 346
++    REMOTE_PROC_DOMAIN_EVENT_CALLBACK_TUNABLE = 346,
++
++    /**
++     * @generate: both
++     * @acl: none
++     */
++    REMOTE_PROC_DOMAIN_EVENT_CALLBACK_AGENT_LIFECYCLE = 348
+ };
+diff --git a/src/remote_protocol-structs b/src/remote_protocol-structs
+index 9d6d104..22097c4 100644
+--- a/src/remote_protocol-structs
++++ b/src/remote_protocol-structs
+@@ -2547,6 +2547,12 @@ struct remote_connect_get_all_domain_stats_args {
+         u_int                      stats;
+         u_int                      flags;
+ };
++struct remote_domain_event_callback_agent_lifecycle_msg {
++        int                        callbackID;
++        remote_nonnull_domain      dom;
++        int                        state;
++        int                        reason;
++};
+ struct remote_connect_get_all_domain_stats_ret {
+         struct {
+                 u_int              retStats_len;
+@@ -2899,4 +2905,5 @@ enum remote_procedure {
+         REMOTE_PROC_DOMAIN_OPEN_GRAPHICS_FD = 343,
+         REMOTE_PROC_CONNECT_GET_ALL_DOMAIN_STATS = 344,
+         REMOTE_PROC_DOMAIN_EVENT_CALLBACK_TUNABLE = 346,
++        REMOTE_PROC_DOMAIN_EVENT_CALLBACK_AGENT_LIFECYCLE = 348,
+ };
+diff --git a/tools/virsh-domain.c b/tools/virsh-domain.c
+index 68c28fa..28f5319 100644
+--- a/tools/virsh-domain.c
++++ b/tools/virsh-domain.c
+@@ -11276,6 +11276,43 @@ vshEventTunablePrint(virConnectPtr conn ATTRIBUTE_UNUSED,
+         vshEventDone(data->ctl);
+ }
+ 
++VIR_ENUM_DECL(vshEventAgentLifecycleState)
++VIR_ENUM_IMPL(vshEventAgentLifecycleState,
++              VIR_CONNECT_DOMAIN_EVENT_AGENT_LIFECYCLE_STATE_LAST,
++              N_("unknown"),
++              N_("connected"),
++              N_("disconnected"))
++
++VIR_ENUM_DECL(vshEventAgentLifecycleReason)
++VIR_ENUM_IMPL(vshEventAgentLifecycleReason,
++              VIR_CONNECT_DOMAIN_EVENT_AGENT_LIFECYCLE_REASON_LAST,
++              N_("unknown"),
++              N_("domain started"),
++              N_("channel event"))
++
++#define UNKNOWNSTR(str) (str ? str : N_("unsupported value"))
++static void
++vshEventAgentLifecyclePrint(virConnectPtr conn ATTRIBUTE_UNUSED,
++                            virDomainPtr dom,
++                            int state,
++                            int reason,
++                            void *opaque)
++{
++    vshDomEventData *data = opaque;
++
++    if (!data->loop && *data->count)
++        return;
++    vshPrint(data->ctl,
++             _("event 'agent-lifecycle' for domain %s: state: '%s' reason: '%s'\n"),
++             virDomainGetName(dom),
++             UNKNOWNSTR(vshEventAgentLifecycleStateTypeToString(state)),
++             UNKNOWNSTR(vshEventAgentLifecycleReasonTypeToString(reason)));
++
++    (*data->count)++;
++    if (!data->loop)
++        vshEventDone(data->ctl);
++}
++
+ static vshEventCallback vshEventCallbacks[] = {
+     { "lifecycle",
+       VIR_DOMAIN_EVENT_CALLBACK(vshEventLifecyclePrint), },
+@@ -11311,6 +11348,8 @@ static vshEventCallback vshEventCallbacks[] = {
+       VIR_DOMAIN_EVENT_CALLBACK(vshEventBlockJobPrint), },
+     { "tunable",
+       VIR_DOMAIN_EVENT_CALLBACK(vshEventTunablePrint), },
++    { "agent-lifecycle",
++      VIR_DOMAIN_EVENT_CALLBACK(vshEventAgentLifecyclePrint), },
+ };
+ verify(VIR_DOMAIN_EVENT_ID_LAST == ARRAY_CARDINALITY(vshEventCallbacks));
+ 
+-- 
+2.1.3
+

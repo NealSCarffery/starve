@@ -1,0 +1,35 @@
+From 1ec73cff69bb80be23c388a01cb92da22720502c Mon Sep 17 00:00:00 2001
+Message-Id: <1ec73cff69bb80be23c388a01cb92da22720502c@dist-git>
+From: Giuseppe Scrivano <gscrivan@redhat.com>
+Date: Thu, 4 Sep 2014 12:43:58 +0200
+Subject: [PATCH] security: fix DH key generation when FIPS mode is on
+
+When FIPS mode is on, gnutls_dh_params_generate2 will fail if 1024 is
+specified as the prime's number of bits, a bigger value works in both
+cases.
+
+Closes: https://bugzilla.redhat.com/show_bug.cgi?id=1128497
+
+Signed-off-by: Giuseppe Scrivano <gscrivan@redhat.com>
+(cherry picked from commit ab22096710edb505d38d34fb3575427b0ea3b151)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/rpc/virnettlscontext.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/rpc/virnettlscontext.c b/src/rpc/virnettlscontext.c
+index 31aac9d..947038d 100644
+--- a/src/rpc/virnettlscontext.c
++++ b/src/rpc/virnettlscontext.c
+@@ -43,7 +43,7 @@
+ #include "virthread.h"
+ #include "configmake.h"
+ 
+-#define DH_BITS 1024
++#define DH_BITS 2048
+ 
+ #define LIBVIRT_PKI_DIR SYSCONFDIR "/pki"
+ #define LIBVIRT_CACERT LIBVIRT_PKI_DIR "/CA/cacert.pem"
+-- 
+2.1.0
+

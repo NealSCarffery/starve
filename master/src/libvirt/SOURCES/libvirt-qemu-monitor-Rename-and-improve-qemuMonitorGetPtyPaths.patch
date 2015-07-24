@@ -1,0 +1,364 @@
+From 61f6ae8700cb06aeb73bf8bcb447b50c1af701e4 Mon Sep 17 00:00:00 2001
+Message-Id: <61f6ae8700cb06aeb73bf8bcb447b50c1af701e4@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Mon, 24 Nov 2014 17:51:13 +0100
+Subject: [PATCH] qemu: monitor: Rename and improve qemuMonitorGetPtyPaths
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1146944
+
+To unify future additions that require information from "query-chardev"
+rename qemuMonitorGetPtyPaths and friends to qemuMonitorGetChardevInfo
+and move the allocation of the returned hash into the top level
+function.
+
+(cherry picked from commit e9a4506963fb70d2b8cbf31a2fe77ec68bacd397)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_monitor.c      | 31 +++++++++++++++++++++++--------
+ src/qemu/qemu_monitor.h      |  4 ++--
+ src/qemu/qemu_monitor_json.c | 15 +++++++++------
+ src/qemu/qemu_monitor_json.h |  4 ++--
+ src/qemu/qemu_monitor_text.c |  6 +++---
+ src/qemu/qemu_monitor_text.h |  4 ++--
+ src/qemu/qemu_process.c      | 28 ++++++++++++----------------
+ tests/qemumonitorjsontest.c  | 26 +++++++++++++-------------
+ 8 files changed, 66 insertions(+), 52 deletions(-)
+
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index d2f0b46..09935f5 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -2972,24 +2972,39 @@ qemuMonitorQueryRxFilter(qemuMonitorPtr mon, const char *alias,
+ }
+ 
+ 
+-int qemuMonitorGetPtyPaths(qemuMonitorPtr mon,
+-                           virHashTablePtr paths)
++int
++qemuMonitorGetChardevInfo(qemuMonitorPtr mon,
++                          virHashTablePtr *retinfo)
+ {
+     int ret;
+-    VIR_DEBUG("mon=%p",
+-          mon);
++    virHashTablePtr info = NULL;
++
++    VIR_DEBUG("mon=%p retinfo=%p", mon, retinfo);
+ 
+     if (!mon) {
+         virReportError(VIR_ERR_INVALID_ARG, "%s",
+                        _("monitor must not be NULL"));
+-        return -1;
++        goto error;
+     }
+ 
++    if (!(info = virHashCreate(10, virHashValueFree)))
++        goto error;
++
+     if (mon->json)
+-        ret = qemuMonitorJSONGetPtyPaths(mon, paths);
++        ret = qemuMonitorJSONGetChardevInfo(mon, info);
+     else
+-        ret = qemuMonitorTextGetPtyPaths(mon, paths);
+-    return ret;
++        ret = qemuMonitorTextGetChardevInfo(mon, info);
++
++    if (ret < 0)
++        goto error;
++
++    *retinfo = info;
++    return 0;
++
++ error:
++    virHashFree(info);
++    *retinfo = NULL;
++    return -1;
+ }
+ 
+ 
+diff --git a/src/qemu/qemu_monitor.h b/src/qemu/qemu_monitor.h
+index 70bb608..b63799b 100644
+--- a/src/qemu/qemu_monitor.h
++++ b/src/qemu/qemu_monitor.h
+@@ -639,8 +639,8 @@ int qemuMonitorRemoveNetdev(qemuMonitorPtr mon,
+ int qemuMonitorQueryRxFilter(qemuMonitorPtr mon, const char *alias,
+                              virNetDevRxFilterPtr *filter);
+ 
+-int qemuMonitorGetPtyPaths(qemuMonitorPtr mon,
+-                           virHashTablePtr paths);
++int qemuMonitorGetChardevInfo(qemuMonitorPtr mon,
++                              virHashTablePtr *retinfo);
+ 
+ int qemuMonitorAttachPCIDiskController(qemuMonitorPtr mon,
+                                        const char *bus,
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index f1f65ea..bf28832 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -3539,8 +3539,9 @@ qemuMonitorJSONQueryRxFilter(qemuMonitorPtr mon, const char *alias,
+  * ]}
+  *
+  */
+-static int qemuMonitorJSONExtractPtyPaths(virJSONValuePtr reply,
+-                                          virHashTablePtr paths)
++static int
++qemuMonitorJSONExtractChardevInfo(virJSONValuePtr reply,
++                                  virHashTablePtr info)
+ {
+     virJSONValuePtr data;
+     int ret = -1;
+@@ -3585,7 +3586,7 @@ static int qemuMonitorJSONExtractPtyPaths(virJSONValuePtr reply,
+             if (VIR_STRDUP(path, type + strlen("pty:")) < 0)
+                 goto cleanup;
+ 
+-            if (virHashAddEntry(paths, id, path) < 0) {
++            if (virHashAddEntry(info, id, path) < 0) {
+                 virReportError(VIR_ERR_OPERATION_FAILED,
+                                _("failed to save chardev path '%s'"), path);
+                 VIR_FREE(path);
+@@ -3600,8 +3601,10 @@ static int qemuMonitorJSONExtractPtyPaths(virJSONValuePtr reply,
+     return ret;
+ }
+ 
+-int qemuMonitorJSONGetPtyPaths(qemuMonitorPtr mon,
+-                               virHashTablePtr paths)
++
++int
++qemuMonitorJSONGetChardevInfo(qemuMonitorPtr mon,
++                              virHashTablePtr info)
+ 
+ {
+     int ret;
+@@ -3618,7 +3621,7 @@ int qemuMonitorJSONGetPtyPaths(qemuMonitorPtr mon,
+         ret = qemuMonitorJSONCheckError(cmd, reply);
+ 
+     if (ret == 0)
+-        ret = qemuMonitorJSONExtractPtyPaths(reply, paths);
++        ret = qemuMonitorJSONExtractChardevInfo(reply, info);
+ 
+     virJSONValueFree(cmd);
+     virJSONValueFree(reply);
+diff --git a/src/qemu/qemu_monitor_json.h b/src/qemu/qemu_monitor_json.h
+index 97397fe..17f9718 100644
+--- a/src/qemu/qemu_monitor_json.h
++++ b/src/qemu/qemu_monitor_json.h
+@@ -214,8 +214,8 @@ int qemuMonitorJSONRemoveNetdev(qemuMonitorPtr mon,
+ int qemuMonitorJSONQueryRxFilter(qemuMonitorPtr mon, const char *alias,
+                                  virNetDevRxFilterPtr *filter);
+ 
+-int qemuMonitorJSONGetPtyPaths(qemuMonitorPtr mon,
+-                               virHashTablePtr paths);
++int qemuMonitorJSONGetChardevInfo(qemuMonitorPtr mon,
++                                  virHashTablePtr info);
+ 
+ int qemuMonitorJSONAttachPCIDiskController(qemuMonitorPtr mon,
+                                            const char *bus,
+diff --git a/src/qemu/qemu_monitor_text.c b/src/qemu/qemu_monitor_text.c
+index fc54a11..634f9f3 100644
+--- a/src/qemu/qemu_monitor_text.c
++++ b/src/qemu/qemu_monitor_text.c
+@@ -2172,8 +2172,8 @@ int qemuMonitorTextRemoveNetdev(qemuMonitorPtr mon,
+  * '/dev/pty/7'. The hash will contain only a single value.
+  */
+ 
+-int qemuMonitorTextGetPtyPaths(qemuMonitorPtr mon,
+-                               virHashTablePtr paths)
++int qemuMonitorTextGetChardevInfo(qemuMonitorPtr mon,
++                                  virHashTablePtr info)
+ {
+     char *reply = NULL;
+     int ret = -1;
+@@ -2224,7 +2224,7 @@ int qemuMonitorTextGetPtyPaths(qemuMonitorPtr mon,
+         if (VIR_STRDUP(path, needle + strlen(NEEDLE)) < 0)
+             goto cleanup;
+ 
+-        if (virHashAddEntry(paths, id, path) < 0) {
++        if (virHashAddEntry(info, id, path) < 0) {
+             virReportError(VIR_ERR_OPERATION_FAILED,
+                            _("failed to save chardev path '%s'"),
+                            path);
+diff --git a/src/qemu/qemu_monitor_text.h b/src/qemu/qemu_monitor_text.h
+index 49d4b88..f118a30 100644
+--- a/src/qemu/qemu_monitor_text.h
++++ b/src/qemu/qemu_monitor_text.h
+@@ -179,8 +179,8 @@ int qemuMonitorTextAddNetdev(qemuMonitorPtr mon,
+ int qemuMonitorTextRemoveNetdev(qemuMonitorPtr mon,
+                                 const char *alias);
+ 
+-int qemuMonitorTextGetPtyPaths(qemuMonitorPtr mon,
+-                               virHashTablePtr paths);
++int qemuMonitorTextGetChardevInfo(qemuMonitorPtr mon,
++                                  virHashTablePtr info);
+ 
+ int qemuMonitorTextAttachPCIDiskController(qemuMonitorPtr mon,
+                                            const char *bus,
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index fa8b7f8..b7b2d80 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -1865,7 +1865,7 @@ qemuProcessLookupPTYs(virDomainDefPtr def,
+                       virQEMUCapsPtr qemuCaps,
+                       virDomainChrDefPtr *devices,
+                       int count,
+-                      virHashTablePtr paths)
++                      virHashTablePtr info)
+ {
+     size_t i;
+ 
+@@ -1882,7 +1882,7 @@ qemuProcessLookupPTYs(virDomainDefPtr def,
+                          chr->info.alias) >= sizeof(id))
+                 return -1;
+ 
+-            path = (const char *) virHashLookup(paths, id);
++            path = (const char *) virHashLookup(info, id);
+             if (path == NULL) {
+                 if (chr->source.data.file.path == NULL) {
+                     /* neither the log output nor 'info chardev' had a
+@@ -1911,23 +1911,23 @@ qemuProcessLookupPTYs(virDomainDefPtr def,
+ static int
+ qemuProcessFindCharDevicePTYsMonitor(virDomainObjPtr vm,
+                                      virQEMUCapsPtr qemuCaps,
+-                                     virHashTablePtr paths)
++                                     virHashTablePtr info)
+ {
+     size_t i = 0;
+ 
+     if (qemuProcessLookupPTYs(vm->def, qemuCaps,
+                               vm->def->serials, vm->def->nserials,
+-                              paths) < 0)
++                              info) < 0)
+         return -1;
+ 
+     if (qemuProcessLookupPTYs(vm->def, qemuCaps,
+                               vm->def->parallels, vm->def->nparallels,
+-                              paths) < 0)
++                              info) < 0)
+         return -1;
+ 
+     if (qemuProcessLookupPTYs(vm->def, qemuCaps,
+                               vm->def->channels, vm->def->nchannels,
+-                              paths) < 0)
++                              info) < 0)
+         return -1;
+     /* For historical reasons, console[0] can be just an alias
+      * for serial[0]. That's why we need to update it as well. */
+@@ -1947,7 +1947,7 @@ qemuProcessFindCharDevicePTYsMonitor(virDomainObjPtr vm,
+ 
+     if (qemuProcessLookupPTYs(vm->def, qemuCaps,
+                               vm->def->consoles + i, vm->def->nconsoles - i,
+-                              paths) < 0)
++                              info) < 0)
+         return -1;
+ 
+     return 0;
+@@ -2031,7 +2031,7 @@ qemuProcessWaitForMonitor(virQEMUDriverPtr driver,
+     size_t buf_size = 4096; /* Plenty of space to get startup greeting */
+     int logfd = -1;
+     int ret = -1;
+-    virHashTablePtr paths = NULL;
++    virHashTablePtr info = NULL;
+     qemuDomainObjPrivatePtr priv;
+ 
+     if (pos != -1 &&
+@@ -2056,22 +2056,18 @@ qemuProcessWaitForMonitor(virQEMUDriverPtr driver,
+      * reliable if it's available.
+      * Note that the monitor itself can be on a pty, so we still need to try the
+      * log output method. */
+-    paths = virHashCreate(0, virHashValueFree);
+-    if (paths == NULL)
+-        goto cleanup;
+-
+     priv = vm->privateData;
+     if (qemuDomainObjEnterMonitorAsync(driver, vm, asyncJob) < 0)
+         goto cleanup;
+-    ret = qemuMonitorGetPtyPaths(priv->mon, paths);
++    ret = qemuMonitorGetChardevInfo(priv->mon, &info);
+     qemuDomainObjExitMonitor(driver, vm);
+ 
+-    VIR_DEBUG("qemuMonitorGetPtyPaths returned %i", ret);
++    VIR_DEBUG("qemuMonitorGetChardevInfo returned %i", ret);
+     if (ret == 0)
+-        ret = qemuProcessFindCharDevicePTYsMonitor(vm, qemuCaps, paths);
++        ret = qemuProcessFindCharDevicePTYsMonitor(vm, qemuCaps, info);
+ 
+  cleanup:
+-    virHashFree(paths);
++    virHashFree(info);
+ 
+     if (pos != -1 && kill(vm->pid, 0) == -1 && errno == ESRCH) {
+         int len;
+diff --git a/tests/qemumonitorjsontest.c b/tests/qemumonitorjsontest.c
+index f7b7ea5..afa2561 100644
+--- a/tests/qemumonitorjsontest.c
++++ b/tests/qemumonitorjsontest.c
+@@ -1765,24 +1765,24 @@ testHashEqualString(const void *value1, const void *value2)
+ }
+ 
+ static int
+-testQemuMonitorJSONqemuMonitorJSONGetPtyPaths(const void *data)
++testQemuMonitorJSONqemuMonitorJSONGetChardevInfo(const void *data)
+ {
+     virDomainXMLOptionPtr xmlopt = (virDomainXMLOptionPtr)data;
+     qemuMonitorTestPtr test = qemuMonitorTestNewSimple(true, xmlopt);
+     int ret = -1;
+-    virHashTablePtr paths = NULL, expectedPaths = NULL;
++    virHashTablePtr info = NULL, expectedInfo = NULL;
+ 
+     if (!test)
+         return -1;
+ 
+-    if (!(paths = virHashCreate(32, (virHashDataFree) free)) ||
+-        !(expectedPaths = virHashCreate(32, NULL)))
++    if (!(info = virHashCreate(32, (virHashDataFree) free)) ||
++        !(expectedInfo = virHashCreate(32, NULL)))
+         goto cleanup;
+ 
+-    if (virHashAddEntry(expectedPaths, "charserial1", (void *) "/dev/pts/21") < 0 ||
+-        virHashAddEntry(expectedPaths, "charserial0", (void *) "/dev/pts/20") < 0) {
++    if (virHashAddEntry(expectedInfo, "charserial1", (void *) "/dev/pts/21") < 0 ||
++        virHashAddEntry(expectedInfo, "charserial0", (void *) "/dev/pts/20") < 0) {
+         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+-                       "Unable to create expectedPaths hash table");
++                       "Unable to create expectedInfo hash table");
+         goto cleanup;
+     }
+ 
+@@ -1806,11 +1806,11 @@ testQemuMonitorJSONqemuMonitorJSONGetPtyPaths(const void *data)
+                                "}") < 0)
+         goto cleanup;
+ 
+-    if (qemuMonitorJSONGetPtyPaths(qemuMonitorTestGetMonitor(test),
+-                                   paths) < 0)
++    if (qemuMonitorJSONGetChardevInfo(qemuMonitorTestGetMonitor(test),
++                                      info) < 0)
+         goto cleanup;
+ 
+-    if (!virHashEqual(paths, expectedPaths, testHashEqualString)) {
++    if (!virHashEqual(info, expectedInfo, testHashEqualString)) {
+         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                        "Hashtable is different to the expected one");
+         goto cleanup;
+@@ -1818,8 +1818,8 @@ testQemuMonitorJSONqemuMonitorJSONGetPtyPaths(const void *data)
+ 
+     ret = 0;
+  cleanup:
+-    virHashFree(paths);
+-    virHashFree(expectedPaths);
++    virHashFree(info);
++    virHashFree(expectedInfo);
+     qemuMonitorTestFree(test);
+     return ret;
+ }
+@@ -2387,7 +2387,7 @@ mymain(void)
+     DO_TEST(qemuMonitorJSONGetMigrationCacheSize);
+     DO_TEST(qemuMonitorJSONGetMigrationStatus);
+     DO_TEST(qemuMonitorJSONGetSpiceMigrationStatus);
+-    DO_TEST(qemuMonitorJSONGetPtyPaths);
++    DO_TEST(qemuMonitorJSONGetChardevInfo);
+     DO_TEST(qemuMonitorJSONSetBlockIoThrottle);
+     DO_TEST(qemuMonitorJSONGetTargetArch);
+     DO_TEST(qemuMonitorJSONGetMigrationCapability);
+-- 
+2.1.3
+

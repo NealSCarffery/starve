@@ -1,0 +1,83 @@
+From 9f8e2e68bb6cebe92dbf7258553b46007a544e0a Mon Sep 17 00:00:00 2001
+Message-Id: <9f8e2e68bb6cebe92dbf7258553b46007a544e0a@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Tue, 30 Sep 2014 11:04:26 +0200
+Subject: [PATCH] Don't verify CPU features with host-passthrough
+
+Commit fba6bc4 introduced the non-migratable invtsc feature,
+breaking save/migration with host-model and host-passthrough.
+
+On hosts with this feature present it was automatically included
+in the CPU definition, regardless of QEMU support.
+
+Commit de0aeaf stopped including it by default for host-model,
+but failed to fix host-passthrough.
+
+This commit ignores checking of CPU features with host-passthrough,
+since we don't pass them to QEMU (only -cpu host is passed),
+allowing domains using host-passthrough that were saved with
+the broken version of libvirtd to be restored.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1147584
+(cherry picked from commit ec5f817f2e108ef2164bd4cefd9ad37319cc7518)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_migration.c | 22 ++++++++++++----------
+ src/qemu/qemu_process.c   |  5 +++++
+ 2 files changed, 17 insertions(+), 10 deletions(-)
+
+diff --git a/src/qemu/qemu_migration.c b/src/qemu/qemu_migration.c
+index 1db9108..2b922fe 100644
+--- a/src/qemu/qemu_migration.c
++++ b/src/qemu/qemu_migration.c
+@@ -1714,18 +1714,20 @@ qemuMigrationIsAllowed(virQEMUDriverPtr driver, virDomainObjPtr vm,
+         return false;
+     }
+ 
+-    for (i = 0; def->cpu && i < def->cpu->nfeatures; i++) {
+-        virCPUFeatureDefPtr feature = &def->cpu->features[i];
++    if (def->cpu && def->cpu->mode != VIR_CPU_MODE_HOST_PASSTHROUGH) {
++        for (i = 0; i < def->cpu->nfeatures; i++) {
++            virCPUFeatureDefPtr feature = &def->cpu->features[i];
+ 
+-        if (feature->policy != VIR_CPU_FEATURE_REQUIRE)
+-            continue;
++            if (feature->policy != VIR_CPU_FEATURE_REQUIRE)
++                continue;
+ 
+-        /* QEMU blocks migration and save with invariant TSC enabled */
+-        if (STREQ(feature->name, "invtsc")) {
+-            virReportError(VIR_ERR_OPERATION_INVALID,
+-                           _("domain has CPU feature: %s"),
+-                           feature->name);
+-            return false;
++            /* QEMU blocks migration and save with invariant TSC enabled */
++            if (STREQ(feature->name, "invtsc")) {
++                virReportError(VIR_ERR_OPERATION_INVALID,
++                               _("domain has CPU feature: %s"),
++                               feature->name);
++                return false;
++            }
+         }
+     }
+ 
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index d675add..6565956 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -3785,6 +3785,11 @@ qemuProcessVerifyGuestCPU(virQEMUDriverPtr driver,
+     bool ret = false;
+     size_t i;
+ 
++    /* no features are passed to QEMU with -cpu host
++     * so it makes no sense to verify them */
++    if (def->cpu && def->cpu->mode == VIR_CPU_MODE_HOST_PASSTHROUGH)
++        return true;
++
+     switch (arch) {
+     case VIR_ARCH_I686:
+     case VIR_ARCH_X86_64:
+-- 
+2.1.2
+

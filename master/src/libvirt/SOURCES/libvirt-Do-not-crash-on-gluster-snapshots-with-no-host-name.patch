@@ -1,0 +1,42 @@
+From 169d41cce1b6d10bda18462a237d35a24c501c31 Mon Sep 17 00:00:00 2001
+Message-Id: <169d41cce1b6d10bda18462a237d35a24c501c31@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Wed, 12 Nov 2014 09:48:08 +0100
+Subject: [PATCH] Do not crash on gluster snapshots with no host name
+
+virStorageFileBackendGlusterInit did not check nhosts.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1162974
+(cherry picked from commit b66288faaba68e22a2876029872ddadf1794bda8)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/storage/storage_backend_gluster.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/src/storage/storage_backend_gluster.c b/src/storage/storage_backend_gluster.c
+index 8a7d7e5..b79b634 100644
+--- a/src/storage/storage_backend_gluster.c
++++ b/src/storage/storage_backend_gluster.c
+@@ -571,9 +571,17 @@ virStorageFileBackendGlusterInit(virStorageSourcePtr src)
+ {
+     virStorageFileBackendGlusterPrivPtr priv = NULL;
+     virStorageNetHostDefPtr host = &(src->hosts[0]);
+-    const char *hostname = host->name;
++    const char *hostname;
+     int port = 0;
+ 
++    if (src->nhosts != 1) {
++        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                       _("Expected exactly 1 host for the gluster volume"));
++        return -1;
++    }
++
++    hostname = host->name;
++
+     VIR_DEBUG("initializing gluster storage file %p (gluster://%s:%s/%s%s)",
+               src, hostname, host->port ? host->port : "0",
+               NULLSTR(src->volume), src->path);
+-- 
+2.1.3
+

@@ -1,0 +1,159 @@
+From 3640c2a3c884829af460409e428fc3a439b2fdf2 Mon Sep 17 00:00:00 2001
+Message-Id: <3640c2a3c884829af460409e428fc3a439b2fdf2@dist-git>
+From: Martin Kletzander <mkletzan@redhat.com>
+Date: Tue, 4 Nov 2014 11:04:26 +0100
+Subject: [PATCH] qemu: make advice from numad available when building
+ commandline
+
+Particularly in qemuBuildNumaArgStr(), there was a need for the advice
+due to memory backing, which needs to know the nodeset it will be pinned
+to.  With newer qemu this caused the following error when starting
+domain:
+
+  error: internal error: Advice from numad is needed in case of
+  automatic numa placement
+
+even when starting perfectly valid domain, e.g.:
+
+  ...
+  <vcpu placement='auto'>4</vcpu>
+  <numatune>
+    <memory mode='strict' placement='auto'/>
+  </numatune>
+  <cpu>
+    <numa>
+      <cell id='0' cpus='0' memory='524288'/>
+      <cell id='1' cpus='1' memory='524288'/>
+    </numa>
+  </cpu>
+  ...
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1138545
+
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+(cherry picked from commit 11a48758a7d6c946062c130b6186ae3eadd58e39)
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_command.c  | 10 ++++++----
+ src/qemu/qemu_command.h  |  3 ++-
+ src/qemu/qemu_driver.c   |  3 ++-
+ src/qemu/qemu_process.c  |  3 ++-
+ tests/qemuxml2argvtest.c |  3 ++-
+ tests/qemuxmlnstest.c    |  2 +-
+ 6 files changed, 15 insertions(+), 9 deletions(-)
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index e4962ee..6c4a8b5 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -6605,7 +6605,8 @@ static int
+ qemuBuildNumaArgStr(virQEMUDriverConfigPtr cfg,
+                     const virDomainDef *def,
+                     virCommandPtr cmd,
+-                    virQEMUCapsPtr qemuCaps)
++                    virQEMUCapsPtr qemuCaps,
++                    virBitmapPtr nodeset)
+ {
+     size_t i, j;
+     virBuffer buf = VIR_BUFFER_INITIALIZER;
+@@ -6765,7 +6766,7 @@ qemuBuildNumaArgStr(virQEMUDriverConfigPtr cfg,
+ 
+             virBufferAsprintf(&buf, ",size=%dM,id=ram-node%zu", cellmem, i);
+ 
+-            if (virDomainNumatuneMaybeFormatNodeset(def->numatune, NULL,
++            if (virDomainNumatuneMaybeFormatNodeset(def->numatune, nodeset,
+                                                     &nodemask, i) < 0)
+                 goto cleanup;
+ 
+@@ -7733,7 +7734,8 @@ qemuBuildCommandLine(virConnectPtr conn,
+                      virNetDevVPortProfileOp vmop,
+                      qemuBuildCommandLineCallbacksPtr callbacks,
+                      bool standalone,
+-                     bool enableFips)
++                     bool enableFips,
++                     virBitmapPtr nodeset)
+ {
+     virErrorPtr originalError = NULL;
+     size_t i, j;
+@@ -7950,7 +7952,7 @@ qemuBuildCommandLine(virConnectPtr conn,
+     }
+ 
+     if (def->cpu && def->cpu->ncells)
+-        if (qemuBuildNumaArgStr(cfg, def, cmd, qemuCaps) < 0)
++        if (qemuBuildNumaArgStr(cfg, def, cmd, qemuCaps, nodeset) < 0)
+             goto error;
+ 
+     if (virQEMUCapsGet(qemuCaps, QEMU_CAPS_UUID))
+diff --git a/src/qemu/qemu_command.h b/src/qemu/qemu_command.h
+index aa40c9e..f7d3c2d 100644
+--- a/src/qemu/qemu_command.h
++++ b/src/qemu/qemu_command.h
+@@ -79,7 +79,8 @@ virCommandPtr qemuBuildCommandLine(virConnectPtr conn,
+                                    virNetDevVPortProfileOp vmop,
+                                    qemuBuildCommandLineCallbacksPtr callbacks,
+                                    bool forXMLToArgv,
+-                                   bool enableFips)
++                                   bool enableFips,
++                                   virBitmapPtr nodeset)
+     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(11);
+ 
+ /* Generate '-device' string for chardev device */
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 0f68abc..d419689 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -6473,7 +6473,8 @@ static char *qemuConnectDomainXMLToNative(virConnectPtr conn,
+                                      VIR_NETDEV_VPORT_PROFILE_OP_NO_OP,
+                                      &buildCommandLineCallbacks,
+                                      true,
+-                                     qemuCheckFips())))
++                                     qemuCheckFips(),
++                                     NULL)))
+         goto cleanup;
+ 
+     ret = virCommandToString(cmd);
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index 7101311..ed095a2 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -4360,7 +4360,8 @@ int qemuProcessStart(virConnectPtr conn,
+                                      priv->monJSON, priv->qemuCaps,
+                                      migrateFrom, stdin_fd, snapshot, vmop,
+                                      &buildCommandLineCallbacks, false,
+-                                     qemuCheckFips())))
++                                     qemuCheckFips(),
++                                     nodemask)))
+         goto cleanup;
+ 
+     /* now that we know it is about to start call the hook if present */
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index dafe683..3efe3c9 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -362,7 +362,8 @@ static int testCompareXMLToArgvFiles(const char *xml,
+                                      migrateFrom, migrateFd, NULL,
+                                      VIR_NETDEV_VPORT_PROFILE_OP_NO_OP,
+                                      &testCallbacks, false,
+-                                     (flags & FLAG_FIPS)))) {
++                                     (flags & FLAG_FIPS),
++                                     NULL))) {
+         if (!virtTestOOMActive() &&
+             (flags & FLAG_EXPECT_FAILURE)) {
+             ret = 0;
+diff --git a/tests/qemuxmlnstest.c b/tests/qemuxmlnstest.c
+index b3a608c..2f37a26 100644
+--- a/tests/qemuxmlnstest.c
++++ b/tests/qemuxmlnstest.c
+@@ -119,7 +119,7 @@ static int testCompareXMLToArgvFiles(const char *xml,
+                                      vmdef, &monitor_chr, json, extraFlags,
+                                      migrateFrom, migrateFd, NULL,
+                                      VIR_NETDEV_VPORT_PROFILE_OP_NO_OP,
+-                                     &testCallbacks, false, false)))
++                                     &testCallbacks, false, false, NULL)))
+         goto fail;
+ 
+     if (!virtTestOOMActive()) {
+-- 
+2.1.3
+

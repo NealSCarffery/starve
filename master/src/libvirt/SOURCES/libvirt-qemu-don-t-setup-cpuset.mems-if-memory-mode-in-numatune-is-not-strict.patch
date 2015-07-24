@@ -1,0 +1,44 @@
+From 957c2c3adaee341fdd33e4eff598a215d0034b2f Mon Sep 17 00:00:00 2001
+Message-Id: <957c2c3adaee341fdd33e4eff598a215d0034b2f@dist-git>
+From: Wang Rui <moon.wangrui@huawei.com>
+Date: Tue, 27 Jan 2015 11:40:08 +0100
+Subject: [PATCH] qemu: don't setup cpuset.mems if memory mode in numatune is
+ not 'strict'
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1186094
+
+If the memory mode in numatune is specified as 'preferred' with one node
+(such as nodeset='0'), domain's memory is not all in node 0 absolutely.
+Assumption that node 0 doesn't have enough memory, memory can be allocated
+on node 1 when qemu process startup. Then if we set cpuset.mems to '0',
+it may invoke OOM.
+
+Commit 1a7be8c600905aa07ac2d78293336ba8523ad48e changed the former logic of
+checking memory mode in virDomainNumatuneGetNodeset. This patch adds the
+check as before.
+
+Signed-off-by: Wang Rui <moon.wangrui@huawei.com>
+(cherry picked from commit 38a0f6df6473edb62e9ce25df5a0a81e8ac81d77)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_cgroup.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/qemu/qemu_cgroup.c b/src/qemu/qemu_cgroup.c
+index 8824426..af5b59e 100644
+--- a/src/qemu/qemu_cgroup.c
++++ b/src/qemu/qemu_cgroup.c
+@@ -619,6 +619,10 @@ qemuSetupCpusetMems(virDomainObjPtr vm)
+     if (!virCgroupHasController(priv->cgroup, VIR_CGROUP_CONTROLLER_CPUSET))
+         return 0;
+ 
++    if (virDomainNumatuneGetMode(vm->def->numatune, -1) !=
++        VIR_DOMAIN_NUMATUNE_MEM_STRICT)
++        return 0;
++
+     if (virDomainNumatuneMaybeFormatNodeset(vm->def->numatune,
+                                             priv->autoNodeset,
+                                             &mem_mask, -1) < 0)
+-- 
+2.2.2
+

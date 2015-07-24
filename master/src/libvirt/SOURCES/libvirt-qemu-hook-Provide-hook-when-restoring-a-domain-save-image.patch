@@ -1,0 +1,212 @@
+From daa6ee36e4fc3e17119231f110b4de770ffd2b6c Mon Sep 17 00:00:00 2001
+Message-Id: <daa6ee36e4fc3e17119231f110b4de770ffd2b6c@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Mon, 22 Sep 2014 17:52:40 +0200
+Subject: [PATCH] qemu: hook: Provide hook when restoring a domain save image
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1142693
+
+(cherry picked from commit 4f3c2e39e5c898c533ddf58b62b452a674df794d)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ docs/hooks.html.in     | 11 ++++++++
+ src/qemu/qemu_driver.c | 70 +++++++++++++++++++++++++++++++++++++++++++++-----
+ src/util/virhook.c     |  3 ++-
+ src/util/virhook.h     |  1 +
+ 4 files changed, 78 insertions(+), 7 deletions(-)
+
+diff --git a/docs/hooks.html.in b/docs/hooks.html.in
+index 07b9d49..1aae00c 100644
+--- a/docs/hooks.html.in
++++ b/docs/hooks.html.in
+@@ -177,6 +177,17 @@
+         script returns failure or the output XML is not valid, incoming
+         migration will be canceled. This hook may be used, e.g., to change
+         location of disk images for incoming domains.</li>
++      <li><span class="since">Since 1.2.9</span>, the qemu hook script is
++        also called when restoring a saved image either via the API or
++        automatically when restoring a managed save machine. It is called
++        as: <pre>/etc/libvirt/hooks/qemu guest_name restore begin -</pre>
++        with domain XML sent to standard input of the script. In this case,
++        the script acts as a filter and is supposed to modify the domain
++        XML and print it out on its standard output. Empty output is
++        identical to copying the input XML without changing it. In case the
++        script returns failure or the output XML is not valid, restore of the
++        image will be aborted. This hook may be used, e.g., to change
++        location of disk images for restored domains.</li>
+       <li><span class="since">Since 0.9.13</span>, the qemu hook script
+         is also called when the libvirtd daemon restarts and reconnects
+         to previously running QEMU processes. If the script fails, the
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 580ac17..8f655e5 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -5643,20 +5643,24 @@ qemuDomainRestoreFlags(virConnectPtr conn,
+                        unsigned int flags)
+ {
+     virQEMUDriverPtr driver = conn->privateData;
++    qemuDomainObjPrivatePtr priv = NULL;
+     virDomainDefPtr def = NULL;
+-    virDomainDefPtr newdef = NULL;
+     virDomainObjPtr vm = NULL;
++    char *xml = NULL;
++    char *xmlout = NULL;
++    const char *newxml = dxml;
+     int fd = -1;
+     int ret = -1;
+     virQEMUSaveHeader header;
+     virFileWrapperFdPtr wrapperFd = NULL;
++    bool hook_taint = false;
+ 
+     virCheckFlags(VIR_DOMAIN_SAVE_BYPASS_CACHE |
+                   VIR_DOMAIN_SAVE_RUNNING |
+                   VIR_DOMAIN_SAVE_PAUSED, -1);
+ 
+ 
+-    fd = qemuDomainSaveImageOpen(driver, path, &def, &header, NULL,
++    fd = qemuDomainSaveImageOpen(driver, path, &def, &header, &xml,
+                                  (flags & VIR_DOMAIN_SAVE_BYPASS_CACHE) != 0,
+                                  &wrapperFd, false, false);
+     if (fd < 0)
+@@ -5665,12 +5669,31 @@ qemuDomainRestoreFlags(virConnectPtr conn,
+     if (virDomainRestoreFlagsEnsureACL(conn, def) < 0)
+         goto cleanup;
+ 
+-    if (dxml) {
+-        if (!(newdef = qemuDomainSaveImageUpdateDef(driver, def, dxml)))
++    if (virHookPresent(VIR_HOOK_DRIVER_QEMU)) {
++        int hookret;
++
++        if ((hookret = virHookCall(VIR_HOOK_DRIVER_QEMU, def->name,
++                                   VIR_HOOK_QEMU_OP_RESTORE,
++                                   VIR_HOOK_SUBOP_BEGIN,
++                                   NULL,
++                                   dxml ? dxml : xml,
++                                   &xmlout)) < 0)
++            goto cleanup;
++
++        if (hookret == 0 && xmlout) {
++            VIR_DEBUG("Using hook-filtered domain XML: %s", xmlout);
++            hook_taint = true;
++            newxml = xmlout;
++        }
++    }
++
++    if (newxml) {
++        virDomainDefPtr tmp;
++        if (!(tmp = qemuDomainSaveImageUpdateDef(driver, def, newxml)))
+             goto cleanup;
+ 
+         virDomainDefFree(def);
+-        def = newdef;
++        def = tmp;
+     }
+ 
+     if (!(vm = virDomainObjListAdd(driver->domains, def,
+@@ -5686,6 +5709,11 @@ qemuDomainRestoreFlags(virConnectPtr conn,
+     else if (flags & VIR_DOMAIN_SAVE_PAUSED)
+         header.was_running = 0;
+ 
++    if (hook_taint) {
++        priv = vm->privateData;
++        priv->hookRun = true;
++    }
++
+     if (qemuDomainObjBeginJob(driver, vm, QEMU_JOB_MODIFY) < 0)
+         goto cleanup;
+ 
+@@ -5704,6 +5732,8 @@ qemuDomainRestoreFlags(virConnectPtr conn,
+  cleanup:
+     virDomainDefFree(def);
+     VIR_FORCE_CLOSE(fd);
++    VIR_FREE(xml);
++    VIR_FREE(xmlout);
+     virFileWrapperFdFree(wrapperFd);
+     if (vm)
+         virObjectUnlock(vm);
+@@ -5841,12 +5871,15 @@ qemuDomainObjRestore(virConnectPtr conn,
+                      bool bypass_cache)
+ {
+     virDomainDefPtr def = NULL;
++    qemuDomainObjPrivatePtr priv = vm->privateData;
+     int fd = -1;
+     int ret = -1;
++    char *xml = NULL;
++    char *xmlout = NULL;
+     virQEMUSaveHeader header;
+     virFileWrapperFdPtr wrapperFd = NULL;
+ 
+-    fd = qemuDomainSaveImageOpen(driver, path, &def, &header, NULL,
++    fd = qemuDomainSaveImageOpen(driver, path, &def, &header, &xml,
+                                  bypass_cache, &wrapperFd, false, true);
+     if (fd < 0) {
+         if (fd == -3)
+@@ -5854,6 +5887,29 @@ qemuDomainObjRestore(virConnectPtr conn,
+         goto cleanup;
+     }
+ 
++    if (virHookPresent(VIR_HOOK_DRIVER_QEMU)) {
++        int hookret;
++
++        if ((hookret = virHookCall(VIR_HOOK_DRIVER_QEMU, def->name,
++                                   VIR_HOOK_QEMU_OP_RESTORE,
++                                   VIR_HOOK_SUBOP_BEGIN,
++                                   NULL, xml, &xmlout)) < 0)
++            goto cleanup;
++
++        if (hookret == 0 && xmlout) {
++            virDomainDefPtr tmp;
++
++            VIR_DEBUG("Using hook-filtered domain XML: %s", xmlout);
++
++            if (!(tmp = qemuDomainSaveImageUpdateDef(driver, def, xmlout)))
++                goto cleanup;
++
++            virDomainDefFree(def);
++            def = tmp;
++            priv->hookRun = true;
++        }
++    }
++
+     if (STRNEQ(vm->def->name, def->name) ||
+         memcmp(vm->def->uuid, def->uuid, VIR_UUID_BUFLEN)) {
+         char vm_uuidstr[VIR_UUID_STRING_BUFLEN];
+@@ -5877,6 +5933,8 @@ qemuDomainObjRestore(virConnectPtr conn,
+         VIR_WARN("Failed to close %s", path);
+ 
+  cleanup:
++    VIR_FREE(xml);
++    VIR_FREE(xmlout);
+     virDomainDefFree(def);
+     VIR_FORCE_CLOSE(fd);
+     virFileWrapperFdFree(wrapperFd);
+diff --git a/src/util/virhook.c b/src/util/virhook.c
+index ac7b40f..25d0783 100644
+--- a/src/util/virhook.c
++++ b/src/util/virhook.c
+@@ -77,7 +77,8 @@ VIR_ENUM_IMPL(virHookQemuOp, VIR_HOOK_QEMU_OP_LAST,
+               "migrate",
+               "started",
+               "reconnect",
+-              "attach")
++              "attach",
++              "restore")
+ 
+ VIR_ENUM_IMPL(virHookLxcOp, VIR_HOOK_LXC_OP_LAST,
+               "start",
+diff --git a/src/util/virhook.h b/src/util/virhook.h
+index 5bc0a5f..550ef84 100644
+--- a/src/util/virhook.h
++++ b/src/util/virhook.h
+@@ -60,6 +60,7 @@ typedef enum {
+     VIR_HOOK_QEMU_OP_STARTED,          /* domain has started */
+     VIR_HOOK_QEMU_OP_RECONNECT,        /* domain is being reconnected by libvirt */
+     VIR_HOOK_QEMU_OP_ATTACH,           /* domain is being attached to be libvirt */
++    VIR_HOOK_QEMU_OP_RESTORE,          /* domain is being restored */
+ 
+     VIR_HOOK_QEMU_OP_LAST,
+ } virHookQemuOpType;
+-- 
+2.1.1
+

@@ -1,0 +1,62 @@
+From 25c7be693aac6ed11d3a0f16ed19e0244619df74 Mon Sep 17 00:00:00 2001
+Message-Id: <25c7be693aac6ed11d3a0f16ed19e0244619df74@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Wed, 5 Nov 2014 13:21:02 +0100
+Subject: [PATCH] Require at least one console for LXC domain
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A domain without a console quietly dies soon after start,
+because we try to set /dev/null as a controlling TTY
+2014-10-30 15:10:59.705+0000: 1: error : lxcContainerSetupFDs:283 :
+ioctl(TIOCSCTTY) failed: Inappropriate ioctl for device
+
+Report an error early instead of trying to start it.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1155410
+(cherry picked from commit 44686f6523cb30a174c052a242fa15f6a2b364e5)
+Signed-off-by: Ján Tomko <jtomko@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/lxc/lxc_container.c | 6 ++++--
+ src/lxc/lxc_process.c   | 6 ++++++
+ 2 files changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/src/lxc/lxc_container.c b/src/lxc/lxc_container.c
+index 1cf2c8f..f3230fa 100644
+--- a/src/lxc/lxc_container.c
++++ b/src/lxc/lxc_container.c
+@@ -2088,8 +2088,10 @@ static int lxcContainerChild(void *data)
+         if (virAsprintf(&ttyPath, "%s/%s.devpts/%s",
+                         LXC_STATE_DIR, vmDef->name, tty) < 0)
+             goto cleanup;
+-    } else if (VIR_STRDUP(ttyPath, "/dev/null") < 0) {
+-            goto cleanup;
++    } else {
++        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                       _("At least one tty is required"));
++        goto cleanup;
+     }
+ 
+     VIR_DEBUG("Container TTY path: %s", ttyPath);
+diff --git a/src/lxc/lxc_process.c b/src/lxc/lxc_process.c
+index 3353dc1..6420c0d 100644
+--- a/src/lxc/lxc_process.c
++++ b/src/lxc/lxc_process.c
+@@ -1144,6 +1144,12 @@ int virLXCProcessStart(virConnectPtr conn,
+                                       vm->def, NULL) < 0)
+         goto cleanup;
+ 
++    if (vm->def->nconsoles == 0) {
++        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
++                       _("At least one PTY console is required"));
++        goto cleanup;
++    }
++
+     for (i = 0; i < vm->def->nconsoles; i++) {
+         char *ttyPath;
+         if (vm->def->consoles[i]->source.type != VIR_DOMAIN_CHR_TYPE_PTY) {
+-- 
+2.1.3
+

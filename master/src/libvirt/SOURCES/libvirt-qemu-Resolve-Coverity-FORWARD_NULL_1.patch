@@ -1,0 +1,36 @@
+From 6bf8ed4ba21ebc1bb9f2a1619925cf6b1a95db36 Mon Sep 17 00:00:00 2001
+Message-Id: <6bf8ed4ba21ebc1bb9f2a1619925cf6b1a95db36@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Mon, 15 Sep 2014 15:13:51 -0400
+Subject: [PATCH] qemu: Resolve Coverity FORWARD_NULL
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1141209
+
+If the qemuMigrationEatCookie() fails to set mig, we jump to cleanup:
+which will call qemuMigrationCancelDriveMirror() without first checking
+if mig == NULL
+
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+(cherry picked from commit e5baef83e131c75bda00bed59b7b2494675b4451)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_migration.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/qemu/qemu_migration.c b/src/qemu/qemu_migration.c
+index 3934566..858794d 100644
+--- a/src/qemu/qemu_migration.c
++++ b/src/qemu/qemu_migration.c
+@@ -3614,7 +3614,8 @@ qemuMigrationRun(virQEMUDriverPtr driver,
+         orig_err = virSaveLastError();
+ 
+     /* cancel any outstanding NBD jobs */
+-    qemuMigrationCancelDriveMirror(mig, driver, vm);
++    if (mig)
++        qemuMigrationCancelDriveMirror(mig, driver, vm);
+ 
+     if (spec->fwdType != MIGRATION_FWD_DIRECT) {
+         if (iothread && qemuMigrationStopTunnel(iothread, ret < 0) < 0)
+-- 
+2.1.0
+

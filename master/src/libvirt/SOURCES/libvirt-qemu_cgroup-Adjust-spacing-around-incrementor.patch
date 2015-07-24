@@ -1,0 +1,64 @@
+From d9be878c70729eec8350e3fcc0c79ef034e1a3a5 Mon Sep 17 00:00:00 2001
+Message-Id: <d9be878c70729eec8350e3fcc0c79ef034e1a3a5@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Thu, 18 Sep 2014 09:29:59 -0400
+Subject: [PATCH] qemu_cgroup: Adjust spacing around incrementor
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1101574
+
+Change "i+1" to "i + 1"
+
+(cherry picked from commit 500c91c57dafc7c4405e993bbb5261bb4ad43530)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_cgroup.c  | 7 ++++---
+ src/qemu/qemu_process.c | 2 +-
+ 2 files changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/src/qemu/qemu_cgroup.c b/src/qemu/qemu_cgroup.c
+index c1d89bb..9d39370 100644
+--- a/src/qemu/qemu_cgroup.c
++++ b/src/qemu/qemu_cgroup.c
+@@ -1140,7 +1140,8 @@ qemuSetupCgroupForIOThreads(virDomainObjPtr vm)
+         /* IOThreads are numbered 1..n, although the array is 0..n-1,
+          * so we will account for that here
+          */
+-        if (virCgroupNewIOThread(priv->cgroup, i+1, true, &cgroup_iothread) < 0)
++        if (virCgroupNewIOThread(priv->cgroup, i + 1, true,
++                                 &cgroup_iothread) < 0)
+             goto cleanup;
+ 
+         /* move the thread for iothread to sub dir */
+@@ -1159,13 +1160,13 @@ qemuSetupCgroupForIOThreads(virDomainObjPtr vm)
+              * qemuSetupCgroupIOThreadsPin will fail. */
+             for (j = 0; j < def->cputune.niothreadspin; j++) {
+                 /* IOThreads are numbered/named 1..n */
+-                if (def->cputune.iothreadspin[j]->vcpuid != i+1)
++                if (def->cputune.iothreadspin[j]->vcpuid != i + 1)
+                     continue;
+ 
+                 if (qemuSetupCgroupIOThreadsPin(cgroup_iothread,
+                                                 def->cputune.iothreadspin,
+                                                 def->cputune.niothreadspin,
+-                                                i+1) < 0)
++                                                i + 1) < 0)
+                     goto cleanup;
+ 
+                 break;
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index 274fc1b..a2304dc 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -2357,7 +2357,7 @@ qemuProcessSetIOThreadsAffinity(virDomainObjPtr vm)
+         /* set affinity only for existing vcpus */
+         if (!(pininfo = virDomainVcpuPinFindByVcpu(def->cputune.iothreadspin,
+                                                    def->cputune.niothreadspin,
+-                                                   i+1)))
++                                                   i + 1)))
+             continue;
+ 
+         if (virProcessSetAffinity(priv->iothreadpids[i], pininfo->cpumask) < 0)
+-- 
+2.1.0
+

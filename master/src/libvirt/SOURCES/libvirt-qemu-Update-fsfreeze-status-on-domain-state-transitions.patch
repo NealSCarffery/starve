@@ -1,0 +1,94 @@
+From 8e7c6d9bb776c793c352d94952079e96aedf9599 Mon Sep 17 00:00:00 2001
+Message-Id: <8e7c6d9bb776c793c352d94952079e96aedf9599@dist-git>
+From: Michal Privoznik <mprivozn@redhat.com>
+Date: Tue, 18 Nov 2014 13:33:38 +0100
+Subject: [PATCH] qemu: Update fsfreeze status on domain state transitions
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1160084
+
+As of b6d4dad1 (1.2.5) libvirt keeps track if domain disks have been
+frozen. However, this falls into that set of information which don't
+survive domain restart. Therefore, we need to clear the flag upon some
+state transitions. Moreover, once we clear the flag we must update the
+status file too.
+
+Signed-off-by: Michal Privoznik <mprivozn@redhat.com>
+(cherry picked from commit 6ea54769ba1816b382698c4311588d7d1a9cd095)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c  | 10 +++++-----
+ src/qemu/qemu_process.c | 10 ++++++++++
+ 2 files changed, 15 insertions(+), 5 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 6ed830c..ea45d89 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -4041,11 +4041,6 @@ processGuestPanicEvent(virQEMUDriverPtr driver,
+         VIR_WARN("Unable to release lease on %s", vm->def->name);
+     VIR_DEBUG("Preserving lock state '%s'", NULLSTR(priv->lockState));
+ 
+-    if (virDomainSaveStatus(driver->xmlopt, cfg->stateDir, vm) < 0) {
+-        VIR_WARN("Unable to save status on vm %s after state change",
+-                 vm->def->name);
+-     }
+-
+     switch (action) {
+     case VIR_DOMAIN_LIFECYCLE_CRASH_COREDUMP_DESTROY:
+         if (doCoreDumpToAutoDumpPath(driver, vm, VIR_DUMP_MEMORY_ONLY) < 0) {
+@@ -4103,6 +4098,11 @@ processGuestPanicEvent(virQEMUDriverPtr driver,
+     }
+ 
+  cleanup:
++    if (virDomainSaveStatus(driver->xmlopt, cfg->stateDir, vm) < 0) {
++        VIR_WARN("Unable to save status on vm %s after state change",
++                 vm->def->name);
++     }
++
+     virObjectUnref(cfg);
+ }
+ 
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index 9c640f0..3eb1036 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -529,6 +529,7 @@ qemuProcessHandleReset(qemuMonitorPtr mon ATTRIBUTE_UNUSED,
+     virQEMUDriverPtr driver = opaque;
+     virObjectEventPtr event;
+     qemuDomainObjPrivatePtr priv;
++    virQEMUDriverConfigPtr cfg = virQEMUDriverGetConfig(driver);
+ 
+     virObjectLock(vm);
+ 
+@@ -536,12 +537,20 @@ qemuProcessHandleReset(qemuMonitorPtr mon ATTRIBUTE_UNUSED,
+     priv = vm->privateData;
+     if (priv->agent)
+         qemuAgentNotifyEvent(priv->agent, QEMU_AGENT_EVENT_RESET);
++    /* Clear some domain runtime information. For instance,
++     * fsfreeze won't survive domain reset. This, however,
++     * required the domain status file to be rewritten onto disk. */
++    priv->quiesced = false;
++
++    if (virDomainSaveStatus(driver->xmlopt, cfg->stateDir, vm) < 0)
++        VIR_WARN("Failed to save status on vm %s", vm->def->name);
+ 
+     virObjectUnlock(vm);
+ 
+     if (event)
+         qemuDomainEventQueue(driver, event);
+ 
++    virObjectUnref(cfg);
+     return 0;
+ }
+ 
+@@ -4844,6 +4853,7 @@ void qemuProcessStop(virQEMUDriverPtr driver,
+ 
+     virPortAllocatorRelease(driver->migrationPorts, priv->nbdPort);
+     priv->nbdPort = 0;
++    priv->quiesced = false;
+ 
+     if (priv->agent) {
+         qemuAgentClose(priv->agent);
+-- 
+2.1.3
+

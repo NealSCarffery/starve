@@ -1,0 +1,498 @@
+From 18fd00f5fdad7b2a65e94a0013901a2f8c1c6cde Mon Sep 17 00:00:00 2001
+Message-Id: <18fd00f5fdad7b2a65e94a0013901a2f8c1c6cde@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Wed, 24 Sep 2014 16:55:44 +0200
+Subject: [PATCH] conf: add options for disabling segment offloading
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1139364
+
+Add options for tuning segment offloading:
+<driver>
+  <host csum='off' gso='off' tso4='off' tso6='off'
+        ecn='off' ufo='off'/>
+  <guest csum='off' tso4='off' tso6='off' ecn='off' ufo='off'/>
+</driver>
+which control the respective host_ and guest_ properties
+of the virtio-net device.
+
+(cherry picked from commit 5b3536ae90a27e6c83ad222e286f08856037c195)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ docs/formatdomain.html.in                          |  24 ++-
+ docs/schemas/domaincommon.rng                      |  66 ++++++-
+ src/conf/domain_conf.c                             | 218 ++++++++++++++++++++-
+ src/conf/domain_conf.h                             |  15 ++
+ .../qemuxml2argv-net-virtio-disable-offloads.xml   |  35 ++++
+ tests/qemuxml2xmltest.c                            |   1 +
+ 6 files changed, 351 insertions(+), 8 deletions(-)
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-net-virtio-disable-offloads.xml
+
+diff --git a/docs/formatdomain.html.in b/docs/formatdomain.html.in
+index 8c03ebb..830bfa2 100644
+--- a/docs/formatdomain.html.in
++++ b/docs/formatdomain.html.in
+@@ -3868,7 +3868,11 @@ qemu-kvm -net nic,model=? /dev/null
+       &lt;source network='default'/&gt;
+       &lt;target dev='vnet1'/&gt;
+       &lt;model type='virtio'/&gt;
+-      <b>&lt;driver name='vhost' txmode='iothread' ioeventfd='on' event_idx='off' queues='5'/&gt;</b>
++      <b>&lt;driver name='vhost' txmode='iothread' ioeventfd='on' event_idx='off' queues='5'&gt;
++        &lt;host csum='off' gso='off' tso4='off' tso6='off' ecn='off' ufo='off'/&gt;
++        &lt;guest csum='off' tso4='off' tso6='off' ecn='off' ufo='off'/&gt;
++      &lt;/driver&gt;
++      </b>
+     &lt;/interface&gt;
+   &lt;/devices&gt;
+   ...</pre>
+@@ -3972,6 +3976,24 @@ qemu-kvm -net nic,model=? /dev/null
+         processor, resulting in much higher throughput.
+         <span class="since">Since 1.0.6 (QEMU and KVM only)</span>
+       </dd>
++      <dt><code>host</code> offloading options</dt>
++      <dd>
++        The <code>csum</code>, <code>gso</code>, <code>tso4</code>,
++        <code>tso6</code>, <code>ecn</code> and <code>ufo</code>
++        attributes with possible values <code>on</code>
++        and <code>off</code> can be used to turn off host offloading options.
++        By default, the supported offloads are enabled by QEMU.
++        <span class="since">Since 1.2.9 (QEMU only)</span>
++      </dd>
++      <dt><code>guest</code> offloading options</dt>
++      <dd>
++        The <code>csum</code>, <code>tso4</code>,
++        <code>tso6</code>, <code>ecn</code> and <code>ufo</code>
++        attributes with possible values <code>on</code>
++        and <code>off</code> can be used to turn off guest offloading options.
++        By default, the supported offloads are enabled by QEMU.
++        <span class="since">Since 1.2.9 (QEMU only)</span>
++      </dd>
+     </dl>
+ 
+     <h5><a name="elementsBackendOptions">Setting network backend-specific options</a></h5>
+diff --git a/docs/schemas/domaincommon.rng b/docs/schemas/domaincommon.rng
+index 19dc82f..ccfb511 100644
+--- a/docs/schemas/domaincommon.rng
++++ b/docs/schemas/domaincommon.rng
+@@ -2364,7 +2364,71 @@
+               </optional>
+             </group>
+           </choice>
+-          <empty/>
++          <interleave>
++            <optional>
++              <element name='host'>
++                <optional>
++                  <attribute name='csum'>
++                    <ref name="virOnOff"/>
++                  </attribute>
++                </optional>
++                <optional>
++                  <attribute name='gso'>
++                    <ref name="virOnOff"/>
++                  </attribute>
++                </optional>
++                <optional>
++                  <attribute name='tso4'>
++                    <ref name="virOnOff"/>
++                  </attribute>
++                </optional>
++                <optional>
++                  <attribute name='tso6'>
++                    <ref name="virOnOff"/>
++                  </attribute>
++                </optional>
++                <optional>
++                  <attribute name='ecn'>
++                    <ref name="virOnOff"/>
++                  </attribute>
++                </optional>
++                <optional>
++                  <attribute name='ufo'>
++                    <ref name="virOnOff"/>
++                  </attribute>
++                </optional>
++              </element>
++            </optional>
++            <optional>
++              <element name='guest'>
++                <optional>
++                  <attribute name='csum'>
++                    <ref name="virOnOff"/>
++                  </attribute>
++                </optional>
++                <optional>
++                  <attribute name='tso4'>
++                    <ref name="virOnOff"/>
++                  </attribute>
++                </optional>
++                <optional>
++                  <attribute name='tso6'>
++                    <ref name="virOnOff"/>
++                  </attribute>
++                </optional>
++                <optional>
++                  <attribute name='ecn'>
++                    <ref name="virOnOff"/>
++                  </attribute>
++                </optional>
++                <optional>
++                  <attribute name='ufo'>
++                    <ref name="virOnOff"/>
++                  </attribute>
++                </optional>
++              </element>
++            </optional>
++          </interleave>
+         </element>
+       </optional>
+       <optional>
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index a4db3c3..4e80467 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -6893,6 +6893,7 @@ virDomainNetDefParseXML(virDomainXMLOptionPtr xmlopt,
+     char *ioeventfd = NULL;
+     char *event_idx = NULL;
+     char *queues = NULL;
++    char *str = NULL;
+     char *filter = NULL;
+     char *internal = NULL;
+     char *devaddr = NULL;
+@@ -7381,6 +7382,115 @@ virDomainNetDefParseXML(virDomainXMLOptionPtr xmlopt,
+             }
+             def->driver.virtio.queues = q;
+         }
++        if ((str = virXPathString("string(./driver/host/@csum)", ctxt))) {
++            if ((val = virTristateSwitchTypeFromString(str)) <= 0) {
++                virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                               _("unknown host csum mode '%s'"),
++                               str);
++                goto error;
++            }
++            def->driver.virtio.host.csum = val;
++        }
++        VIR_FREE(str);
++        if ((str = virXPathString("string(./driver/host/@gso)", ctxt))) {
++            if ((val = virTristateSwitchTypeFromString(str)) <= 0) {
++                virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                               _("unknown host gso mode '%s'"),
++                               str);
++                goto error;
++            }
++            def->driver.virtio.host.gso = val;
++        }
++        VIR_FREE(str);
++        if ((str = virXPathString("string(./driver/host/@tso4)", ctxt))) {
++            if ((val = virTristateSwitchTypeFromString(str)) <= 0) {
++                virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                               _("unknown host tso4 mode '%s'"),
++                               str);
++                goto error;
++            }
++            def->driver.virtio.host.tso4 = val;
++        }
++        VIR_FREE(str);
++        if ((str = virXPathString("string(./driver/host/@tso6)", ctxt))) {
++            if ((val = virTristateSwitchTypeFromString(str)) <= 0) {
++                virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                               _("unknown host tso6 mode '%s'"),
++                               str);
++                goto error;
++            }
++            def->driver.virtio.host.tso6 = val;
++        }
++        VIR_FREE(str);
++        if ((str = virXPathString("string(./driver/host/@ecn)", ctxt))) {
++            if ((val = virTristateSwitchTypeFromString(str)) <= 0) {
++                virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                               _("unknown host ecn mode '%s'"),
++                               str);
++                goto error;
++            }
++            def->driver.virtio.host.ecn = val;
++        }
++        VIR_FREE(str);
++        if ((str = virXPathString("string(./driver/host/@ufo)", ctxt))) {
++            if ((val = virTristateSwitchTypeFromString(str)) <= 0) {
++                virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                               _("unknown host ufo mode '%s'"),
++                               str);
++                goto error;
++            }
++            def->driver.virtio.host.ufo = val;
++        }
++        VIR_FREE(str);
++        if ((str = virXPathString("string(./driver/guest/@csum)", ctxt))) {
++            if ((val = virTristateSwitchTypeFromString(str)) <= 0) {
++                virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                               _("unknown guest csum mode '%s'"),
++                               str);
++                goto error;
++            }
++            def->driver.virtio.guest.csum = val;
++        }
++        VIR_FREE(str);
++        if ((str = virXPathString("string(./driver/guest/@tso4)", ctxt))) {
++            if ((val = virTristateSwitchTypeFromString(str)) <= 0) {
++                virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                               _("unknown guest tso4 mode '%s'"),
++                               str);
++                goto error;
++            }
++            def->driver.virtio.guest.tso4 = val;
++        }
++        VIR_FREE(str);
++        if ((str = virXPathString("string(./driver/guest/@tso6)", ctxt))) {
++            if ((val = virTristateSwitchTypeFromString(str)) <= 0) {
++                virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                               _("unknown guest tso6 mode '%s'"),
++                               str);
++                goto error;
++            }
++            def->driver.virtio.guest.tso6 = val;
++        }
++        VIR_FREE(str);
++        if ((str = virXPathString("string(./driver/guest/@ecn)", ctxt))) {
++            if ((val = virTristateSwitchTypeFromString(str)) <= 0) {
++                virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                               _("unknown guest ecn mode '%s'"),
++                               str);
++                goto error;
++            }
++            def->driver.virtio.guest.ecn = val;
++        }
++        VIR_FREE(str);
++        if ((str = virXPathString("string(./driver/guest/@ufo)", ctxt))) {
++            if ((val = virTristateSwitchTypeFromString(str)) <= 0) {
++                virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                               _("unknown guest ufo mode '%s'"),
++                               str);
++                goto error;
++            }
++            def->driver.virtio.guest.ufo = val;
++        }
+     }
+ 
+     def->linkstate = VIR_DOMAIN_NET_INTERFACE_LINK_STATE_DEFAULT;
+@@ -7438,6 +7548,7 @@ virDomainNetDefParseXML(virDomainXMLOptionPtr xmlopt,
+     VIR_FREE(ioeventfd);
+     VIR_FREE(event_idx);
+     VIR_FREE(queues);
++    VIR_FREE(str);
+     VIR_FREE(filter);
+     VIR_FREE(type);
+     VIR_FREE(internal);
+@@ -16443,6 +16554,80 @@ virDomainActualNetDefFormat(virBufferPtr buf,
+ 
+ 
+ static int
++virDomainVirtioNetGuestOptsFormat(char **outstr,
++                                  virDomainNetDefPtr def)
++{
++    virBuffer buf = VIR_BUFFER_INITIALIZER;
++    if (def->driver.virtio.guest.csum) {
++        virBufferAsprintf(&buf, "csum='%s' ",
++                          virTristateSwitchTypeToString(def->driver.virtio.guest.csum));
++    }
++    if (def->driver.virtio.guest.tso4) {
++        virBufferAsprintf(&buf, "tso4='%s' ",
++                          virTristateSwitchTypeToString(def->driver.virtio.guest.tso4));
++    }
++    if (def->driver.virtio.guest.tso6) {
++        virBufferAsprintf(&buf, "tso6='%s' ",
++                          virTristateSwitchTypeToString(def->driver.virtio.guest.tso6));
++    }
++    if (def->driver.virtio.guest.ecn) {
++        virBufferAsprintf(&buf, "ecn='%s' ",
++                          virTristateSwitchTypeToString(def->driver.virtio.guest.ecn));
++    }
++    if (def->driver.virtio.guest.ufo) {
++        virBufferAsprintf(&buf, "ufo='%s' ",
++                          virTristateSwitchTypeToString(def->driver.virtio.guest.ufo));
++    }
++    virBufferTrim(&buf, " ", -1);
++
++    if (virBufferCheckError(&buf) < 0)
++        return -1;
++
++    *outstr = virBufferContentAndReset(&buf);
++    return 0;
++}
++
++
++static int
++virDomainVirtioNetHostOptsFormat(char **outstr,
++                                 virDomainNetDefPtr def)
++{
++    virBuffer buf = VIR_BUFFER_INITIALIZER;
++    if (def->driver.virtio.host.csum) {
++        virBufferAsprintf(&buf, "csum='%s' ",
++                          virTristateSwitchTypeToString(def->driver.virtio.host.csum));
++    }
++    if (def->driver.virtio.host.gso) {
++        virBufferAsprintf(&buf, "gso='%s' ",
++                          virTristateSwitchTypeToString(def->driver.virtio.host.gso));
++    }
++    if (def->driver.virtio.host.tso4) {
++        virBufferAsprintf(&buf, "tso4='%s' ",
++                          virTristateSwitchTypeToString(def->driver.virtio.host.tso4));
++    }
++    if (def->driver.virtio.host.tso6) {
++        virBufferAsprintf(&buf, "tso6='%s' ",
++                          virTristateSwitchTypeToString(def->driver.virtio.host.tso6));
++    }
++    if (def->driver.virtio.host.ecn) {
++        virBufferAsprintf(&buf, "ecn='%s' ",
++                          virTristateSwitchTypeToString(def->driver.virtio.host.ecn));
++    }
++    if (def->driver.virtio.host.ufo) {
++        virBufferAsprintf(&buf, "ufo='%s' ",
++                          virTristateSwitchTypeToString(def->driver.virtio.host.ufo));
++    }
++    virBufferTrim(&buf, " ", -1);
++
++    if (virBufferCheckError(&buf) < 0)
++        return -1;
++
++    *outstr = virBufferContentAndReset(&buf);
++    return 0;
++}
++
++
++static int
+ virDomainVirtioNetDriverFormat(char **outstr,
+                                virDomainNetDefPtr def)
+ {
+@@ -16493,7 +16678,6 @@ virDomainNetDefFormat(virBufferPtr buf,
+     virDomainHostdevDefPtr hostdef = NULL;
+     char macstr[VIR_MAC_STRING_BUFLEN];
+ 
+-
+     if (publicActual) {
+         if (!(typeStr = virDomainNetTypeToString(actualType))) {
+             virReportError(VIR_ERR_INTERNAL_ERROR,
+@@ -16652,14 +16836,36 @@ virDomainNetDefFormat(virBufferPtr buf,
+         virBufferEscapeString(buf, "<model type='%s'/>\n",
+                               def->model);
+         if (STREQ(def->model, "virtio")) {
+-            char *str;
++            char *str = NULL, *gueststr = NULL, *hoststr = NULL;
++            int rc = 0;
+ 
+-            if (virDomainVirtioNetDriverFormat(&str, def) < 0)
+-                return -1;
++            if (virDomainVirtioNetDriverFormat(&str, def) < 0 ||
++                virDomainVirtioNetGuestOptsFormat(&gueststr, def) < 0 ||
++                virDomainVirtioNetHostOptsFormat(&hoststr, def) < 0)
++                rc = -1;
+ 
+-            if (str)
+-                virBufferAsprintf(buf, "<driver %s/>\n", str);
++            if (!gueststr && !hoststr) {
++                if (str)
++                    virBufferAsprintf(buf, "<driver %s/>\n", str);
++            } else {
++                if (str)
++                    virBufferAsprintf(buf, "<driver %s>\n", str);
++                else
++                    virBufferAddLit(buf, "<driver>\n");
++                virBufferAdjustIndent(buf, 2);
++                if (hoststr)
++                    virBufferAsprintf(buf, "<host %s/>\n", hoststr);
++                if (gueststr)
++                    virBufferAsprintf(buf, "<guest %s/>\n", gueststr);
++                virBufferAdjustIndent(buf, -2);
++                virBufferAddLit(buf, "</driver>\n");
++            }
+             VIR_FREE(str);
++            VIR_FREE(hoststr);
++            VIR_FREE(gueststr);
++
++            if (rc < 0)
++                return -1;
+         }
+     }
+     if (def->backend.tap || def->backend.vhost) {
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index decd4be..39f1948 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -895,6 +895,21 @@ struct _virDomainNetDef {
+             virTristateSwitch ioeventfd;
+             virTristateSwitch event_idx;
+             unsigned int queues; /* Multiqueue virtio-net */
++            struct {
++                virTristateSwitch csum;
++                virTristateSwitch gso;
++                virTristateSwitch tso4;
++                virTristateSwitch tso6;
++                virTristateSwitch ecn;
++                virTristateSwitch ufo;
++            } host;
++            struct {
++                virTristateSwitch csum;
++                virTristateSwitch tso4;
++                virTristateSwitch tso6;
++                virTristateSwitch ecn;
++                virTristateSwitch ufo;
++            } guest;
+         } virtio;
+     } driver;
+     struct {
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-net-virtio-disable-offloads.xml b/tests/qemuxml2argvdata/qemuxml2argv-net-virtio-disable-offloads.xml
+new file mode 100644
+index 0000000..e368c43
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-net-virtio-disable-offloads.xml
+@@ -0,0 +1,35 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory unit='KiB'>219136</memory>
++  <currentMemory unit='KiB'>219136</currentMemory>
++  <vcpu placement='static'>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='block' device='disk'>
++      <source dev='/dev/HostVG/QEMUGuest7'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' target='0' unit='0'/>
++    </disk>
++    <controller type='usb' index='0'/>
++    <controller type='ide' index='0'/>
++    <controller type='pci' index='0' model='pci-root'/>
++    <interface type='user'>
++      <mac address='00:22:44:66:88:aa'/>
++      <model type='virtio'/>
++      <driver>
++        <host csum='off' gso='off' tso4='off' tso6='off' ecn='off' ufo='off'/>
++        <guest csum='off' tso4='off' tso6='off' ecn='off' ufo='off'/>
++      </driver>
++    </interface>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2xmltest.c b/tests/qemuxml2xmltest.c
+index 3ca64d4..ee05212 100644
+--- a/tests/qemuxml2xmltest.c
++++ b/tests/qemuxml2xmltest.c
+@@ -261,6 +261,7 @@ mymain(void)
+     DO_TEST("net-user");
+     DO_TEST("net-virtio");
+     DO_TEST("net-virtio-device");
++    DO_TEST("net-virtio-disable-offloads");
+     DO_TEST("net-eth");
+     DO_TEST("net-eth-ifname");
+     DO_TEST("net-virtio-network-portgroup");
+-- 
+2.1.1
+

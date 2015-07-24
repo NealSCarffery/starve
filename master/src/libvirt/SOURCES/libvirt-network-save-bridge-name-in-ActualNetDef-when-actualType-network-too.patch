@@ -1,0 +1,253 @@
+From c4ffd622f1463a4a6000e2b61c2a43ec91b74668 Mon Sep 17 00:00:00 2001
+Message-Id: <c4ffd622f1463a4a6000e2b61c2a43ec91b74668@dist-git>
+From: Laine Stump <laine@laine.org>
+Date: Mon, 15 Dec 2014 10:51:28 -0500
+Subject: [PATCH] network: save bridge name in ActualNetDef when
+ actualType==network too
+
+This is part of the fix for:
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=1099210
+
+When the actualType of a virDomainNetDef is "network", it means that
+we are connecting to a libvirt-managed network (routed, natted, or
+isolated) which does use a bridge device (created by libvirt). In the
+past we have required drivers such as qemu to call the public API to
+retrieve the bridge name in this case (even though it is available in
+the NetDef's ActualNetDef if the actualType is "bridge" (i.e., an
+externally-created bridge that isn't managed by libvirt). There is no
+real reason for this difference, and as a matter of fact it
+complicates things for qemu. Also, there is another bridge-related
+attribute (macTableManager) that will need to be available in both
+cases, so this makes things consistent.
+
+In order to avoid problems when restarting libvirtd after an update
+from an older version that *doesn't* store the network's bridgename in
+the ActualNetDef, we also need to put it in place during
+networkNotifyActualDevice() (this function is run for each interface
+of each domain whenever libvirtd is restarted).
+
+Along with making the bridge name available in the internal object, it
+is also now reported in the <source> element of the <interface> state
+XML (or the <actual> subelement in the internally-stored format).
+
+The one oddity about this change is that usually there is a separate
+union for every different "type" in a higher level object (e.g. in the
+case of a virDomainNetDef there are separate "network" and "bridge"
+members of the union that pivots on the type), but in this case
+network and bridge types both have exactly the same attributes, so the
+"bridge" member is used for both type==network and type==bridge.
+
+(cherry picked from commit a3609121799d44898a3e0d0bf92b755e55e7b418)
+
+Conflicts:
+	src/conf/domain_conf.c - brackets had been removed upstream
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/conf/domain_conf.c      | 103 +++++++++++++++++++++++---------------------
+ src/network/bridge_driver.c |  20 +++++++++
+ 2 files changed, 73 insertions(+), 50 deletions(-)
+
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 20ae4e7..4cbc431 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -1364,6 +1364,7 @@ virDomainActualNetDefFree(virDomainActualNetDefPtr def)
+ 
+     switch (def->type) {
+     case VIR_DOMAIN_NET_TYPE_BRIDGE:
++    case VIR_DOMAIN_NET_TYPE_NETWORK:
+         VIR_FREE(def->data.bridge.brname);
+         break;
+     case VIR_DOMAIN_NET_TYPE_DIRECT:
+@@ -6945,9 +6946,12 @@ virDomainActualNetDefParseXML(xmlNodePtr node,
+             goto error;
+         }
+         VIR_FREE(class_id);
+-    } else if (actual->type == VIR_DOMAIN_NET_TYPE_BRIDGE) {
++    }
++    if (actual->type == VIR_DOMAIN_NET_TYPE_BRIDGE ||
++        actual->type == VIR_DOMAIN_NET_TYPE_NETWORK) {
+         char *brname = virXPathString("string(./source/@bridge)", ctxt);
+-        if (!brname) {
++
++        if (!brname && actual->type == VIR_DOMAIN_NET_TYPE_BRIDGE) {
+             virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                            _("Missing <source> element with bridge name in "
+                              "interface's <actual> element"));
+@@ -16733,60 +16737,59 @@ virDomainHostdevDefFormatCaps(virBufferPtr buf,
+ static int
+ virDomainActualNetDefContentsFormat(virBufferPtr buf,
+                                     virDomainNetDefPtr def,
+-                                    const char *typeStr,
+                                     bool inSubelement,
+                                     unsigned int flags)
+ {
+-    const char *mode;
++    int actualType = virDomainNetGetActualType(def);
+ 
+-    switch (virDomainNetGetActualType(def)) {
+-    case VIR_DOMAIN_NET_TYPE_BRIDGE:
+-        virBufferEscapeString(buf, "<source bridge='%s'/>\n",
+-                              virDomainNetGetActualBridgeName(def));
+-        break;
+-
+-    case VIR_DOMAIN_NET_TYPE_DIRECT:
+-        virBufferAddLit(buf, "<source");
+-        virBufferEscapeString(buf, " dev='%s'",
+-                              virDomainNetGetActualDirectDev(def));
+-
+-        mode = virNetDevMacVLanModeTypeToString(virDomainNetGetActualDirectMode(def));
+-        if (!mode) {
+-            virReportError(VIR_ERR_INTERNAL_ERROR,
+-                           _("unexpected source mode %d"),
+-                           virDomainNetGetActualDirectMode(def));
+-            return -1;
+-        }
+-        virBufferAsprintf(buf, " mode='%s'/>\n", mode);
+-        break;
+-
+-    case VIR_DOMAIN_NET_TYPE_HOSTDEV:
++    if (actualType == VIR_DOMAIN_NET_TYPE_HOSTDEV) {
+         if (virDomainHostdevDefFormatSubsys(buf, virDomainNetGetActualHostdev(def),
+                                             flags, true) < 0) {
+             return -1;
+         }
+-        break;
+-
+-    case VIR_DOMAIN_NET_TYPE_NETWORK:
+-        if (!inSubelement) {
+-            /* the <source> element isn't included in <actual>
+-             * (i.e. when we're putting our output into a subelement
+-             * rather than inline) because the main element has the
+-             * same info already. If we're outputting inline, though,
+-             * we *do* need to output <source>, because the caller
+-             * won't have done it.
++    } else {
++        virBufferAddLit(buf, "<source");
++        if (def->type == VIR_DOMAIN_NET_TYPE_NETWORK && !inSubelement) {
++            /* When we're putting our output into the <actual>
++             * subelement rather than the main <interface>, the
++             * network name isn't included in the <source> because the
++             * main interface element's <source> has the same info
++             * already. If we've been called to output directly into
++             * the main element's <source> though (the case here -
++             * "!inSubElement"), we *do* need to output the network
++             * name, because the caller won't have done it).
+              */
+-            virBufferEscapeString(buf, "<source network='%s'/>\n",
+-                                  def->data.network.name);
++            virBufferEscapeString(buf, " network='%s'", def->data.network.name);
+         }
+-        if (def->data.network.actual && def->data.network.actual->class_id)
+-            virBufferAsprintf(buf, "<class id='%u'/>\n",
+-                              def->data.network.actual->class_id);
+-        break;
+-    default:
+-        virReportError(VIR_ERR_INTERNAL_ERROR,
+-                       _("unexpected actual net type %s"), typeStr);
+-        return -1;
++        if (actualType == VIR_DOMAIN_NET_TYPE_BRIDGE ||
++            actualType == VIR_DOMAIN_NET_TYPE_NETWORK) {
++            /* actualType == NETWORK includes the name of the bridge
++             * that is used by the network, whether we are
++             * "inSubElement" or not.
++             */
++            virBufferEscapeString(buf, " bridge='%s'",
++                                  virDomainNetGetActualBridgeName(def));
++        } else if (actualType == VIR_DOMAIN_NET_TYPE_DIRECT) {
++            const char *mode;
++
++            virBufferEscapeString(buf, " dev='%s'",
++                                  virDomainNetGetActualDirectDev(def));
++            mode = virNetDevMacVLanModeTypeToString(virDomainNetGetActualDirectMode(def));
++            if (!mode) {
++                virReportError(VIR_ERR_INTERNAL_ERROR,
++                               _("unexpected source mode %d"),
++                               virDomainNetGetActualDirectMode(def));
++                return -1;
++            }
++            virBufferAsprintf(buf, " mode='%s'", mode);
++        }
++
++        virBufferAddLit(buf, "/>\n");
++    }
++    if (actualType == VIR_DOMAIN_NET_TYPE_DIRECT &&
++        def->data.network.actual && def->data.network.actual->class_id) {
++        virBufferAsprintf(buf, "<class id='%u'/>\n",
++                          def->data.network.actual->class_id);
+     }
+ 
+     if (virNetDevVlanFormat(virDomainNetGetActualVlan(def), buf) < 0)
+@@ -16834,7 +16837,7 @@ virDomainActualNetDefFormat(virBufferPtr buf,
+     virBufferAddLit(buf, ">\n");
+ 
+     virBufferAdjustIndent(buf, 2);
+-    if (virDomainActualNetDefContentsFormat(buf, def, typeStr, true, flags) < 0)
++    if (virDomainActualNetDefContentsFormat(buf, def, true, flags) < 0)
+        return -1;
+     virBufferAdjustIndent(buf, -2);
+     virBufferAddLit(buf, "</actual>\n");
+@@ -17005,7 +17008,7 @@ virDomainNetDefFormat(virBufferPtr buf,
+          * the standard place...  (this is for public reporting of
+          * interface status)
+          */
+-        if (virDomainActualNetDefContentsFormat(buf, def, typeStr, false, flags) < 0)
++        if (virDomainActualNetDefContentsFormat(buf, def, false, flags) < 0)
+             return -1;
+     } else {
+         /* ...but if we've asked for the inactive XML (rather than
+@@ -20375,9 +20378,9 @@ virDomainNetGetActualBridgeName(virDomainNetDefPtr iface)
+         return iface->data.bridge.brname;
+     if (iface->type == VIR_DOMAIN_NET_TYPE_NETWORK &&
+         iface->data.network.actual &&
+-        iface->data.network.actual->type == VIR_DOMAIN_NET_TYPE_BRIDGE) {
++        (iface->data.network.actual->type == VIR_DOMAIN_NET_TYPE_BRIDGE ||
++         iface->data.network.actual->type == VIR_DOMAIN_NET_TYPE_NETWORK))
+         return iface->data.network.actual->data.bridge.brname;
+-    }
+     return NULL;
+ }
+ 
+diff --git a/src/network/bridge_driver.c b/src/network/bridge_driver.c
+index 488409d..236095f 100644
+--- a/src/network/bridge_driver.c
++++ b/src/network/bridge_driver.c
+@@ -3833,6 +3833,15 @@ networkAllocateActualDevice(virDomainDefPtr dom,
+          */
+         iface->data.network.actual->type = VIR_DOMAIN_NET_TYPE_NETWORK;
+ 
++        /* we also store the bridge device
++         * in iface->data.network.actual->data.bridge for later use
++         * after the domain's tap device is created (to attach to the
++         * bridge and set flood/learning mode on the tap device)
++         */
++        if (VIR_STRDUP(iface->data.network.actual->data.bridge.brname,
++                       netdef->bridge) < 0)
++            goto error;
++
+         if (networkPlugBandwidth(network, iface) < 0)
+             goto error;
+ 
+@@ -4171,6 +4180,17 @@ networkNotifyActualDevice(virDomainDefPtr dom,
+     }
+     netdef = network->def;
+ 
++    /* if we're restarting libvirtd after an upgrade from a version
++     * that didn't save bridge name in actualNetDef for
++     * actualType==network, we need to copy it in so that it will be
++     * available in all cases
++     */
++    if (actualType == VIR_DOMAIN_NET_TYPE_NETWORK &&
++        !iface->data.network.actual->data.bridge.brname &&
++        (VIR_STRDUP(iface->data.network.actual->data.bridge.brname,
++                    netdef->bridge) < 0))
++            goto error;
++
+     if (!iface->data.network.actual ||
+         (actualType != VIR_DOMAIN_NET_TYPE_DIRECT &&
+          actualType != VIR_DOMAIN_NET_TYPE_HOSTDEV)) {
+-- 
+2.2.0
+

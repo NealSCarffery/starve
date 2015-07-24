@@ -1,0 +1,349 @@
+From b7945d7e44a533d7a9cc26d493f7abb9ebccaae4 Mon Sep 17 00:00:00 2001
+Message-Id: <b7945d7e44a533d7a9cc26d493f7abb9ebccaae4@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Fri, 21 Nov 2014 15:04:11 +0100
+Subject: [PATCH] storage: rbd: qemu: Add support for specifying internal RBD
+ snapshots
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1164528
+
+Some storage systems have internal support for snapshots. Libvirt should
+be able to select a correct snapshot when starting a VM.
+
+This patch adds a XML element to select a storage source snapshot for
+the RBD protocol which supports this feature.
+
+(cherry picked from commit 02556606584ef6c065eae6e36c311250fa7a24f4)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ docs/formatdomain.html.in                          | 16 +++++++--
+ docs/schemas/domaincommon.rng                      |  8 +++++
+ src/conf/domain_conf.c                             | 38 +++++++++++++++++++---
+ src/conf/domain_conf.h                             |  1 +
+ src/conf/snapshot_conf.c                           |  6 ++--
+ src/qemu/qemu_command.c                            |  3 ++
+ src/util/virstoragefile.c                          |  8 +++++
+ src/util/virstoragefile.h                          |  1 +
+ .../qemuxml2argv-disk-drive-network-rbd.args       |  4 +++
+ .../qemuxml2argv-disk-drive-network-rbd.xml        | 17 ++++++++++
+ 10 files changed, 93 insertions(+), 9 deletions(-)
+
+diff --git a/docs/formatdomain.html.in b/docs/formatdomain.html.in
+index a458067..789f6ee 100644
+--- a/docs/formatdomain.html.in
++++ b/docs/formatdomain.html.in
+@@ -1661,6 +1661,7 @@
+       &lt;driver name="qemu" type="raw"/&gt;
+       &lt;source protocol="rbd" name="image_name2"&gt;
+         &lt;host name="hostname" port="7000"/&gt;
++        &lt;snapshot name="snapname"/&gt;
+       &lt;/source&gt;
+       &lt;target dev="hdc" bus="ide"/&gt;
+       &lt;auth username='myuser'&gt;
+@@ -1934,15 +1935,17 @@
+         is only valid when the specified storage volume is of 'file' or
+         'block' type).
+         <p>
+-        When the disk <code>type</code> is "network", the <code>source</code>
+-        may have zero or more <code>host</code> sub-elements used to
+-        specify the hosts to connect.
++        The <code>source</code> element may contain the following sub elements:
+         </p>
+ 
+         <dl>
+           <dt><code>host</code></dt>
+           <dd>
+             <p>
++            When the disk <code>type</code> is "network", the <code>source</code>
++            may have zero or more <code>host</code> sub-elements used to
++            specify the hosts to connect.
++
+             The <code>host</code> element supports 4 attributes, viz.  "name",
+             "port", "transport" and "socket", which specify the hostname,
+             the port number, transport type and path to socket, respectively.
+@@ -1995,6 +1998,13 @@
+             AF_UNIX socket.
+             </p>
+           </dd>
++          <dt><code>snapshot</code></dt>
++          <dd>
++            The <code>name</code> attribute of <code>snapshot</code> element can
++            optionally specify an internal snapshot name to be used as the
++            source for storage protocols.
++            Supported for 'rbd' <span class="since">since 1.2.11 (QEMU only).</span>
++          </dd>
+         </dl>
+ 
+         <p>
+diff --git a/docs/schemas/domaincommon.rng b/docs/schemas/domaincommon.rng
+index c010c45..fa17494 100644
+--- a/docs/schemas/domaincommon.rng
++++ b/docs/schemas/domaincommon.rng
+@@ -1447,6 +1447,14 @@
+             </choice>
+           </element>
+         </zeroOrMore>
++        <optional>
++          <element name="snapshot">
++            <attribute name="name">
++              <ref name="genericName"/>
++            </attribute>
++            <empty/>
++          </element>
++        </optional>
+         <empty/>
+       </element>
+     </interleave>
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 0e977fc..82d321a 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -3157,6 +3157,22 @@ virDomainDeviceDefPostParseInternal(virDomainDeviceDefPtr dev,
+             return -1;
+     }
+ 
++    /* verify disk source */
++    if (dev->type == VIR_DOMAIN_DEVICE_DISK) {
++        virDomainDiskDefPtr disk = dev->data.disk;
++
++        /* internal snapshots are currently supported only with rbd: */
++        if (virStorageSourceGetActualType(disk->src) != VIR_STORAGE_TYPE_NETWORK &&
++            disk->src->protocol != VIR_STORAGE_NET_PROTOCOL_RBD) {
++            if (disk->src->snapshot) {
++                virReportError(VIR_ERR_XML_ERROR, "%s",
++                               _("<snapshot> element is currently supported "
++                                 "only with 'rbd' disks"));
++                return -1;
++            }
++        }
++    }
++
+     return 0;
+ }
+ 
+@@ -5301,10 +5317,14 @@ virDomainDiskSourcePoolDefParse(xmlNodePtr node,
+ 
+ int
+ virDomainDiskSourceParse(xmlNodePtr node,
++                         xmlXPathContextPtr ctxt,
+                          virStorageSourcePtr src)
+ {
+     int ret = -1;
+     char *protocol = NULL;
++    xmlNodePtr saveNode = ctxt->node;
++
++    ctxt->node = node;
+ 
+     switch ((virStorageType)src->type) {
+     case VIR_STORAGE_TYPE_FILE:
+@@ -5357,6 +5377,9 @@ virDomainDiskSourceParse(xmlNodePtr node,
+             tmp[0] = '\0';
+         }
+ 
++        /* snapshot currently works only for remote disks */
++        src->snapshot = virXPathString("string(./snapshot/@name)", ctxt);
++
+         if (virDomainStorageHostParse(node, &src->hosts, &src->nhosts) < 0)
+             goto cleanup;
+         break;
+@@ -5382,6 +5405,7 @@ virDomainDiskSourceParse(xmlNodePtr node,
+ 
+  cleanup:
+     VIR_FREE(protocol);
++    ctxt->node = saveNode;
+     return ret;
+ }
+ 
+@@ -5437,7 +5461,7 @@ virDomainDiskBackingStoreParse(xmlXPathContextPtr ctxt,
+         goto cleanup;
+     }
+ 
+-    if (virDomainDiskSourceParse(source, backingStore) < 0 ||
++    if (virDomainDiskSourceParse(source, ctxt, backingStore) < 0 ||
+         virDomainDiskBackingStoreParse(ctxt, backingStore) < 0)
+         goto cleanup;
+ 
+@@ -5547,7 +5571,7 @@ virDomainDiskDefParseXML(virDomainXMLOptionPtr xmlopt,
+                 xmlStrEqual(cur->name, BAD_CAST "source")) {
+                 sourceNode = cur;
+ 
+-                if (virDomainDiskSourceParse(cur, def->src) < 0)
++                if (virDomainDiskSourceParse(cur, ctxt, def->src) < 0)
+                     goto error;
+                 source = def->src->path;
+ 
+@@ -5713,7 +5737,8 @@ virDomainDiskDefParseXML(virDomainXMLOptionPtr xmlopt,
+                                        _("mirror requires source element"));
+                         goto error;
+                     }
+-                    if (virDomainDiskSourceParse(mirrorNode, def->mirror) < 0)
++                    if (virDomainDiskSourceParse(mirrorNode, ctxt,
++                                                 def->mirror) < 0)
+                         goto error;
+                 }
+                 ready = virXMLPropString(cur, "ready");
+@@ -15898,11 +15923,12 @@ virDomainDiskSourceFormatInternal(virBufferPtr buf,
+ 
+             VIR_FREE(path);
+ 
+-            if (src->nhosts == 0) {
++            if (src->nhosts == 0 && !src->snapshot) {
+                 virBufferAddLit(buf, "/>\n");
+             } else {
+                 virBufferAddLit(buf, ">\n");
+                 virBufferAdjustIndent(buf, 2);
++
+                 for (n = 0; n < src->nhosts; n++) {
+                     virBufferAddLit(buf, "<host");
+                     virBufferEscapeString(buf, " name='%s'",
+@@ -15919,6 +15945,10 @@ virDomainDiskSourceFormatInternal(virBufferPtr buf,
+ 
+                     virBufferAddLit(buf, "/>\n");
+                 }
++
++                virBufferEscapeString(buf, "<snapshot name='%s'/>\n",
++                                      src->snapshot);
++
+                 virBufferAdjustIndent(buf, -2);
+                 virBufferAddLit(buf, "</source>\n");
+             }
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index 21d19cf..6768089 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -2445,6 +2445,7 @@ virDomainDiskRemove(virDomainDefPtr def, size_t i);
+ virDomainDiskDefPtr
+ virDomainDiskRemoveByName(virDomainDefPtr def, const char *name);
+ int virDomainDiskSourceParse(xmlNodePtr node,
++                             xmlXPathContextPtr ctxt,
+                              virStorageSourcePtr src);
+ 
+ bool virDomainHasDiskMirror(virDomainObjPtr vm);
+diff --git a/src/conf/snapshot_conf.c b/src/conf/snapshot_conf.c
+index c53a66b..27882b8 100644
+--- a/src/conf/snapshot_conf.c
++++ b/src/conf/snapshot_conf.c
+@@ -107,6 +107,7 @@ void virDomainSnapshotDefFree(virDomainSnapshotDefPtr def)
+ 
+ static int
+ virDomainSnapshotDiskDefParseXML(xmlNodePtr node,
++                                 xmlXPathContextPtr ctxt,
+                                  virDomainSnapshotDiskDefPtr def)
+ {
+     int ret = -1;
+@@ -154,7 +155,7 @@ virDomainSnapshotDiskDefParseXML(xmlNodePtr node,
+         if (!def->src->path &&
+             xmlStrEqual(cur->name, BAD_CAST "source")) {
+ 
+-            if (virDomainDiskSourceParse(cur, def->src) < 0)
++            if (virDomainDiskSourceParse(cur, ctxt, def->src) < 0)
+                 goto cleanup;
+ 
+         } else if (!def->src->format &&
+@@ -352,7 +353,8 @@ virDomainSnapshotDefParse(xmlXPathContextPtr ctxt,
+             goto cleanup;
+         def->ndisks = n;
+         for (i = 0; i < def->ndisks; i++) {
+-            if (virDomainSnapshotDiskDefParseXML(nodes[i], &def->disks[i]) < 0)
++            if (virDomainSnapshotDiskDefParseXML(nodes[i], ctxt,
++                                                 &def->disks[i]) < 0)
+                 goto cleanup;
+         }
+         VIR_FREE(nodes);
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 93f02a9..5d34ba3 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -2986,6 +2986,9 @@ qemuBuildNetworkDriveURI(virStorageSourcePtr src,
+ 
+             virBufferStrcat(&buf, "rbd:", src->path, NULL);
+ 
++            if (src->snapshot)
++                virBufferEscape(&buf, '\\', ":", "@%s", src->snapshot);
++
+             if (username) {
+                 virBufferEscape(&buf, '\\', ":", ":id=%s", username);
+                 virBufferEscape(&buf, '\\', ":",
+diff --git a/src/util/virstoragefile.c b/src/util/virstoragefile.c
+index ba4d830..6cdc5be 100644
+--- a/src/util/virstoragefile.c
++++ b/src/util/virstoragefile.c
+@@ -1842,6 +1842,7 @@ virStorageSourceCopy(const virStorageSource *src,
+         VIR_STRDUP(ret->driverName, src->driverName) < 0 ||
+         VIR_STRDUP(ret->relPath, src->relPath) < 0 ||
+         VIR_STRDUP(ret->backingStoreRaw, src->backingStoreRaw) < 0 ||
++        VIR_STRDUP(ret->snapshot, src->snapshot) < 0 ||
+         VIR_STRDUP(ret->compat, src->compat) < 0)
+         goto error;
+ 
+@@ -2259,6 +2260,13 @@ virStorageSourceParseRBDColonString(const char *rbdstr,
+         *p = '\0';
+     }
+ 
++    /* snapshot name */
++    if ((p = strchr(src->path, '@'))) {
++        if (VIR_STRDUP(src->snapshot, p + 1) < 0)
++            goto error;
++        *p = '\0';
++    }
++
+     /* options */
+     if (!options)
+         return 0; /* all done */
+diff --git a/src/util/virstoragefile.h b/src/util/virstoragefile.h
+index 3573ccd..74aa1a3 100644
+--- a/src/util/virstoragefile.h
++++ b/src/util/virstoragefile.h
+@@ -236,6 +236,7 @@ struct _virStorageSource {
+     char *path;
+     int protocol; /* virStorageNetProtocol */
+     char *volume; /* volume name for remote storage */
++    char *snapshot; /* for storage systems supporting internal snapshots */
+     size_t nhosts;
+     virStorageNetHostDefPtr hosts;
+     virStorageSourcePoolDefPtr srcpool;
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-network-rbd.args b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-network-rbd.args
+index 21d7b64..e4f1389 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-network-rbd.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-network-rbd.args
+@@ -5,4 +5,8 @@ unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -usb \
+ -drive 'file=rbd:pool/image:auth_supported=none:\
+ mon_host=mon1.example.org\:6321\;mon2.example.org\:6322\;\
+ mon3.example.org\:6322,if=virtio,format=raw' \
++-drive file=rbd:pool/image@asdf:auth_supported=none,if=virtio,format=raw \
++-drive 'file=rbd:pool/image@foo:auth_supported=none:\
++mon_host=mon1.example.org\:6321\;mon2.example.org\:6322\;\
++mon3.example.org\:6322,if=virtio,format=raw' \
+ -net none -serial none -parallel none
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-network-rbd.xml b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-network-rbd.xml
+index 37e9db5..f6accd8 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-network-rbd.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-network-rbd.xml
+@@ -29,6 +29,23 @@
+       </source>
+       <target dev='vda' bus='virtio'/>
+     </disk>
++    <disk type='network' device='disk'>
++      <driver name='qemu' type='raw'/>
++      <source protocol='rbd' name='pool/image'>
++        <snapshot name='asdf'/>
++      </source>
++      <target dev='vdb' bus='virtio'/>
++    </disk>
++    <disk type='network' device='disk'>
++      <driver name='qemu' type='raw'/>
++      <source protocol='rbd' name='pool/image'>
++        <host name='mon1.example.org' port='6321'/>
++        <host name='mon2.example.org' port='6322'/>
++        <host name='mon3.example.org' port='6322'/>
++        <snapshot name='foo'/>
++      </source>
++      <target dev='vdc' bus='virtio'/>
++    </disk>
+     <controller type='usb' index='0'/>
+     <controller type='ide' index='0'/>
+     <controller type='pci' index='0' model='pci-root'/>
+-- 
+2.1.3
+

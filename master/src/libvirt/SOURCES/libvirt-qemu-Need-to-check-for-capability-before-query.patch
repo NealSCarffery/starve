@@ -1,0 +1,35 @@
+From f5cbe13c52948be555c63f9b120ac5448075c072 Mon Sep 17 00:00:00 2001
+Message-Id: <f5cbe13c52948be555c63f9b120ac5448075c072@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Thu, 18 Sep 2014 09:30:01 -0400
+Subject: [PATCH] qemu: Need to check for capability before query
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1101574
+
+Prior to trying the query-iothreads call - check if the qemu has
+the capability
+
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+(cherry picked from commit 76a81b1d312f10ec4d66b05d39f4d75869f0f121)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_process.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index a2304dc..3b43912 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -2104,6 +2104,9 @@ qemuProcessDetectIOThreadPIDs(virQEMUDriverPtr driver,
+     int ret = -1;
+     size_t i;
+ 
++    if (!virQEMUCapsGet(priv->qemuCaps, QEMU_CAPS_OBJECT_IOTHREAD))
++        return 0;
++
+     /* Get the list of IOThreads from qemu */
+     if (qemuDomainObjEnterMonitorAsync(driver, vm, asyncJob) < 0)
+         goto cleanup;
+-- 
+2.1.0
+

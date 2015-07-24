@@ -1,0 +1,119 @@
+From 585d2ac01d34da0ce729ac889eae0a56608f86be Mon Sep 17 00:00:00 2001
+Message-Id: <585d2ac01d34da0ce729ac889eae0a56608f86be@dist-git>
+From: Laine Stump <laine@laine.org>
+Date: Mon, 15 Dec 2014 10:51:32 -0500
+Subject: [PATCH] qemu: add/remove bridge fdb entries as guest CPUs are
+ started/stopped
+
+This is part of the fix for:
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=1099210
+
+When libvirt is managing a bridge's forwarding database (FDB)
+(macTableManager='libvirt'), if we add FDB entries for a new guest
+interface even before the qemu process is created, then in the case of
+a migration any other guest attached to the "destination" bridge will
+have its traffic immediately sent to the destination of the migration
+even while the source domain is still running (and the destination, of
+course, isn't). To make sure that traffic from other guests on the new
+host continues flowing to the old guest until the new one is ready, we
+have to wait until the new guest CPUs are started to add the FDB
+entries.
+
+Conversely, we need to remove the FDB entries from the bridge any time
+the guest CPUs are stopped; among other things, this will assure
+proper operation during a post-copy migration (which is just the
+opposite of the problem described in the previous paragraph).
+
+(cherry picked from commit 44292e48a0ffa76badf84d42ad33f885e67d30e9)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_command.c   | 10 +++-------
+ src/qemu/qemu_interface.c | 26 ++++++++++++++++++++++++++
+ 2 files changed, 29 insertions(+), 7 deletions(-)
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index a9c4271..ed66cea 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -355,18 +355,14 @@ qemuNetworkIfaceConnect(virDomainDefPtr def,
+             /* libvirt is managing the FDB of the bridge this device
+              * is attaching to, so we need to turn off learning and
+              * unicast_flood on the device to prevent the kernel from
+-             * adding any FDB entries for it, then add an fdb entry
+-             * outselves, using the MAC address from the interface
+-             * config.
++             * adding any FDB entries for it. We will add add an fdb
++             * entry ourselves (during qemuInterfaceStartDevices(),
++             * using the MAC address from the interface config.
+              */
+             if (virNetDevBridgePortSetLearning(brname, net->ifname, false) < 0)
+                 goto cleanup;
+             if (virNetDevBridgePortSetUnicastFlood(brname, net->ifname, false) < 0)
+                 goto cleanup;
+-            if (virNetDevBridgeFDBAdd(&net->mac, net->ifname,
+-                                      VIR_NETDEVBRIDGE_FDB_FLAG_MASTER |
+-                                      VIR_NETDEVBRIDGE_FDB_FLAG_TEMP) < 0)
+-                goto cleanup;
+         }
+     } else {
+         if (qemuCreateInBridgePortWithHelper(cfg, brname,
+diff --git a/src/qemu/qemu_interface.c b/src/qemu/qemu_interface.c
+index 2d33075..201a7dd 100644
+--- a/src/qemu/qemu_interface.c
++++ b/src/qemu/qemu_interface.c
+@@ -23,10 +23,12 @@
+ 
+ #include <config.h>
+ 
++#include "network_conf.h"
+ #include "qemu_interface.h"
+ #include "virnetdev.h"
+ #include "virnetdevtap.h"
+ #include "virnetdevmacvlan.h"
++#include "virnetdevbridge.h"
+ #include "virnetdevvportprofile.h"
+ 
+ /**
+@@ -46,6 +48,20 @@ qemuInterfaceStartDevice(virDomainNetDefPtr net)
+     switch (actualType) {
+     case VIR_DOMAIN_NET_TYPE_BRIDGE:
+     case VIR_DOMAIN_NET_TYPE_NETWORK:
++        if (virDomainNetGetActualBridgeMACTableManager(net)
++            == VIR_NETWORK_BRIDGE_MAC_TABLE_MANAGER_LIBVIRT) {
++            /* libvirt is managing the FDB of the bridge this device
++             * is attaching to, so we have turned off learning and
++             * unicast_flood on the device to prevent the kernel from
++             * adding any FDB entries for it. This means we need to
++             * add an fdb entry ourselves, using the MAC address from
++             * the interface config.
++             */
++            if (virNetDevBridgeFDBAdd(&net->mac, net->ifname,
++                                      VIR_NETDEVBRIDGE_FDB_FLAG_MASTER |
++                                      VIR_NETDEVBRIDGE_FDB_FLAG_TEMP) < 0)
++                goto cleanup;
++        }
+         break;
+     case VIR_DOMAIN_NET_TYPE_DIRECT:
+         /* macvtap devices share their MAC address with the guest
+@@ -118,6 +134,16 @@ qemuInterfaceStopDevice(virDomainNetDefPtr net)
+     switch (actualType) {
+     case VIR_DOMAIN_NET_TYPE_BRIDGE:
+     case VIR_DOMAIN_NET_TYPE_NETWORK:
++        if (virDomainNetGetActualBridgeMACTableManager(net)
++            == VIR_NETWORK_BRIDGE_MAC_TABLE_MANAGER_LIBVIRT) {
++            /* remove the FDB entries that were added during
++             * qemuInterfaceStartDevices()
++             */
++            if (virNetDevBridgeFDBDel(&net->mac, net->ifname,
++                                      VIR_NETDEVBRIDGE_FDB_FLAG_MASTER |
++                                      VIR_NETDEVBRIDGE_FDB_FLAG_TEMP) < 0)
++                goto cleanup;
++        }
+         break;
+ 
+     case VIR_DOMAIN_NET_TYPE_DIRECT:
+-- 
+2.2.0
+

@@ -1,0 +1,46 @@
+From 66868716a944a88093cc4aff1837a1d2c93d3532 Mon Sep 17 00:00:00 2001
+Message-Id: <66868716a944a88093cc4aff1837a1d2c93d3532@dist-git>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Fri, 12 Sep 2014 10:05:32 +0200
+Subject: [PATCH] virsh: Move --completed from resume to domjobinfo
+
+Because of similar contexts, git rebase I did just before pushing the
+series which added --completed option patched the wrong command.
+
+(cherry picked from commit 58252332eb365b93ba1d1067b3e162668eb2f1aa)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1063724
+---
+ tools/virsh-domain.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/tools/virsh-domain.c b/tools/virsh-domain.c
+index 80b06ce..1ff264e 100644
+--- a/tools/virsh-domain.c
++++ b/tools/virsh-domain.c
+@@ -4905,10 +4905,6 @@ static const vshCmdOptDef opts_resume[] = {
+      .flags = VSH_OFLAG_REQ,
+      .help = N_("domain name, id or uuid")
+     },
+-    {.name = "completed",
+-     .type = VSH_OT_BOOL,
+-     .help = N_("return statistics of a recently completed job")
+-    },
+     {.name = NULL}
+ };
+ 
+@@ -5168,6 +5164,10 @@ static const vshCmdOptDef opts_domjobinfo[] = {
+      .flags = VSH_OFLAG_REQ,
+      .help = N_("domain name, id or uuid")
+     },
++    {.name = "completed",
++     .type = VSH_OT_BOOL,
++     .help = N_("return statistics of a recently completed job")
++    },
+     {.name = NULL}
+ };
+ 
+-- 
+2.1.0
+

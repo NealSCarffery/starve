@@ -1,0 +1,175 @@
+From 29bfee99a3d73b8b5abd210925fa34af4e4fb857 Mon Sep 17 00:00:00 2001
+Message-Id: <29bfee99a3d73b8b5abd210925fa34af4e4fb857@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Wed, 12 Nov 2014 13:34:48 -0500
+Subject: [PATCH] storage: Don't use a stack copy of the adapter
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1160926
+
+Passing a copy of the storage pool adapter to a function just changes the
+copy of the fields in the particular function and then when returning to
+the caller those changes are discarded.  While not yet biting us in the
+storage clean-up case, it did cause an issue for the fchost storage pool
+startup case, createVport.  The issue was at startup, if no parent is found
+in the XML, the code will search for the 'best available' parent and then
+store that in the in memory copy of the adapter.  Of course, in this case
+it was a copy, so when returning to the virStorageBackendSCSIStartPool that
+change was discarded (or lost) from the pool->def->source.adapter which
+meant at shutdown (deleteVport), the code assumed no adapter was passed
+and skipped the deletion, leaving the vHBA created by libvirt still defined
+requiring an additional stop of a nodedev-destroy to remove.
+
+Adjusted the createVport to take virStoragePoolDefPtr instead of the
+adapter copy. Then use the virStoragePoolSourceAdapterPtr when processing.
+A future patch will need the 'def' anyway, so this just sets up for that.
+
+(cherry picked from commit 5b226fcdc6ea3b9be73e31b6cff88f65d754cb0d)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/conf/storage_conf.c            | 16 ++++++++--------
+ src/conf/storage_conf.h            |  1 +
+ src/storage/storage_backend_scsi.c | 32 ++++++++++++++++----------------
+ 3 files changed, 25 insertions(+), 24 deletions(-)
+
+diff --git a/src/conf/storage_conf.c b/src/conf/storage_conf.c
+index 67b44b9..3ceb0b5 100644
+--- a/src/conf/storage_conf.c
++++ b/src/conf/storage_conf.c
+@@ -342,15 +342,15 @@ virStorageVolDefFree(virStorageVolDefPtr def)
+ }
+ 
+ static void
+-virStoragePoolSourceAdapterClear(virStoragePoolSourceAdapter adapter)
++virStoragePoolSourceAdapterClear(virStoragePoolSourceAdapterPtr adapter)
+ {
+-    if (adapter.type == VIR_STORAGE_POOL_SOURCE_ADAPTER_TYPE_FC_HOST) {
+-        VIR_FREE(adapter.data.fchost.wwnn);
+-        VIR_FREE(adapter.data.fchost.wwpn);
+-        VIR_FREE(adapter.data.fchost.parent);
+-    } else if (adapter.type ==
++    if (adapter->type == VIR_STORAGE_POOL_SOURCE_ADAPTER_TYPE_FC_HOST) {
++        VIR_FREE(adapter->data.fchost.wwnn);
++        VIR_FREE(adapter->data.fchost.wwpn);
++        VIR_FREE(adapter->data.fchost.parent);
++    } else if (adapter->type ==
+                VIR_STORAGE_POOL_SOURCE_ADAPTER_TYPE_SCSI_HOST) {
+-        VIR_FREE(adapter.data.scsi_host.name);
++        VIR_FREE(adapter->data.scsi_host.name);
+     }
+ }
+ 
+@@ -379,7 +379,7 @@ virStoragePoolSourceClear(virStoragePoolSourcePtr source)
+     VIR_FREE(source->devices);
+     VIR_FREE(source->dir);
+     VIR_FREE(source->name);
+-    virStoragePoolSourceAdapterClear(source->adapter);
++    virStoragePoolSourceAdapterClear(&source->adapter);
+     VIR_FREE(source->initiator.iqn);
+     virStorageAuthDefFree(source->auth);
+     VIR_FREE(source->vendor);
+diff --git a/src/conf/storage_conf.h b/src/conf/storage_conf.h
+index 1276ac2..a9b5bdb 100644
+--- a/src/conf/storage_conf.h
++++ b/src/conf/storage_conf.h
+@@ -177,6 +177,7 @@ typedef enum {
+ VIR_ENUM_DECL(virStoragePoolSourceAdapter)
+ 
+ typedef struct _virStoragePoolSourceAdapter virStoragePoolSourceAdapter;
++typedef virStoragePoolSourceAdapter *virStoragePoolSourceAdapterPtr;
+ struct _virStoragePoolSourceAdapter {
+     int type; /* virStoragePoolSourceAdapterType */
+ 
+diff --git a/src/storage/storage_backend_scsi.c b/src/storage/storage_backend_scsi.c
+index bfef219..a5bb85f 100644
+--- a/src/storage/storage_backend_scsi.c
++++ b/src/storage/storage_backend_scsi.c
+@@ -644,24 +644,25 @@ checkVhbaSCSIHostParent(virConnectPtr conn,
+ 
+ static int
+ createVport(virConnectPtr conn,
+-            virStoragePoolSourceAdapter adapter)
++            virStoragePoolDefPtr def)
+ {
++    virStoragePoolSourceAdapterPtr adapter = &def->source.adapter;
+     unsigned int parent_host;
+     char *name = NULL;
+ 
+-    if (adapter.type != VIR_STORAGE_POOL_SOURCE_ADAPTER_TYPE_FC_HOST)
++    if (adapter->type != VIR_STORAGE_POOL_SOURCE_ADAPTER_TYPE_FC_HOST)
+         return 0;
+ 
+     /* If a parent was provided, then let's make sure it's vhost capable */
+-    if (adapter.data.fchost.parent) {
+-        if (virGetSCSIHostNumber(adapter.data.fchost.parent, &parent_host) < 0)
++    if (adapter->data.fchost.parent) {
++        if (virGetSCSIHostNumber(adapter->data.fchost.parent, &parent_host) < 0)
+             return -1;
+ 
+         if (!virIsCapableFCHost(NULL, parent_host)) {
+             virReportError(VIR_ERR_XML_ERROR,
+                            _("parent '%s' specified for vHBA "
+                              "is not vport capable"),
+-                           adapter.data.fchost.parent);
++                           adapter->data.fchost.parent);
+             return -1;
+         }
+     }
+@@ -670,35 +671,35 @@ createVport(virConnectPtr conn,
+      * using the wwnn/wwpn, then a nodedev is already created for
+      * this pool and we don't have to create the vHBA
+      */
+-    if ((name = virGetFCHostNameByWWN(NULL, adapter.data.fchost.wwnn,
+-                                      adapter.data.fchost.wwpn))) {
++    if ((name = virGetFCHostNameByWWN(NULL, adapter->data.fchost.wwnn,
++                                      adapter->data.fchost.wwpn))) {
+         int retval = 0;
+ 
+         /* If a parent was provided, let's make sure the 'name' we've
+          * retrieved has the same parent
+          */
+-        if (adapter.data.fchost.parent &&
+-            !checkVhbaSCSIHostParent(conn, name, adapter.data.fchost.parent))
++        if (adapter->data.fchost.parent &&
++            !checkVhbaSCSIHostParent(conn, name, adapter->data.fchost.parent))
+             retval = -1;
+ 
+         VIR_FREE(name);
+         return retval;
+     }
+ 
+-    if (!adapter.data.fchost.parent) {
+-        if (!(adapter.data.fchost.parent = virFindFCHostCapableVport(NULL))) {
++    if (!adapter->data.fchost.parent) {
++        if (!(adapter->data.fchost.parent = virFindFCHostCapableVport(NULL))) {
+             virReportError(VIR_ERR_XML_ERROR, "%s",
+                            _("'parent' for vHBA not specified, and "
+                              "cannot find one on this host"));
+             return -1;
+         }
+ 
+-        if (virGetSCSIHostNumber(adapter.data.fchost.parent, &parent_host) < 0)
++        if (virGetSCSIHostNumber(adapter->data.fchost.parent, &parent_host) < 0)
+             return -1;
+     }
+ 
+-    if (virManageVport(parent_host, adapter.data.fchost.wwpn,
+-                       adapter.data.fchost.wwnn, VPORT_CREATE) < 0)
++    if (virManageVport(parent_host, adapter->data.fchost.wwpn,
++                       adapter->data.fchost.wwnn, VPORT_CREATE) < 0)
+         return -1;
+ 
+     virFileWaitForDevices();
+@@ -816,8 +817,7 @@ static int
+ virStorageBackendSCSIStartPool(virConnectPtr conn,
+                                virStoragePoolObjPtr pool)
+ {
+-    virStoragePoolSourceAdapter adapter = pool->def->source.adapter;
+-    return createVport(conn, adapter);
++    return createVport(conn, pool->def);
+ }
+ 
+ static int
+-- 
+2.1.3
+

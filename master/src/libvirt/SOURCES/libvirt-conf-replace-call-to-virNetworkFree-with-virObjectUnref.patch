@@ -1,0 +1,56 @@
+From 7c2133b742b4cf7ecdf1c9fe16eeea439619baf3 Mon Sep 17 00:00:00 2001
+Message-Id: <7c2133b742b4cf7ecdf1c9fe16eeea439619baf3@dist-git>
+From: Laine Stump <laine@laine.org>
+Date: Mon, 15 Dec 2014 10:51:24 -0500
+Subject: [PATCH] conf: replace call to virNetworkFree() with virObjectUnref()
+
+This is a prerequisite for the patches to fix:
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=1099210
+
+The function virNetworkObjListExport() in network_conf.c had a call to
+the public API virNetworkFree() which was causing a link error:
+
+CCLD     libvirt_driver_vbox_network_impl.la
+ ./.libs/libvirt_conf.a(libvirt_conf_la-network_conf.o): In function `virNetworkObjListExport':
+/home/laine/devel/libvirt/src/conf/network_conf.c:4496: undefined reference to `virNetworkFree'
+
+This would happen when I added
+
+  #include "network_conf.h"
+
+into domain_conf.h, then attempted to call a new function from that
+file (and enum converter, similar to virNetworkForwardTypeToString())
+
+In the end, virNetworkFree() ends up just calling virObjectUnref(obj)
+anyway (after clearing all pending errors, which we probably *don't*
+want to do in the cleanup of a utility function), so this is likely
+more correct than the original code as well.
+
+(cherry picked from commit c2d5bca167ac12b0ae277edadd64bf90d7f4ed3c)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/conf/network_conf.c | 6 ++----
+ 1 file changed, 2 insertions(+), 4 deletions(-)
+
+diff --git a/src/conf/network_conf.c b/src/conf/network_conf.c
+index 7b17d59..b253fec 100644
+--- a/src/conf/network_conf.c
++++ b/src/conf/network_conf.c
+@@ -4480,10 +4480,8 @@ virNetworkObjListExport(virConnectPtr conn,
+ 
+  cleanup:
+     if (tmp_nets) {
+-        for (i = 0; i < nnets; i++) {
+-            if (tmp_nets[i])
+-                virNetworkFree(tmp_nets[i]);
+-        }
++        for (i = 0; i < nnets; i++)
++            virObjectUnref(tmp_nets[i]);
+     }
+ 
+     VIR_FREE(tmp_nets);
+-- 
+2.2.0
+

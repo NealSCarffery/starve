@@ -1,0 +1,44 @@
+From b6aae3a914d9841ed97d3ea6ab9322c40ea5c684 Mon Sep 17 00:00:00 2001
+Message-Id: <b6aae3a914d9841ed97d3ea6ab9322c40ea5c684@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Wed, 1 Oct 2014 11:20:18 +0200
+Subject: [PATCH] lib: De-duplicate stats group documentation for all stats
+ functions
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1113116
+
+State that full stats for the stats groups are available in the
+virConnectGetAllDomainStats documentation section rather than
+duplicating the docs.
+
+(cherry picked from commit b7dd3d9b46d3f0cbc22a637e30d932f94dc44a11)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/libvirt.c | 10 ++--------
+ 1 file changed, 2 insertions(+), 8 deletions(-)
+
+diff --git a/src/libvirt.c b/src/libvirt.c
+index f62ecf7..d6aee93 100644
+--- a/src/libvirt.c
++++ b/src/libvirt.c
+@@ -21693,14 +21693,8 @@ virConnectGetAllDomainStats(virConnectPtr conn,
+  * followed by a group specific description of the statistic value.
+  *
+  * The statistic groups are enabled using the @stats parameter which is a
+- * binary-OR of enum virDomainStatsTypes. The following groups are available
+- * (although not necessarily implemented for each hypervisor):
+- *
+- * VIR_DOMAIN_STATS_STATE: Return domain state and reason for entering that
+- * state. The typed parameter keys are in this format:
+- * "state.state" - state of the VM, returned as int from virDomainState enum
+- * "state.reason" - reason for entering given state, returned as int from
+- *                  virDomain*Reason enum corresponding to given state.
++ * binary-OR of enum virDomainStatsTypes. The stats groups are documented
++ * in virConnectGetAllDomainStats.
+  *
+  * Using 0 for @stats returns all stats groups supported by the given
+  * hypervisor.
+-- 
+2.1.2
+

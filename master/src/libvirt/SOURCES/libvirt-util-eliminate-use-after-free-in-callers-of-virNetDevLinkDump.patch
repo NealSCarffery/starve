@@ -1,0 +1,208 @@
+From 1edb0576352ab667f15120a50b85348f972445c8 Mon Sep 17 00:00:00 2001
+Message-Id: <1edb0576352ab667f15120a50b85348f972445c8@dist-git>
+From: Laine Stump <laine@laine.org>
+Date: Wed, 12 Nov 2014 14:00:43 -0500
+Subject: [PATCH] util: eliminate "use after free" in callers of
+ virNetDevLinkDump
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1163463
+
+virNetDevLinkDump() gets a message from netlink into "resp", then
+calls nlmsg_parse() to fill the table "tb" with pointers into resp. It
+then returns tb to its caller, but not before freeing the buffer at
+resp. That means that all the callers of virNetDevLinkDump() are
+examining memory that has already been freed. This can be verified by
+filling the buffer at resp with garbage prior to freeing it (or, I
+suppose, just running libvirtd under valgrind) then performing some
+operation that calls virNetDevLinkDump().
+
+The upstream commit log incorrectly states that the code has been like
+this ever since virNetDevLinkDump() was written. In reality, the
+problem was introduced with commit e95de74d, first in libvirt-1.0.5,
+which was attempting to eliminate a typecast that caused compiler
+warnings. It has only been pure luck (or maybe a lack of heavy load,
+and/or maybe an allocation algorithm in malloc() that delays re-use of
+just-freed memory) that has kept this from causing errors, for example
+when configuring a PCI passthrough or macvtap passthrough network
+interface.
+
+The solution taken in this patch is the simplest - just return resp to
+the caller along with tb, then have the caller free it after they are
+finished using the data (pointers) in tb. I alternately could have
+made a cleaner interface by creating a new struct that put tb and resp
+together along with a vir*Free() function for it, but this function is
+only used in a couple places, and I'm not sure there will be
+additional new uses of virNetDevLinkDump(), so the value of adding a
+new type, extra APIs, etc. is dubious.
+
+(cherry picked from commit f9f9699f40729556238b905f67a7d6f68c084f6a)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/util/virnetdev.c             | 26 +++++++++++++++++---------
+ src/util/virnetdev.h             |  2 +-
+ src/util/virnetdevvportprofile.c | 17 ++++++++++++-----
+ 3 files changed, 30 insertions(+), 15 deletions(-)
+
+diff --git a/src/util/virnetdev.c b/src/util/virnetdev.c
+index 0382d00..a1e442a 100644
+--- a/src/util/virnetdev.c
++++ b/src/util/virnetdev.c
+@@ -1387,23 +1387,25 @@ static struct nla_policy ifla_vf_policy[IFLA_VF_MAX+1] = {
+ /**
+  * virNetDevLinkDump:
+  *
+- * @ifname: The name of the interface; only use if ifindex < 0
+- * @ifindex: The interface index; may be < 0 if ifname is given
+- * @nlattr: pointer to a pointer of netlink attributes that will contain
+- *          the results
++ * @ifname:  The name of the interface; only use if ifindex <= 0
++ * @ifindex: The interface index; may be <= 0 if ifname is given
++ * @data:    Gets a pointer to the raw data from netlink.
++             MUST BE FREED BY CALLER!
++ * @nlattr:  Pointer to a pointer of netlink attributes that will contain
++ *           the results
+  * @src_pid: pid used for nl_pid of the local end of the netlink message
+  *           (0 == "use getpid()")
+  * @dst_pid: pid of destination nl_pid if the kernel
+  *           is not the target of the netlink message but it is to be
+  *           sent to another process (0 if sending to the kernel)
+  *
+- * Get information about an interface given its name or index.
++ * Get information from netlink about an interface given its name or index.
+  *
+  * Returns 0 on success, -1 on fatal error.
+  */
+ int
+ virNetDevLinkDump(const char *ifname, int ifindex,
+-                  struct nlattr **tb,
++                  void **nlData, struct nlattr **tb,
+                   uint32_t src_pid, uint32_t dst_pid)
+ {
+     int rc = -1;
+@@ -1485,7 +1487,9 @@ virNetDevLinkDump(const char *ifname, int ifindex,
+     rc = 0;
+  cleanup:
+     nlmsg_free(nl_msg);
+-    VIR_FREE(resp);
++    if (rc < 0)
++       VIR_FREE(resp);
++    *nlData = resp;
+     return rc;
+ 
+  malformed_resp:
+@@ -1681,15 +1685,18 @@ virNetDevGetVfConfig(const char *ifname, int vf, virMacAddrPtr mac,
+                      int *vlanid)
+ {
+     int rc = -1;
++    void *nlData = NULL;
+     struct nlattr *tb[IFLA_MAX + 1] = {NULL, };
+     int ifindex = -1;
+ 
+-    rc = virNetDevLinkDump(ifname, ifindex, tb, 0, 0);
++    rc = virNetDevLinkDump(ifname, ifindex, &nlData, tb, 0, 0);
+     if (rc < 0)
+-        return rc;
++        goto cleanup;
+ 
+     rc = virNetDevParseVfConfig(tb, vf, mac, vlanid);
+ 
++ cleanup:
++    VIR_FREE(nlData);
+     return rc;
+ }
+ 
+@@ -1832,6 +1839,7 @@ virNetDevRestoreNetConfig(const char *linkdev, int vf, const char *stateDir)
+ int
+ virNetDevLinkDump(const char *ifname ATTRIBUTE_UNUSED,
+                   int ifindex ATTRIBUTE_UNUSED,
++                  void **nlData ATTRIBUTE_UNUSED,
+                   struct nlattr **tb ATTRIBUTE_UNUSED,
+                   uint32_t src_pid ATTRIBUTE_UNUSED,
+                   uint32_t dst_pid ATTRIBUTE_UNUSED)
+diff --git a/src/util/virnetdev.h b/src/util/virnetdev.h
+index ac4beff..2791b0d 100644
+--- a/src/util/virnetdev.h
++++ b/src/util/virnetdev.h
+@@ -166,7 +166,7 @@ int virNetDevGetVirtualFunctions(const char *pfname,
+     ATTRIBUTE_NONNULL(4) ATTRIBUTE_RETURN_CHECK;
+ 
+ int virNetDevLinkDump(const char *ifname, int ifindex,
+-                      struct nlattr **tb,
++                      void **nlData, struct nlattr **tb,
+                       uint32_t src_pid, uint32_t dst_pid)
+     ATTRIBUTE_RETURN_CHECK;
+ 
+diff --git a/src/util/virnetdevvportprofile.c b/src/util/virnetdevvportprofile.c
+index 0f43b02..33ae9fc 100644
+--- a/src/util/virnetdevvportprofile.c
++++ b/src/util/virnetdevvportprofile.c
+@@ -787,7 +787,8 @@ virNetDevVPortProfileGetNthParent(const char *ifname, int ifindex, unsigned int
+                                   int *parent_ifindex, char *parent_ifname,
+                                   unsigned int *nth)
+ {
+-    int rc;
++    int rc = -1;
++    void *nlData = NULL;
+     struct nlattr *tb[IFLA_MAX + 1] = { NULL, };
+     bool end = false;
+     size_t i = 0;
+@@ -798,7 +799,8 @@ virNetDevVPortProfileGetNthParent(const char *ifname, int ifindex, unsigned int
+         return -1;
+ 
+     while (!end && i <= nthParent) {
+-        rc = virNetDevLinkDump(ifname, ifindex, tb, 0, 0);
++        VIR_FREE(nlData);
++        rc = virNetDevLinkDump(ifname, ifindex, &nlData, tb, 0, 0);
+         if (rc < 0)
+             break;
+ 
+@@ -807,7 +809,8 @@ virNetDevVPortProfileGetNthParent(const char *ifname, int ifindex, unsigned int
+                            IFNAMSIZ)) {
+                 virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                                _("buffer for root interface name is too small"));
+-                return -1;
++                rc = -1;
++                goto cleanup;
+             }
+             *parent_ifindex = ifindex;
+         }
+@@ -823,6 +826,8 @@ virNetDevVPortProfileGetNthParent(const char *ifname, int ifindex, unsigned int
+ 
+     *nth = i - 1;
+ 
++ cleanup:
++    VIR_FREE(nlData);
+     return rc;
+ }
+ 
+@@ -844,6 +849,7 @@ virNetDevVPortProfileOpCommon(const char *ifname, int ifindex,
+     int rc;
+     int src_pid = 0;
+     uint32_t dst_pid = 0;
++    void *nlData = NULL;
+     struct nlattr *tb[IFLA_MAX + 1] = { NULL, };
+     int repeats = STATUS_POLL_TIMEOUT_USEC / STATUS_POLL_INTERVL_USEC;
+     uint16_t status = 0;
+@@ -876,7 +882,8 @@ virNetDevVPortProfileOpCommon(const char *ifname, int ifindex,
+     }
+ 
+     while (--repeats >= 0) {
+-        rc = virNetDevLinkDump(NULL, ifindex, tb, src_pid, dst_pid);
++        VIR_FREE(nlData);
++        rc = virNetDevLinkDump(NULL, ifindex, &nlData, tb, src_pid, dst_pid);
+         if (rc < 0)
+             goto cleanup;
+ 
+@@ -908,7 +915,7 @@ virNetDevVPortProfileOpCommon(const char *ifname, int ifindex,
+     }
+ 
+  cleanup:
+-
++    VIR_FREE(nlData);
+     return rc;
+ }
+ 
+-- 
+2.1.3
+

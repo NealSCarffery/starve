@@ -1,0 +1,38 @@
+From 670f47b3b50915fbd772134e0d278956f92d2815 Mon Sep 17 00:00:00 2001
+Message-Id: <670f47b3b50915fbd772134e0d278956f92d2815@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Mon, 15 Sep 2014 15:13:49 -0400
+Subject: [PATCH] lxc: Resolve Coverity FORWARD_NULL
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1141209
+
+If we jump to cleanup before allocating 'result', then the call to
+virBlkioDeviceArrayClear() could dereference result
+
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+(cherry picked from commit 0311be9435087984c495243fbb378b7533beb99e)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/lxc/lxc_driver.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/src/lxc/lxc_driver.c b/src/lxc/lxc_driver.c
+index 66d708a..bdfad9e 100644
+--- a/src/lxc/lxc_driver.c
++++ b/src/lxc/lxc_driver.c
+@@ -2222,8 +2222,10 @@ lxcDomainParseBlkioDeviceStr(char *blkioDeviceStr, const char *type,
+                    _("unable to parse blkio device '%s' '%s'"),
+                    type, blkioDeviceStr);
+  cleanup:
+-    virBlkioDeviceArrayClear(result, ndevices);
+-    VIR_FREE(result);
++    if (result) {
++        virBlkioDeviceArrayClear(result, ndevices);
++        VIR_FREE(result);
++    }
+     return -1;
+ }
+ 
+-- 
+2.1.0
+

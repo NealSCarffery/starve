@@ -1,0 +1,75 @@
+From 3dfa22b502f065f5171475b6459a4cc18d74c125 Mon Sep 17 00:00:00 2001
+Message-Id: <3dfa22b502f065f5171475b6459a4cc18d74c125@dist-git>
+From: Wang Rui <moon.wangrui@huawei.com>
+Date: Fri, 28 Nov 2014 14:36:26 +0100
+Subject: [PATCH] qemu: fix domain startup failing with 'strict' mode in
+ numatune
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1168866
+
+If the memory mode is specified as 'strict' and with one node, we
+get the following error when starting domain.
+
+error: Unable to write to '$cgroup_path/cpuset.mems': Device or resource busy
+
+XML is configured with numatune as follows:
+  <numatune>
+    <memory mode='strict' nodeset='0'/>
+  </numatune>
+
+It's broken by Commit 411cea638f6ec8503b7142a31e58b1cd85dbeaba
+which moved qemuSetupCgroupForEmulator() before setting cpuset.mems
+in qemuSetupCgroupPostInit.
+
+Directory '$cgroup_path/emulator/' is created in qemuSetupCgroupForEmulator.
+But '$cgroup_path/emulator/cpuset.mems' it not set and has a default value
+(all nodes, such as 0-1). Then we setup '$cgroup_path/cpuset.mems' to the
+nodemask (in this case it's '0') in qemuSetupCgroupPostInit. It must fail.
+
+This patch makes '$cgroup_path/emulator/cpuset.mems' is set before
+'$cgroup_path/cpuset.mems'. The action is similar with that in
+qemuDomainSetNumaParamsLive.
+
+Signed-off-by: Wang Rui <moon.wangrui@huawei.com>
+(cherry picked from commit c6e90248676126c209b3b6017ad27cf6c6a0ab8f)
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_cgroup.c | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/src/qemu/qemu_cgroup.c b/src/qemu/qemu_cgroup.c
+index bd22b7f..7609c0f 100644
+--- a/src/qemu/qemu_cgroup.c
++++ b/src/qemu/qemu_cgroup.c
+@@ -611,6 +611,7 @@ static int
+ qemuSetupCpusetMems(virDomainObjPtr vm,
+                     virBitmapPtr nodemask)
+ {
++    virCgroupPtr cgroup_temp = NULL;
+     qemuDomainObjPrivatePtr priv = vm->privateData;
+     char *mem_mask = NULL;
+     int ret = -1;
+@@ -623,13 +624,16 @@ qemuSetupCpusetMems(virDomainObjPtr vm,
+                                             &mem_mask, -1) < 0)
+         goto cleanup;
+ 
+-    if (mem_mask &&
+-        virCgroupSetCpusetMems(priv->cgroup, mem_mask) < 0)
+-        goto cleanup;
++    if (mem_mask)
++        if (virCgroupNewEmulator(priv->cgroup, false, &cgroup_temp) < 0 ||
++            virCgroupSetCpusetMems(cgroup_temp, mem_mask) < 0 ||
++            virCgroupSetCpusetMems(priv->cgroup, mem_mask) < 0)
++            goto cleanup;
+ 
+     ret = 0;
+  cleanup:
+     VIR_FREE(mem_mask);
++    virCgroupFree(&cgroup_temp);
+     return ret;
+ }
+ 
+-- 
+2.1.3
+

@@ -1,0 +1,2108 @@
+From b412d7a412522e81e32e92ab9b672bd0a987006d Mon Sep 17 00:00:00 2001
+Message-Id: <b412d7a412522e81e32e92ab9b672bd0a987006d@dist-git>
+From: Pavel Hrdina <phrdina@redhat.com>
+Date: Tue, 25 Nov 2014 10:53:01 +0100
+Subject: [PATCH] caps: introduce new QEMU capability for vgamem_mb device
+ property
+
+Allow setting vgamem size for video devices.
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1076098
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+(cherry picked from commit f480a87aa6ebaef0f478f2c67bfbeeee872e63e0)
+
+Conflicts:
+	src/qemu/qemu_capabilities.c - missing context c5b71619
+	src/qemu/qemu_capabilities.h - missing context c5b71619
+	tests/qemucapabilitiesdata/caps_2.1.1-1.caps - missing context
+                                                       c5b71619
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_capabilities.c                     |  33 ++++
+ src/qemu/qemu_capabilities.h                     |   4 +
+ tests/qemucapabilitiesdata/caps_1.2.2-1.caps     |   4 +
+ tests/qemucapabilitiesdata/caps_1.2.2-1.replies  | 206 ++++++++++++++++++++-
+ tests/qemucapabilitiesdata/caps_1.3.1-1.caps     |   4 +
+ tests/qemucapabilitiesdata/caps_1.3.1-1.replies  | 218 ++++++++++++++++++++++-
+ tests/qemucapabilitiesdata/caps_1.4.2-1.caps     |   4 +
+ tests/qemucapabilitiesdata/caps_1.4.2-1.replies  | 218 ++++++++++++++++++++++-
+ tests/qemucapabilitiesdata/caps_1.5.3-1.caps     |   4 +
+ tests/qemucapabilitiesdata/caps_1.5.3-1.replies  | 218 ++++++++++++++++++++++-
+ tests/qemucapabilitiesdata/caps_1.6.0-1.caps     |   4 +
+ tests/qemucapabilitiesdata/caps_1.6.0-1.replies  | 218 ++++++++++++++++++++++-
+ tests/qemucapabilitiesdata/caps_1.6.50-1.caps    |   4 +
+ tests/qemucapabilitiesdata/caps_1.6.50-1.replies | 218 ++++++++++++++++++++++-
+ tests/qemucapabilitiesdata/caps_2.1.1-1.caps     |   4 +
+ tests/qemucapabilitiesdata/caps_2.1.1-1.replies  | 218 ++++++++++++++++++++++-
+ 16 files changed, 1530 insertions(+), 49 deletions(-)
+
+diff --git a/src/qemu/qemu_capabilities.c b/src/qemu/qemu_capabilities.c
+index e0c1b31..f827d3f 100644
+--- a/src/qemu/qemu_capabilities.c
++++ b/src/qemu/qemu_capabilities.c
+@@ -271,6 +271,11 @@ VIR_ENUM_IMPL(virQEMUCaps, QEMU_CAPS_LAST,
+               "iothread",
+               "migrate-rdma",
+               "ivshmem",
++              "VGA.vgamem_mb",
++
++              "vmware-svga.vgamem_mb", /* 180 */
++              "qxl.vgamem_mb",
++              "qxl-vga.vgamem_mb",
+     );
+ 
+ 
+@@ -1572,6 +1577,22 @@ static struct virQEMUCapsStringFlags virQEMUCapsObjectPropsKVMPit[] = {
+     { "lost_tick_policy", QEMU_CAPS_KVM_PIT_TICK_POLICY },
+ };
+ 
++static struct virQEMUCapsStringFlags virQEMUCapsObjectPropsVGA[] = {
++    { "vgamem_mb", QEMU_CAPS_VGA_VGAMEM },
++};
++
++static struct virQEMUCapsStringFlags virQEMUCapsObjectPropsVmwareSvga[] = {
++    { "vgamem_mb", QEMU_CAPS_VMWARE_SVGA_VGAMEM },
++};
++
++static struct virQEMUCapsStringFlags virQEMUCapsObjectPropsQxl[] = {
++    { "vgamem_mb", QEMU_CAPS_QXL_VGAMEM },
++};
++
++static struct virQEMUCapsStringFlags virQEMUCapsObjectPropsQxlVga[] = {
++    { "vgamem_mb", QEMU_CAPS_QXL_VGA_VGAMEM },
++};
++
+ struct virQEMUCapsObjectTypeProps {
+     const char *type;
+     struct virQEMUCapsStringFlags *props;
+@@ -1617,6 +1638,14 @@ static struct virQEMUCapsObjectTypeProps virQEMUCapsObjectProps[] = {
+       ARRAY_CARDINALITY(virQEMUCapsObjectPropsUSBStorage) },
+     { "kvm-pit", virQEMUCapsObjectPropsKVMPit,
+       ARRAY_CARDINALITY(virQEMUCapsObjectPropsKVMPit) },
++    { "VGA", virQEMUCapsObjectPropsVGA,
++      ARRAY_CARDINALITY(virQEMUCapsObjectPropsVGA) },
++    { "vmware-svga", virQEMUCapsObjectPropsVmwareSvga,
++      ARRAY_CARDINALITY(virQEMUCapsObjectPropsVmwareSvga) },
++    { "qxl", virQEMUCapsObjectPropsQxl,
++      ARRAY_CARDINALITY(virQEMUCapsObjectPropsQxl) },
++    { "qxl-vga", virQEMUCapsObjectPropsQxlVga,
++      ARRAY_CARDINALITY(virQEMUCapsObjectPropsQxlVga) },
+ };
+ 
+ 
+@@ -1808,6 +1837,10 @@ virQEMUCapsExtractDeviceStr(const char *qemu,
+                          "-device", "usb-host,?",
+                          "-device", "scsi-generic,?",
+                          "-device", "usb-storage,?",
++                         "-device", "VGA,?",
++                         "-device", "vmware-svga,?",
++                         "-device", "qxl,?",
++                         "-device", "qxl-vga,?",
+                          NULL);
+     /* qemu -help goes to stdout, but qemu -device ? goes to stderr.  */
+     virCommandSetErrorBuffer(cmd, &output);
+diff --git a/src/qemu/qemu_capabilities.h b/src/qemu/qemu_capabilities.h
+index c0e2172..14cb20b 100644
+--- a/src/qemu/qemu_capabilities.h
++++ b/src/qemu/qemu_capabilities.h
+@@ -218,6 +218,10 @@ typedef enum {
+     QEMU_CAPS_OBJECT_IOTHREAD    = 176, /* -object iothread */
+     QEMU_CAPS_MIGRATE_RDMA       = 177, /* have rdma migration */
+     QEMU_CAPS_DEVICE_IVSHMEM     = 178, /* -device ivshmem */
++    QEMU_CAPS_VGA_VGAMEM         = 179, /* -device VGA.vgamem_mb */
++    QEMU_CAPS_VMWARE_SVGA_VGAMEM = 180, /* -device vmware-svga.vgamem_mb */
++    QEMU_CAPS_QXL_VGAMEM         = 181, /* -device qxl.vgamem_mb */
++    QEMU_CAPS_QXL_VGA_VGAMEM     = 182, /* -device qxl-vga.vgamem_mb */
+ 
+     QEMU_CAPS_LAST,                   /* this must always be the last item */
+ } virQEMUCapsFlags;
+diff --git a/tests/qemucapabilitiesdata/caps_1.2.2-1.caps b/tests/qemucapabilitiesdata/caps_1.2.2-1.caps
+index fc8dfc1..30239df 100644
+--- a/tests/qemucapabilitiesdata/caps_1.2.2-1.caps
++++ b/tests/qemucapabilitiesdata/caps_1.2.2-1.caps
+@@ -116,4 +116,8 @@
+     <flag name='host-pci-multidomain'/>
+     <flag name='usb-audio'/>
+     <flag name='ivshmem'/>
++    <flag name='VGA.vgamem_mb'/>
++    <flag name='vmware-svga.vgamem_mb'/>
++    <flag name='qxl.vgamem_mb'/>
++    <flag name='qxl-vga.vgamem_mb'/>
+   </qemuCaps>
+diff --git a/tests/qemucapabilitiesdata/caps_1.2.2-1.replies b/tests/qemucapabilitiesdata/caps_1.2.2-1.replies
+index 4fce9d7..f501218 100644
+--- a/tests/qemucapabilitiesdata/caps_1.2.2-1.replies
++++ b/tests/qemucapabilitiesdata/caps_1.2.2-1.replies
+@@ -1408,6 +1408,198 @@
+ {
+     "return": [
+         {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-27"
++}
++
++{
++    "return": [
++        {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-28"
++}
++
++{
++    "return": [
++        {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram64_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "cmdlog",
++            "type": "uint32"
++        },
++        {
++            "name": "guestdebug",
++            "type": "uint32"
++        },
++        {
++            "name": "debug",
++            "type": "uint32"
++        },
++        {
++            "name": "revision",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-29"
++}
++
++{
++    "return": [
++        {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram64_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "cmdlog",
++            "type": "uint32"
++        },
++        {
++            "name": "guestdebug",
++            "type": "uint32"
++        },
++        {
++            "name": "debug",
++            "type": "uint32"
++        },
++        {
++            "name": "revision",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-30"
++}
++
++{
++    "return": [
++        {
+             "name": "xenpv"
+         },
+         {
+@@ -1449,7 +1641,7 @@
+             "name": "none"
+         }
+     ],
+-    "id": "libvirt-26"
++    "id": "libvirt-31"
+ }
+ 
+ {
+@@ -1521,7 +1713,7 @@
+             "name": "Opteron_G4"
+         }
+     ],
+-    "id": "libvirt-27"
++    "id": "libvirt-32"
+ }
+ 
+ {
+@@ -1529,11 +1721,11 @@
+         "enabled": false,
+         "present": true
+     },
+-    "id": "libvirt-28"
++    "id": "libvirt-33"
+ }
+ 
+ {
+-    "id": "libvirt-29",
++    "id": "libvirt-34",
+     "error": {
+         "class": "CommandNotFound",
+         "desc": "The command query-tpm-models has not been found"
+@@ -1541,7 +1733,7 @@
+ }
+ 
+ {
+-    "id": "libvirt-30",
++    "id": "libvirt-35",
+     "error": {
+         "class": "CommandNotFound",
+         "desc": "The command query-tpm-types has not been found"
+@@ -1549,7 +1741,7 @@
+ }
+ 
+ {
+-    "id": "libvirt-31",
++    "id": "libvirt-36",
+     "error": {
+         "class": "CommandNotFound",
+         "desc": "The command query-command-line-options has not been found"
+@@ -1563,5 +1755,5 @@
+             "state": false
+         }
+     ],
+-    "id": "libvirt-32"
++    "id": "libvirt-37"
+ }
+diff --git a/tests/qemucapabilitiesdata/caps_1.3.1-1.caps b/tests/qemucapabilitiesdata/caps_1.3.1-1.caps
+index f4f0397..68bed9f 100644
+--- a/tests/qemucapabilitiesdata/caps_1.3.1-1.caps
++++ b/tests/qemucapabilitiesdata/caps_1.3.1-1.caps
+@@ -130,4 +130,8 @@
+     <flag name='host-pci-multidomain'/>
+     <flag name='usb-audio'/>
+     <flag name='ivshmem'/>
++    <flag name='VGA.vgamem_mb'/>
++    <flag name='vmware-svga.vgamem_mb'/>
++    <flag name='qxl.vgamem_mb'/>
++    <flag name='qxl-vga.vgamem_mb'/>
+   </qemuCaps>
+diff --git a/tests/qemucapabilitiesdata/caps_1.3.1-1.replies b/tests/qemucapabilitiesdata/caps_1.3.1-1.replies
+index 43713b2..e1f9704 100644
+--- a/tests/qemucapabilitiesdata/caps_1.3.1-1.replies
++++ b/tests/qemucapabilitiesdata/caps_1.3.1-1.replies
+@@ -1575,6 +1575,210 @@
+ {
+     "return": [
+         {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "mmio",
++            "type": "on/off"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-28"
++}
++
++{
++    "return": [
++        {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-29"
++}
++
++{
++    "return": [
++        {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "surfaces",
++            "type": "int32"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram64_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "cmdlog",
++            "type": "uint32"
++        },
++        {
++            "name": "guestdebug",
++            "type": "uint32"
++        },
++        {
++            "name": "debug",
++            "type": "uint32"
++        },
++        {
++            "name": "revision",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-30"
++}
++
++{
++    "return": [
++        {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "surfaces",
++            "type": "int32"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram64_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "cmdlog",
++            "type": "uint32"
++        },
++        {
++            "name": "guestdebug",
++            "type": "uint32"
++        },
++        {
++            "name": "debug",
++            "type": "uint32"
++        },
++        {
++            "name": "revision",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-31"
++}
++
++{
++    "return": [
++        {
+             "name": "xenpv"
+         },
+         {
+@@ -1623,7 +1827,7 @@
+             "name": "none"
+         }
+     ],
+-    "id": "libvirt-28"
++    "id": "libvirt-32"
+ }
+ 
+ {
+@@ -1701,7 +1905,7 @@
+             "name": "Opteron_G5"
+         }
+     ],
+-    "id": "libvirt-29"
++    "id": "libvirt-33"
+ }
+ 
+ {
+@@ -1709,11 +1913,11 @@
+         "enabled": false,
+         "present": true
+     },
+-    "id": "libvirt-30"
++    "id": "libvirt-34"
+ }
+ 
+ {
+-    "id": "libvirt-31",
++    "id": "libvirt-35",
+     "error": {
+         "class": "CommandNotFound",
+         "desc": "The command query-tpm-models has not been found"
+@@ -1721,7 +1925,7 @@
+ }
+ 
+ {
+-    "id": "libvirt-32",
++    "id": "libvirt-36",
+     "error": {
+         "class": "CommandNotFound",
+         "desc": "The command query-tpm-types has not been found"
+@@ -1729,7 +1933,7 @@
+ }
+ 
+ {
+-    "id": "libvirt-33",
++    "id": "libvirt-37",
+     "error": {
+         "class": "CommandNotFound",
+         "desc": "The command query-command-line-options has not been found"
+@@ -1743,5 +1947,5 @@
+             "state": false
+         }
+     ],
+-    "id": "libvirt-34"
++    "id": "libvirt-38"
+ }
+diff --git a/tests/qemucapabilitiesdata/caps_1.4.2-1.caps b/tests/qemucapabilitiesdata/caps_1.4.2-1.caps
+index e6659e4..baf2e77 100644
+--- a/tests/qemucapabilitiesdata/caps_1.4.2-1.caps
++++ b/tests/qemucapabilitiesdata/caps_1.4.2-1.caps
+@@ -131,4 +131,8 @@
+     <flag name='host-pci-multidomain'/>
+     <flag name='usb-audio'/>
+     <flag name='ivshmem'/>
++    <flag name='VGA.vgamem_mb'/>
++    <flag name='vmware-svga.vgamem_mb'/>
++    <flag name='qxl.vgamem_mb'/>
++    <flag name='qxl-vga.vgamem_mb'/>
+   </qemuCaps>
+diff --git a/tests/qemucapabilitiesdata/caps_1.4.2-1.replies b/tests/qemucapabilitiesdata/caps_1.4.2-1.replies
+index 34384f8..3d797b2 100644
+--- a/tests/qemucapabilitiesdata/caps_1.4.2-1.replies
++++ b/tests/qemucapabilitiesdata/caps_1.4.2-1.replies
+@@ -1622,6 +1622,210 @@
+ {
+     "return": [
+         {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "mmio",
++            "type": "on/off"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-28"
++}
++
++{
++    "return": [
++        {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-29"
++}
++
++{
++    "return": [
++        {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "surfaces",
++            "type": "int32"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram64_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "cmdlog",
++            "type": "uint32"
++        },
++        {
++            "name": "guestdebug",
++            "type": "uint32"
++        },
++        {
++            "name": "debug",
++            "type": "uint32"
++        },
++        {
++            "name": "revision",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-30"
++}
++
++{
++    "return": [
++        {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "surfaces",
++            "type": "int32"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram64_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "cmdlog",
++            "type": "uint32"
++        },
++        {
++            "name": "guestdebug",
++            "type": "uint32"
++        },
++        {
++            "name": "debug",
++            "type": "uint32"
++        },
++        {
++            "name": "revision",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-31"
++}
++
++{
++    "return": [
++        {
+             "name": "xenpv"
+         },
+         {
+@@ -1673,7 +1877,7 @@
+             "name": "none"
+         }
+     ],
+-    "id": "libvirt-28"
++    "id": "libvirt-32"
+ }
+ 
+ {
+@@ -1751,7 +1955,7 @@
+             "name": "qemu64"
+         }
+     ],
+-    "id": "libvirt-29"
++    "id": "libvirt-33"
+ }
+ 
+ {
+@@ -1759,11 +1963,11 @@
+         "enabled": false,
+         "present": true
+     },
+-    "id": "libvirt-30"
++    "id": "libvirt-34"
+ }
+ 
+ {
+-    "id": "libvirt-31",
++    "id": "libvirt-35",
+     "error": {
+         "class": "CommandNotFound",
+         "desc": "The command query-tpm-models has not been found"
+@@ -1771,7 +1975,7 @@
+ }
+ 
+ {
+-    "id": "libvirt-32",
++    "id": "libvirt-36",
+     "error": {
+         "class": "CommandNotFound",
+         "desc": "The command query-tpm-types has not been found"
+@@ -1779,7 +1983,7 @@
+ }
+ 
+ {
+-    "id": "libvirt-33",
++    "id": "libvirt-37",
+     "error": {
+         "class": "CommandNotFound",
+         "desc": "The command query-command-line-options has not been found"
+@@ -1793,5 +1997,5 @@
+             "state": false
+         }
+     ],
+-    "id": "libvirt-34"
++    "id": "libvirt-38"
+ }
+diff --git a/tests/qemucapabilitiesdata/caps_1.5.3-1.caps b/tests/qemucapabilitiesdata/caps_1.5.3-1.caps
+index 9716cf5..496f305 100644
+--- a/tests/qemucapabilitiesdata/caps_1.5.3-1.caps
++++ b/tests/qemucapabilitiesdata/caps_1.5.3-1.caps
+@@ -140,4 +140,8 @@
+     <flag name='usb-audio'/>
+     <flag name='splash-timeout'/>
+     <flag name='ivshmem'/>
++    <flag name='VGA.vgamem_mb'/>
++    <flag name='vmware-svga.vgamem_mb'/>
++    <flag name='qxl.vgamem_mb'/>
++    <flag name='qxl-vga.vgamem_mb'/>
+   </qemuCaps>
+diff --git a/tests/qemucapabilitiesdata/caps_1.5.3-1.replies b/tests/qemucapabilitiesdata/caps_1.5.3-1.replies
+index 4613472..45571a3 100644
+--- a/tests/qemucapabilitiesdata/caps_1.5.3-1.replies
++++ b/tests/qemucapabilitiesdata/caps_1.5.3-1.replies
+@@ -1696,6 +1696,210 @@
+ {
+     "return": [
+         {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "mmio",
++            "type": "on/off"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-28"
++}
++
++{
++    "return": [
++        {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-29"
++}
++
++{
++    "return": [
++        {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "surfaces",
++            "type": "int32"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram64_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "cmdlog",
++            "type": "uint32"
++        },
++        {
++            "name": "guestdebug",
++            "type": "uint32"
++        },
++        {
++            "name": "debug",
++            "type": "uint32"
++        },
++        {
++            "name": "revision",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-30"
++}
++
++{
++    "return": [
++        {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "surfaces",
++            "type": "int32"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram64_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "cmdlog",
++            "type": "uint32"
++        },
++        {
++            "name": "guestdebug",
++            "type": "uint32"
++        },
++        {
++            "name": "debug",
++            "type": "uint32"
++        },
++        {
++            "name": "revision",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-31"
++}
++
++{
++    "return": [
++        {
+             "name": "pc-q35-1.4",
+             "cpu-max": 255
+         },
+@@ -1763,7 +1967,7 @@
+             "cpu-max": 1
+         }
+     ],
+-    "id": "libvirt-28"
++    "id": "libvirt-32"
+ }
+ 
+ {
+@@ -1841,7 +2045,7 @@
+             "name": "qemu64"
+         }
+     ],
+-    "id": "libvirt-29"
++    "id": "libvirt-33"
+ }
+ 
+ {
+@@ -1849,19 +2053,19 @@
+         "enabled": false,
+         "present": true
+     },
+-    "id": "libvirt-30"
++    "id": "libvirt-34"
+ }
+ 
+ {
+     "return": [
+     ],
+-    "id": "libvirt-31"
++    "id": "libvirt-35"
+ }
+ 
+ {
+     "return": [
+     ],
+-    "id": "libvirt-32"
++    "id": "libvirt-36"
+ }
+ 
+ {
+@@ -2537,7 +2741,7 @@
+             "option": "drive"
+         }
+     ],
+-    "id": "libvirt-33"
++    "id": "libvirt-37"
+ }
+ 
+ {
+@@ -2547,5 +2751,5 @@
+             "state": false
+         }
+     ],
+-    "id": "libvirt-34"
++    "id": "libvirt-38"
+ }
+diff --git a/tests/qemucapabilitiesdata/caps_1.6.0-1.caps b/tests/qemucapabilitiesdata/caps_1.6.0-1.caps
+index a820cd4..38333a6 100644
+--- a/tests/qemucapabilitiesdata/caps_1.6.0-1.caps
++++ b/tests/qemucapabilitiesdata/caps_1.6.0-1.caps
+@@ -146,4 +146,8 @@
+     <flag name='usb-audio'/>
+     <flag name='splash-timeout'/>
+     <flag name='ivshmem'/>
++    <flag name='VGA.vgamem_mb'/>
++    <flag name='vmware-svga.vgamem_mb'/>
++    <flag name='qxl.vgamem_mb'/>
++    <flag name='qxl-vga.vgamem_mb'/>
+   </qemuCaps>
+diff --git a/tests/qemucapabilitiesdata/caps_1.6.0-1.replies b/tests/qemucapabilitiesdata/caps_1.6.0-1.replies
+index 4205c89..ae4b3f4 100644
+--- a/tests/qemucapabilitiesdata/caps_1.6.0-1.replies
++++ b/tests/qemucapabilitiesdata/caps_1.6.0-1.replies
+@@ -1758,6 +1758,210 @@
+ {
+     "return": [
+         {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "mmio",
++            "type": "on/off"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-28"
++}
++
++{
++    "return": [
++        {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-29"
++}
++
++{
++    "return": [
++        {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "surfaces",
++            "type": "int32"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram64_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "cmdlog",
++            "type": "uint32"
++        },
++        {
++            "name": "guestdebug",
++            "type": "uint32"
++        },
++        {
++            "name": "debug",
++            "type": "uint32"
++        },
++        {
++            "name": "revision",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-30"
++}
++
++{
++    "return": [
++        {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "surfaces",
++            "type": "int32"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram64_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "cmdlog",
++            "type": "uint32"
++        },
++        {
++            "name": "guestdebug",
++            "type": "uint32"
++        },
++        {
++            "name": "debug",
++            "type": "uint32"
++        },
++        {
++            "name": "revision",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-31"
++}
++
++{
++    "return": [
++        {
+             "name": "xenpv",
+             "cpu-max": 1
+         },
+@@ -1841,7 +2045,7 @@
+             "cpu-max": 1
+         }
+     ],
+-    "id": "libvirt-28"
++    "id": "libvirt-32"
+ }
+ 
+ {
+@@ -1919,7 +2123,7 @@
+             "name": "qemu64"
+         }
+     ],
+-    "id": "libvirt-29"
++    "id": "libvirt-33"
+ }
+ 
+ {
+@@ -1927,19 +2131,19 @@
+         "enabled": false,
+         "present": true
+     },
+-    "id": "libvirt-30"
++    "id": "libvirt-34"
+ }
+ 
+ {
+     "return": [
+     ],
+-    "id": "libvirt-31"
++    "id": "libvirt-35"
+ }
+ 
+ {
+     "return": [
+     ],
+-    "id": "libvirt-32"
++    "id": "libvirt-36"
+ }
+ 
+ {
+@@ -2517,7 +2721,7 @@
+             "option": "drive"
+         }
+     ],
+-    "id": "libvirt-33"
++    "id": "libvirt-37"
+ }
+ 
+ {
+@@ -2539,5 +2743,5 @@
+             "state": false
+         }
+     ],
+-    "id": "libvirt-34"
++    "id": "libvirt-38"
+ }
+diff --git a/tests/qemucapabilitiesdata/caps_1.6.50-1.caps b/tests/qemucapabilitiesdata/caps_1.6.50-1.caps
+index f65b3f4..b093e08 100644
+--- a/tests/qemucapabilitiesdata/caps_1.6.50-1.caps
++++ b/tests/qemucapabilitiesdata/caps_1.6.50-1.caps
+@@ -146,4 +146,8 @@
+     <flag name='usb-audio'/>
+     <flag name='splash-timeout'/>
+     <flag name='ivshmem'/>
++    <flag name='VGA.vgamem_mb'/>
++    <flag name='vmware-svga.vgamem_mb'/>
++    <flag name='qxl.vgamem_mb'/>
++    <flag name='qxl-vga.vgamem_mb'/>
+   </qemuCaps>
+diff --git a/tests/qemucapabilitiesdata/caps_1.6.50-1.replies b/tests/qemucapabilitiesdata/caps_1.6.50-1.replies
+index 7582385..90d31f0 100644
+--- a/tests/qemucapabilitiesdata/caps_1.6.50-1.replies
++++ b/tests/qemucapabilitiesdata/caps_1.6.50-1.replies
+@@ -1722,6 +1722,210 @@
+ {
+     "return": [
+         {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "mmio",
++            "type": "on/off"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-28"
++}
++
++{
++    "return": [
++        {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-29"
++}
++
++{
++    "return": [
++        {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "surfaces",
++            "type": "int32"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram64_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "cmdlog",
++            "type": "uint32"
++        },
++        {
++            "name": "guestdebug",
++            "type": "uint32"
++        },
++        {
++            "name": "debug",
++            "type": "uint32"
++        },
++        {
++            "name": "revision",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-30"
++}
++
++{
++    "return": [
++        {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "surfaces",
++            "type": "int32"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram64_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "cmdlog",
++            "type": "uint32"
++        },
++        {
++            "name": "guestdebug",
++            "type": "uint32"
++        },
++        {
++            "name": "debug",
++            "type": "uint32"
++        },
++        {
++            "name": "revision",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-31"
++}
++
++{
++    "return": [
++        {
+             "name": "xenpv",
+             "cpu-max": 1
+         },
+@@ -1813,7 +2017,7 @@
+             "cpu-max": 1
+         }
+     ],
+-    "id": "libvirt-28"
++    "id": "libvirt-32"
+ }
+ 
+ {
+@@ -1891,7 +2095,7 @@
+             "name": "qemu64"
+         }
+     ],
+-    "id": "libvirt-29"
++    "id": "libvirt-33"
+ }
+ 
+ {
+@@ -1899,19 +2103,19 @@
+         "enabled": false,
+         "present": true
+     },
+-    "id": "libvirt-30"
++    "id": "libvirt-34"
+ }
+ 
+ {
+     "return": [
+     ],
+-    "id": "libvirt-31"
++    "id": "libvirt-35"
+ }
+ 
+ {
+     "return": [
+     ],
+-    "id": "libvirt-32"
++    "id": "libvirt-36"
+ }
+ 
+ {
+@@ -2499,7 +2703,7 @@
+             "option": "drive"
+         }
+     ],
+-    "id": "libvirt-33"
++    "id": "libvirt-37"
+ }
+ 
+ {
+@@ -2521,5 +2725,5 @@
+             "state": false
+         }
+     ],
+-    "id": "libvirt-34"
++    "id": "libvirt-38"
+ }
+diff --git a/tests/qemucapabilitiesdata/caps_2.1.1-1.caps b/tests/qemucapabilitiesdata/caps_2.1.1-1.caps
+index 7fc654d..57e6e14 100644
+--- a/tests/qemucapabilitiesdata/caps_2.1.1-1.caps
++++ b/tests/qemucapabilitiesdata/caps_2.1.1-1.caps
+@@ -160,4 +160,8 @@
+     <flag name='iothread'/>
+     <flag name='migrate-rdma'/>
+     <flag name='ivshmem'/>
++    <flag name='VGA.vgamem_mb'/>
++    <flag name='vmware-svga.vgamem_mb'/>
++    <flag name='qxl.vgamem_mb'/>
++    <flag name='qxl-vga.vgamem_mb'/>
+   </qemuCaps>
+diff --git a/tests/qemucapabilitiesdata/caps_2.1.1-1.replies b/tests/qemucapabilitiesdata/caps_2.1.1-1.replies
+index 74d09dc..511461a 100644
+--- a/tests/qemucapabilitiesdata/caps_2.1.1-1.replies
++++ b/tests/qemucapabilitiesdata/caps_2.1.1-1.replies
+@@ -2166,6 +2166,210 @@
+ }
+ 
+ {
++    "return": [
++        {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "mmio",
++            "type": "on/off"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-28"
++}
++
++{
++    "return": [
++        {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-29"
++}
++
++{
++    "return": [
++        {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "surfaces",
++            "type": "int32"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram64_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "cmdlog",
++            "type": "uint32"
++        },
++        {
++            "name": "guestdebug",
++            "type": "uint32"
++        },
++        {
++            "name": "debug",
++            "type": "uint32"
++        },
++        {
++            "name": "revision",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-30"
++}
++
++{
++    "return": [
++        {
++            "name": "command_serr_enable",
++            "type": "on/off"
++        },
++        {
++            "name": "multifunction",
++            "type": "on/off"
++        },
++        {
++            "name": "rombar",
++            "type": "uint32"
++        },
++        {
++            "name": "romfile",
++            "type": "string"
++        },
++        {
++            "name": "addr",
++            "type": "pci-devfn"
++        },
++        {
++            "name": "surfaces",
++            "type": "int32"
++        },
++        {
++            "name": "vgamem_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram64_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size_mb",
++            "type": "uint32"
++        },
++        {
++            "name": "cmdlog",
++            "type": "uint32"
++        },
++        {
++            "name": "guestdebug",
++            "type": "uint32"
++        },
++        {
++            "name": "debug",
++            "type": "uint32"
++        },
++        {
++            "name": "revision",
++            "type": "uint32"
++        },
++        {
++            "name": "vram_size",
++            "type": "uint32"
++        },
++        {
++            "name": "ram_size",
++            "type": "uint32"
++        }
++    ],
++    "id": "libvirt-31"
++}
++
++{
+   "return": [
+     {
+       "name": "pc-1.3",
+@@ -2275,7 +2479,7 @@
+       "cpu-max": 255
+     }
+   ],
+-  "id": "libvirt-28"
++  "id": "libvirt-32"
+ }
+ 
+ {
+@@ -2356,7 +2560,7 @@
+       "name": "qemu64"
+     }
+   ],
+-  "id": "libvirt-29"
++  "id": "libvirt-33"
+ }
+ 
+ {
+@@ -2364,21 +2568,21 @@
+     "enabled": false,
+     "present": true
+   },
+-  "id": "libvirt-30"
++  "id": "libvirt-34"
+ }
+ 
+ {
+   "return": [
+     "tpm-tis"
+   ],
+-  "id": "libvirt-31"
++  "id": "libvirt-35"
+ }
+ 
+ {
+   "return": [
+     "passthrough"
+   ],
+-  "id": "libvirt-32"
++  "id": "libvirt-36"
+ }
+ 
+ {
+@@ -3238,7 +3442,7 @@
+       "option": "drive"
+     }
+   ],
+-  "id": "libvirt-33"
++  "id": "libvirt-37"
+ }
+ 
+ {
+@@ -3260,5 +3464,5 @@
+       "capability": "zero-blocks"
+     }
+   ],
+-  "id": "libvirt-34"
++  "id": "libvirt-38"
+ }
+-- 
+2.1.3
+

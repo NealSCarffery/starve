@@ -1,0 +1,611 @@
+From 375c93d2f57b7620299c856e60207507ef28f552 Mon Sep 17 00:00:00 2001
+Message-Id: <375c93d2f57b7620299c856e60207507ef28f552@dist-git>
+From: Martin Kletzander <mkletzan@redhat.com>
+Date: Wed, 24 Sep 2014 16:55:41 +0200
+Subject: [PATCH] schemas: finish virTristate{Bool, Switch} transition
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1139364
+
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+(cherry picked from commit f864aac90bcc029584c9cc847ce36fdc108baad9)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ docs/schemas/basictypes.rng   |  19 ++++--
+ docs/schemas/capability.rng   |  10 +--
+ docs/schemas/domaincaps.rng   |   5 +-
+ docs/schemas/domaincommon.rng | 155 +++++++++---------------------------------
+ docs/schemas/interface.rng    |  19 +-----
+ docs/schemas/network.rng      |  29 ++------
+ docs/schemas/nwfilter.rng     |   5 +-
+ docs/schemas/secret.rng       |  10 +--
+ 8 files changed, 61 insertions(+), 191 deletions(-)
+
+diff --git a/docs/schemas/basictypes.rng b/docs/schemas/basictypes.rng
+index 75d5238..14245c9 100644
+--- a/docs/schemas/basictypes.rng
++++ b/docs/schemas/basictypes.rng
+@@ -77,10 +77,7 @@
+     </attribute>
+     <optional>
+       <attribute name="multifunction">
+-        <choice>
+-          <value>on</value>
+-          <value>off</value>
+-        </choice>
++        <ref name="virOnOff"/>
+       </attribute>
+     </optional>
+   </define>
+@@ -446,4 +443,18 @@
+     </optional>
+   </define>
+ 
++  <define name="virYesNo">
++    <choice>
++      <value>yes</value>
++      <value>no</value>
++    </choice>
++  </define>
++
++  <define name="virOnOff">
++    <choice>
++      <value>on</value>
++      <value>off</value>
++    </choice>
++  </define>
++
+ </grammar>
+diff --git a/docs/schemas/capability.rng b/docs/schemas/capability.rng
+index f954599..5f3ec70 100644
+--- a/docs/schemas/capability.rng
++++ b/docs/schemas/capability.rng
+@@ -405,16 +405,10 @@
+ 
+   <define name='featuretoggle'>
+     <attribute name='toggle'>
+-      <choice>
+-        <value>yes</value>
+-        <value>no</value>
+-      </choice>
++      <ref name="virYesNo"/>
+     </attribute>
+     <attribute name='default'>
+-      <choice>
+-        <value>on</value>
+-        <value>off</value>
+-      </choice>
++      <ref name="virOnOff"/>
+     </attribute>
+   </define>
+ 
+diff --git a/docs/schemas/domaincaps.rng b/docs/schemas/domaincaps.rng
+index f4a555f..35d3745 100644
+--- a/docs/schemas/domaincaps.rng
++++ b/docs/schemas/domaincaps.rng
+@@ -98,10 +98,7 @@
+ 
+   <define name='supported'>
+     <attribute name='supported'>
+-      <choice>
+-        <value>yes</value>
+-        <value>no</value>
+-      </choice>
++      <ref name="virYesNo"/>
+     </attribute>
+   </define>
+ 
+diff --git a/docs/schemas/domaincommon.rng b/docs/schemas/domaincommon.rng
+index badc17b..19dc82f 100644
+--- a/docs/schemas/domaincommon.rng
++++ b/docs/schemas/domaincommon.rng
+@@ -118,10 +118,7 @@
+           </attribute>
+           <optional>
+             <attribute name='relabel'>
+-              <choice>
+-                <value>yes</value>
+-                <value>no</value>
+-              </choice>
++              <ref name="virYesNo"/>
+             </attribute>
+           </optional>
+           <interleave>
+@@ -282,10 +279,7 @@
+         <optional>
+           <element name="bootmenu">
+             <attribute name="enable">
+-              <choice>
+-                <value>yes</value>
+-                <value>no</value>
+-              </choice>
++              <ref name="virYesNo"/>
+             </attribute>
+             <optional>
+               <attribute name="timeout">
+@@ -584,10 +578,7 @@
+         <ref name='scaledInteger'/>
+         <optional>
+           <attribute name="dumpCore">
+-            <choice>
+-              <value>on</value>
+-              <value>off</value>
+-            </choice>
++            <ref name="virOnOff"/>
+           </attribute>
+         </optional>
+       </element>
+@@ -1012,10 +1003,7 @@
+       </choice>
+       <optional>
+         <attribute name="present">
+-          <choice>
+-            <value>yes</value>
+-            <value>no</value>
+-          </choice>
++          <ref name="virYesNo"/>
+         </attribute>
+       </optional>
+       <empty/>
+@@ -1265,10 +1253,7 @@
+           </attribute>
+           <optional>
+             <attribute name="rawio">
+-              <choice>
+-                <value>yes</value>
+-                <value>no</value>
+-              </choice>
++              <ref name="virYesNo"/>
+             </attribute>
+           </optional>
+           <optional>
+@@ -1536,10 +1521,7 @@
+       </optional>
+       <optional>
+         <attribute name="removable">
+-          <choice>
+-            <value>on</value>
+-            <value>off</value>
+-          </choice>
++          <ref name="virOnOff"/>
+         </attribute>
+       </optional>
+     </element>
+@@ -1672,26 +1654,17 @@
+   </define>
+   <define name="ioeventfd">
+     <attribute name="ioeventfd">
+-      <choice>
+-        <value>on</value>
+-        <value>off</value>
+-      </choice>
++      <ref name="virOnOff"/>
+     </attribute>
+   </define>
+   <define name="event_idx">
+     <attribute name="event_idx">
+-      <choice>
+-        <value>on</value>
+-        <value>off</value>
+-      </choice>
++      <ref name="virOnOff"/>
+     </attribute>
+   </define>
+   <define name="copy_on_read">
+     <attribute name='copy_on_read'>
+-      <choice>
+-        <value>on</value>
+-        <value>off</value>
+-      </choice>
++      <ref name="virOnOff"/>
+     </attribute>
+     </define>
+   <define name="discard">
+@@ -2222,20 +2195,14 @@
+           </attribute>
+           <optional>
+             <attribute name="managed">
+-              <choice>
+-                <value>yes</value>
+-                <value>no</value>
+-              </choice>
++              <ref name="virYesNo"/>
+             </attribute>
+           </optional>
+           <interleave>
+             <element name="source">
+               <optional>
+                 <attribute name="missing">
+-                  <choice>
+-                    <value>yes</value>
+-                    <value>no</value>
+-                  </choice>
++                  <ref name="virYesNo"/>
+                 </attribute>
+               </optional>
+               <choice>
+@@ -2468,10 +2435,7 @@
+           </optional>
+           <optional>
+             <attribute name="fullscreen">
+-              <choice>
+-                <value>yes</value>
+-                <value>no</value>
+-              </choice>
++              <ref name="virYesNo"/>
+             </attribute>
+           </optional>
+         </group>
+@@ -2488,10 +2452,7 @@
+               </optional>
+               <optional>
+                 <attribute name="autoport">
+-                  <choice>
+-                    <value>yes</value>
+-                    <value>no</value>
+-                  </choice>
++                  <ref name="virYesNo"/>
+                 </attribute>
+               </optional>
+               <optional>
+@@ -2562,10 +2523,7 @@
+           </optional>
+           <optional>
+             <attribute name="autoport">
+-              <choice>
+-                <value>yes</value>
+-                <value>no</value>
+-              </choice>
++              <ref name="virYesNo"/>
+             </attribute>
+           </optional>
+           <optional>
+@@ -2674,10 +2632,7 @@
+             <optional>
+               <element name="playback">
+                 <attribute name="compression">
+-                  <choice>
+-                    <value>on</value>
+-                    <value>off</value>
+-                  </choice>
++                  <ref name="virOnOff"/>
+                 </attribute>
+                 <empty/>
+               </element>
+@@ -2697,10 +2652,7 @@
+             <optional>
+               <element name="clipboard">
+                 <attribute name="copypaste">
+-                  <choice>
+-                    <value>yes</value>
+-                    <value>no</value>
+-                  </choice>
++                  <ref name="virYesNo"/>
+                 </attribute>
+                 <empty/>
+               </element>
+@@ -2719,10 +2671,7 @@
+             <optional>
+               <element name="filetransfer">
+                 <attribute name="enable">
+-                  <choice>
+-                    <value>yes</value>
+-                    <value>no</value>
+-                  </choice>
++                  <ref name="virYesNo"/>
+                 </attribute>
+                 <empty/>
+               </element>
+@@ -2740,26 +2689,17 @@
+           </optional>
+           <optional>
+             <attribute name="autoport">
+-              <choice>
+-                <value>yes</value>
+-                <value>no</value>
+-              </choice>
++              <ref name="virYesNo"/>
+             </attribute>
+           </optional>
+           <optional>
+             <attribute name="replaceUser">
+-              <choice>
+-                <value>yes</value>
+-                <value>no</value>
+-              </choice>
++              <ref name="virYesNo"/>
+             </attribute>
+           </optional>
+           <optional>
+             <attribute name="multiUser">
+-              <choice>
+-                <value>yes</value>
+-                <value>no</value>
+-              </choice>
++              <ref name="virYesNo"/>
+             </attribute>
+           </optional>
+           <optional>
+@@ -2780,10 +2720,7 @@
+           </optional>
+           <optional>
+             <attribute name="fullscreen">
+-              <choice>
+-                <value>yes</value>
+-                <value>no</value>
+-              </choice>
++              <ref name="virYesNo"/>
+             </attribute>
+           </optional>
+         </group>
+@@ -2862,28 +2799,19 @@
+           </optional>
+           <optional>
+             <attribute name="primary">
+-              <choice>
+-                <value>yes</value>
+-                <value>no</value>
+-              </choice>
++              <ref name="virYesNo"/>
+             </attribute>
+           </optional>
+           <optional>
+             <element name="acceleration">
+               <optional>
+                 <attribute name="accel3d">
+-                  <choice>
+-                    <value>yes</value>
+-                    <value>no</value>
+-                  </choice>
++                  <ref name="virYesNo"/>
+                 </attribute>
+               </optional>
+               <optional>
+                 <attribute name="accel2d">
+-                  <choice>
+-                    <value>yes</value>
+-                    <value>no</value>
+-                  </choice>
++                  <ref name="virYesNo"/>
+                 </attribute>
+               </optional>
+             </element>
+@@ -3009,10 +2937,7 @@
+   <define name="suspendChoices">
+     <optional>
+       <attribute name="enabled">
+-        <choice>
+-          <value>yes</value>
+-          <value>no</value>
+-        </choice>
++        <ref name="virYesNo"/>
+       </attribute>
+     </optional>
+   </define>
+@@ -3104,10 +3029,7 @@
+   <define name="usbdevfilter">
+     <element name="usbdev">
+       <attribute name="allow">
+-        <choice>
+-          <value>yes</value>
+-          <value>no</value>
+-        </choice>
++        <ref name="virYesNo"/>
+       </attribute>
+       <optional>
+         <attribute name="class">
+@@ -3567,10 +3489,7 @@
+     </optional>
+     <optional>
+       <attribute name="managed">
+-        <choice>
+-          <value>yes</value>
+-          <value>no</value>
+-        </choice>
++        <ref name="virYesNo"/>
+       </attribute>
+     </optional>
+     <choice>
+@@ -3910,10 +3829,7 @@
+             <element name="apic">
+               <optional>
+                 <attribute name="eoi">
+-                  <choice>
+-                    <value>on</value>
+-                    <value>off</value>
+-                  </choice>
++                  <ref name="virOnOff"/>
+                 </attribute>
+               </optional>
+             </element>
+@@ -4215,10 +4131,7 @@
+     <element name="bios">
+       <optional>
+         <attribute name="useserial">
+-          <choice>
+-            <value>yes</value>
+-            <value>no</value>
+-          </choice>
++          <ref name="virYesNo"/>
+         </attribute>
+       </optional>
+       <optional>
+@@ -4288,10 +4201,7 @@
+     <element name="rom">
+       <optional>
+         <attribute name="bar">
+-          <choice>
+-            <value>on</value>
+-            <value>off</value>
+-          </choice>
++          <ref name="virOnOff"/>
+         </attribute>
+       </optional>
+       <optional>
+@@ -4761,10 +4671,7 @@
+ 
+   <define name="featurestate">
+     <attribute name="state">
+-      <choice>
+-        <value>on</value>
+-        <value>off</value>
+-      </choice>
++      <ref name="virOnOff"/>
+     </attribute>
+   </define>
+ 
+diff --git a/docs/schemas/interface.rng b/docs/schemas/interface.rng
+index 0f577d6..d78f877 100644
+--- a/docs/schemas/interface.rng
++++ b/docs/schemas/interface.rng
+@@ -127,7 +127,7 @@
+         <element name="bridge">
+           <optional>
+             <attribute name="stp">
+-              <ref name="on-or-off"/>
++              <ref name="virOnOff"/>
+             </attribute>
+           </optional>
+           <!-- Bridge forward delay (see 'brctl setfd') -->
+@@ -376,7 +376,7 @@
+     <element name="dhcp">
+       <optional>
+         <attribute name="peerdns">
+-          <ref name="yes-or-no"/>
++          <ref name="virYesNo"/>
+         </attribute>
+       </optional>
+     </element>
+@@ -415,21 +415,6 @@
+        instead of destination and nexthop instead of gateway.
+   -->
+ 
+-  <!-- Auxiliary definitions -->
+-  <define name="on-or-off">
+-    <choice>
+-      <value>on</value>
+-      <value>off</value>
+-    </choice>
+-  </define>
+-
+-  <define name="yes-or-no">
+-    <choice>
+-      <value>yes</value>
+-      <value>no</value>
+-    </choice>
+-  </define>
+-
+   <!-- Type library -->
+ 
+   <define name="timeval">
+diff --git a/docs/schemas/network.rng b/docs/schemas/network.rng
+index 0e7da89..d84ccc0 100644
+--- a/docs/schemas/network.rng
++++ b/docs/schemas/network.rng
+@@ -21,12 +21,9 @@
+            with no gateways addresses specified -->
+       <optional>
+         <attribute name="ipv6">
+-         <choice>
+-          <value>yes</value>
+-          <value>no</value>
+-          </choice>
+-         </attribute>
+-       </optional>
++          <ref name="virYesNo"/>
++        </attribute>
++      </optional>
+       <interleave>
+ 
+         <!-- The name of the network, used to refer to it through the API
+@@ -53,10 +50,7 @@
+ 
+             <optional>
+               <attribute name="stp">
+-                <choice>
+-                  <value>on</value>
+-                  <value>off</value>
+-                </choice>
++                <ref name="virOnOff"/>
+               </attribute>
+             </optional>
+ 
+@@ -104,10 +98,7 @@
+ 
+             <optional>
+               <attribute name="managed">
+-                <choice>
+-                  <value>yes</value>
+-                  <value>no</value>
+-                </choice>
++                <ref name="virYesNo"/>
+               </attribute>
+             </optional>
+             <interleave>
+@@ -203,10 +194,7 @@
+             </attribute>
+             <optional>
+               <attribute name="default">
+-                <choice>
+-                  <value>yes</value>
+-                  <value>no</value>
+-                </choice>
++                <ref name="virYesNo"/>
+               </attribute>
+             </optional>
+             <interleave>
+@@ -236,10 +224,7 @@
+           <element name="dns">
+             <optional>
+               <attribute name="forwardPlainNames">
+-                <choice>
+-                  <value>yes</value>
+-                  <value>no</value>
+-                </choice>
++                <ref name="virYesNo"/>
+               </attribute>
+             </optional>
+             <interleave>
+diff --git a/docs/schemas/nwfilter.rng b/docs/schemas/nwfilter.rng
+index f1aa699..2b54fd5 100644
+--- a/docs/schemas/nwfilter.rng
++++ b/docs/schemas/nwfilter.rng
+@@ -377,10 +377,7 @@
+     <interleave>
+       <optional>
+          <attribute name="match">
+-           <choice>
+-             <value>yes</value>
+-             <value>no</value>
+-           </choice>
++           <ref name="virYesNo"/>
+          </attribute>
+       </optional>
+     </interleave>
+diff --git a/docs/schemas/secret.rng b/docs/schemas/secret.rng
+index d7b8f83..e21e700 100644
+--- a/docs/schemas/secret.rng
++++ b/docs/schemas/secret.rng
+@@ -11,18 +11,12 @@
+     <element name='secret'>
+       <optional>
+         <attribute name='ephemeral'>
+-          <choice>
+-            <value>yes</value>
+-            <value>no</value>
+-          </choice>
++          <ref name="virYesNo"/>
+         </attribute>
+       </optional>
+       <optional>
+         <attribute name='private'>
+-          <choice>
+-            <value>yes</value>
+-            <value>no</value>
+-          </choice>
++          <ref name="virYesNo"/>
+         </attribute>
+       </optional>
+       <interleave>
+-- 
+2.1.1
+

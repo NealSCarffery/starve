@@ -1,0 +1,213 @@
+From db9b89f699644c68e0f41f90947b69a3d47b6f38 Mon Sep 17 00:00:00 2001
+Message-Id: <db9b89f699644c68e0f41f90947b69a3d47b6f38@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Fri, 21 Nov 2014 15:04:12 +0100
+Subject: [PATCH] storage: rbd: Implement support for passing config file
+ option
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1164528
+
+To be able to express some use cases of the RBD backing with libvirt, we
+need to be able to specify a config file for the RBD client to qemu as
+that is one of the commonly used options.
+
+(cherry picked from commit b7d1bee2b9a8d7ed76456447b090702223da39f5)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ docs/formatdomain.html.in                              |  9 +++++++++
+ docs/schemas/domaincommon.rng                          |  8 ++++++++
+ src/conf/domain_conf.c                                 | 18 ++++++++++++++++--
+ src/qemu/qemu_command.c                                |  3 +++
+ src/util/virstoragefile.c                              |  5 +++++
+ src/util/virstoragefile.h                              |  2 ++
+ .../qemuxml2argv-disk-drive-network-rbd.args           |  2 ++
+ .../qemuxml2argv-disk-drive-network-rbd.xml            |  8 ++++++++
+ 8 files changed, 53 insertions(+), 2 deletions(-)
+
+diff --git a/docs/formatdomain.html.in b/docs/formatdomain.html.in
+index 789f6ee..e044eab 100644
+--- a/docs/formatdomain.html.in
++++ b/docs/formatdomain.html.in
+@@ -1662,6 +1662,7 @@
+       &lt;source protocol="rbd" name="image_name2"&gt;
+         &lt;host name="hostname" port="7000"/&gt;
+         &lt;snapshot name="snapname"/&gt;
++        &lt;config file="/path/to/file"/&gt;
+       &lt;/source&gt;
+       &lt;target dev="hdc" bus="ide"/&gt;
+       &lt;auth username='myuser'&gt;
+@@ -2005,6 +2006,14 @@
+             source for storage protocols.
+             Supported for 'rbd' <span class="since">since 1.2.11 (QEMU only).</span>
+           </dd>
++          <dt><code>config</code></dt>
++          <dd>
++            The <code>file</code> attribute for the <code>config</code> element
++            provides a fully qualified path to a configuration file to be
++            provided as a parameter to the client of a networked storage
++            protocol. Supported for 'rbd' <span class="since">since 1.2.11
++            (QEMU only).</span>
++          </dd>
+         </dl>
+ 
+         <p>
+diff --git a/docs/schemas/domaincommon.rng b/docs/schemas/domaincommon.rng
+index fa17494..7cb37c7 100644
+--- a/docs/schemas/domaincommon.rng
++++ b/docs/schemas/domaincommon.rng
+@@ -1455,6 +1455,14 @@
+             <empty/>
+           </element>
+         </optional>
++        <optional>
++          <element name="config">
++            <attribute name="file">
++              <ref name="absFilePath"/>
++            </attribute>
++            <empty/>
++          </element>
++        </optional>
+         <empty/>
+       </element>
+     </interleave>
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 82d321a..baf16dc 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -3161,7 +3161,8 @@ virDomainDeviceDefPostParseInternal(virDomainDeviceDefPtr dev,
+     if (dev->type == VIR_DOMAIN_DEVICE_DISK) {
+         virDomainDiskDefPtr disk = dev->data.disk;
+ 
+-        /* internal snapshots are currently supported only with rbd: */
++        /* internal snapshots and config files are currently supported
++         * only with rbd: */
+         if (virStorageSourceGetActualType(disk->src) != VIR_STORAGE_TYPE_NETWORK &&
+             disk->src->protocol != VIR_STORAGE_NET_PROTOCOL_RBD) {
+             if (disk->src->snapshot) {
+@@ -3170,6 +3171,13 @@ virDomainDeviceDefPostParseInternal(virDomainDeviceDefPtr dev,
+                                  "only with 'rbd' disks"));
+                 return -1;
+             }
++
++            if (disk->src->configFile) {
++                virReportError(VIR_ERR_XML_ERROR, "%s",
++                               _("<config> element is currently supported "
++                                 "only with 'rbd' disks"));
++                return -1;
++            }
+         }
+     }
+ 
+@@ -5380,6 +5388,9 @@ virDomainDiskSourceParse(xmlNodePtr node,
+         /* snapshot currently works only for remote disks */
+         src->snapshot = virXPathString("string(./snapshot/@name)", ctxt);
+ 
++        /* config file currently only works with remote disks */
++        src->configFile = virXPathString("string(./config/@file)", ctxt);
++
+         if (virDomainStorageHostParse(node, &src->hosts, &src->nhosts) < 0)
+             goto cleanup;
+         break;
+@@ -15923,7 +15934,7 @@ virDomainDiskSourceFormatInternal(virBufferPtr buf,
+ 
+             VIR_FREE(path);
+ 
+-            if (src->nhosts == 0 && !src->snapshot) {
++            if (src->nhosts == 0 && !src->snapshot && !src->configFile) {
+                 virBufferAddLit(buf, "/>\n");
+             } else {
+                 virBufferAddLit(buf, ">\n");
+@@ -15949,6 +15960,9 @@ virDomainDiskSourceFormatInternal(virBufferPtr buf,
+                 virBufferEscapeString(buf, "<snapshot name='%s'/>\n",
+                                       src->snapshot);
+ 
++                virBufferEscapeString(buf, "<config file='%s'/>\n",
++                                      src->configFile);
++
+                 virBufferAdjustIndent(buf, -2);
+                 virBufferAddLit(buf, "</source>\n");
+             }
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 5d34ba3..09a22dc 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -3016,6 +3016,9 @@ qemuBuildNetworkDriveURI(virStorageSourcePtr src,
+                 }
+             }
+ 
++            if (src->configFile)
++                virBufferEscape(&buf, '\\', ":", ":conf=%s", src->configFile);
++
+             if (virBufferCheckError(&buf) < 0)
+                 goto cleanup;
+ 
+diff --git a/src/util/virstoragefile.c b/src/util/virstoragefile.c
+index 6cdc5be..580ad20 100644
+--- a/src/util/virstoragefile.c
++++ b/src/util/virstoragefile.c
+@@ -1843,6 +1843,7 @@ virStorageSourceCopy(const virStorageSource *src,
+         VIR_STRDUP(ret->relPath, src->relPath) < 0 ||
+         VIR_STRDUP(ret->backingStoreRaw, src->backingStoreRaw) < 0 ||
+         VIR_STRDUP(ret->snapshot, src->snapshot) < 0 ||
++        VIR_STRDUP(ret->configFile, src->configFile) < 0 ||
+         VIR_STRDUP(ret->compat, src->compat) < 0)
+         goto error;
+ 
+@@ -2328,6 +2329,10 @@ virStorageSourceParseRBDColonString(const char *rbdstr,
+             }
+         }
+ 
++        if (STRPREFIX(p, "conf=") &&
++            VIR_STRDUP(src->configFile, p + strlen("conf=")) < 0)
++            goto error;
++
+         p = next;
+     }
+     VIR_FREE(options);
+diff --git a/src/util/virstoragefile.h b/src/util/virstoragefile.h
+index 74aa1a3..3a585a4 100644
+--- a/src/util/virstoragefile.h
++++ b/src/util/virstoragefile.h
+@@ -237,6 +237,8 @@ struct _virStorageSource {
+     int protocol; /* virStorageNetProtocol */
+     char *volume; /* volume name for remote storage */
+     char *snapshot; /* for storage systems supporting internal snapshots */
++    char *configFile; /* some storage systems use config file as part of
++                         the source definition */
+     size_t nhosts;
+     virStorageNetHostDefPtr hosts;
+     virStorageSourcePoolDefPtr srcpool;
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-network-rbd.args b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-network-rbd.args
+index e4f1389..f634e8d 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-network-rbd.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-network-rbd.args
+@@ -9,4 +9,6 @@ mon3.example.org\:6322,if=virtio,format=raw' \
+ -drive 'file=rbd:pool/image@foo:auth_supported=none:\
+ mon_host=mon1.example.org\:6321\;mon2.example.org\:6322\;\
+ mon3.example.org\:6322,if=virtio,format=raw' \
++-drive file=rbd:pool/image@foo:auth_supported=none:\
++conf=/blah/test.conf,if=virtio,format=raw \
+ -net none -serial none -parallel none
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-network-rbd.xml b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-network-rbd.xml
+index f6accd8..9ffe633 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-network-rbd.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-network-rbd.xml
+@@ -46,6 +46,14 @@
+       </source>
+       <target dev='vdc' bus='virtio'/>
+     </disk>
++    <disk type='network' device='disk'>
++      <driver name='qemu' type='raw'/>
++      <source protocol='rbd' name='pool/image'>
++        <snapshot name='foo'/>
++        <config file='/blah/test.conf'/>
++      </source>
++      <target dev='vdd' bus='virtio'/>
++    </disk>
+     <controller type='usb' index='0'/>
+     <controller type='ide' index='0'/>
+     <controller type='pci' index='0' model='pci-root'/>
+-- 
+2.1.3
+

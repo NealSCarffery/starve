@@ -1,0 +1,115 @@
+From 6584db581b4044f5ec6bf6d01d0e1b32567cff1d Mon Sep 17 00:00:00 2001
+Message-Id: <6584db581b4044f5ec6bf6d01d0e1b32567cff1d@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Mon, 24 Nov 2014 17:51:17 +0100
+Subject: [PATCH] qemu: process: Refresh virtio channel guest state when
+ connecting to mon
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1146944
+
+Use data provided by "query-chardev" to refresh the guest frontend state
+of virtio channels.
+
+(cherry picked from commit 21c676c2aa60f55fbb5ade884b4f4bb80281c789)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_process.c | 68 +++++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 66 insertions(+), 2 deletions(-)
+
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index ebcd5e8..e68d9c6 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -2065,6 +2065,61 @@ qemuProcessFindCharDevicePTYs(virDomainObjPtr vm,
+ 
+ 
+ static int
++qemuProcessRefreshChannelVirtioState(virDomainObjPtr vm,
++                                     virHashTablePtr info)
++{
++    size_t i;
++    qemuMonitorChardevInfoPtr entry;
++    char id[32];
++
++    for (i = 0; i < vm->def->nchannels; i++) {
++        virDomainChrDefPtr chr = vm->def->channels[i];
++        if (chr->targetType == VIR_DOMAIN_CHR_CHANNEL_TARGET_TYPE_VIRTIO) {
++            if (snprintf(id, sizeof(id), "char%s",
++                         chr->info.alias) >= sizeof(id)) {
++                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                               _("failed to format device alias "
++                                 "for PTY retrieval"));
++                return -1;
++            }
++
++            /* port state not reported */
++            if (!(entry = virHashLookup(info, id)) ||
++                !entry->state)
++                continue;
++
++            chr->state = entry->state;
++        }
++    }
++
++    return 0;
++}
++
++
++static int
++qemuProcessReconnectRefreshChannelVirtioState(virQEMUDriverPtr driver,
++                                              virDomainObjPtr vm)
++{
++    qemuDomainObjPrivatePtr priv = vm->privateData;
++    virHashTablePtr info = NULL;
++    int ret = -1;
++
++    qemuDomainObjEnterMonitor(driver, vm);
++    ret = qemuMonitorGetChardevInfo(priv->mon, &info);
++    qemuDomainObjExitMonitor(driver, vm);
++
++    if (ret < 0)
++        goto cleanup;
++
++    ret = qemuProcessRefreshChannelVirtioState(vm, info);
++
++ cleanup:
++    virHashFree(info);
++    return ret;
++}
++
++
++static int
+ qemuProcessWaitForMonitor(virQEMUDriverPtr driver,
+                           virDomainObjPtr vm,
+                           int asyncJob,
+@@ -2107,8 +2162,14 @@ qemuProcessWaitForMonitor(virQEMUDriverPtr driver,
+     qemuDomainObjExitMonitor(driver, vm);
+ 
+     VIR_DEBUG("qemuMonitorGetChardevInfo returned %i", ret);
+-    if (ret == 0)
+-        ret = qemuProcessFindCharDevicePTYsMonitor(vm, qemuCaps, info);
++    if (ret == 0) {
++        if ((ret = qemuProcessFindCharDevicePTYsMonitor(vm, qemuCaps,
++                                                        info)) < 0)
++            goto cleanup;
++
++        if ((ret = qemuProcessRefreshChannelVirtioState(vm, info)) < 0)
++            goto cleanup;
++    }
+ 
+  cleanup:
+     virHashFree(info);
+@@ -3584,6 +3645,9 @@ qemuProcessReconnect(void *opaque)
+     if (qemuDomainCheckEjectableMedia(driver, obj, QEMU_ASYNC_JOB_NONE) < 0)
+         goto error;
+ 
++    if (qemuProcessReconnectRefreshChannelVirtioState(driver, obj) < 0)
++        goto error;
++
+     if (qemuProcessRecoverJob(driver, obj, conn, &oldjob) < 0)
+         goto error;
+ 
+-- 
+2.1.3
+

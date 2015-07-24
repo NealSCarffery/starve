@@ -1,0 +1,38 @@
+From 44f6d2dbebe8d8e3dc95465d0e90cb8c30e0cdb8 Mon Sep 17 00:00:00 2001
+Message-Id: <44f6d2dbebe8d8e3dc95465d0e90cb8c30e0cdb8@dist-git>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Tue, 9 Sep 2014 09:17:58 +0200
+Subject: [PATCH] qemu: Avoid incrementing jobs_queued if virTimeMillisNow
+ fails
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+(cherry picked from commit 4365247677fb835edd00e791a9ed13788b812bfa)
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1063724
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_domain.c | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/src/qemu/qemu_domain.c b/src/qemu/qemu_domain.c
+index 7b54306..8c94e27 100644
+--- a/src/qemu/qemu_domain.c
++++ b/src/qemu/qemu_domain.c
+@@ -1222,13 +1222,12 @@ qemuDomainObjBeginJobInternal(virQEMUDriverPtr driver,
+               qemuDomainAsyncJobTypeToString(priv->job.asyncJob),
+               obj, obj->def->name);
+ 
+-    priv->jobs_queued++;
+-
+     if (virTimeMillisNow(&now) < 0) {
+         virObjectUnref(cfg);
+         return -1;
+     }
+ 
++    priv->jobs_queued++;
+     then = now + QEMU_JOB_WAIT_TIME;
+ 
+     virObjectRef(obj);
+-- 
+2.1.0
+

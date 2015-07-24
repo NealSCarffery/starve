@@ -1,0 +1,59 @@
+From 08d883a0282f1a3355b868ed2037eb339d9f5d55 Mon Sep 17 00:00:00 2001
+Message-Id: <08d883a0282f1a3355b868ed2037eb339d9f5d55@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Wed, 1 Oct 2014 15:23:39 +0200
+Subject: [PATCH] qemu: monitor: Avoid shadowing variable "devname" on FreeBSD.
+ Again.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1113116
+
+FreeBSD's compiler complains that we shadow the symbol. Sigh.
+
+s/devname/dev_name/
+
+(cherry picked from commit 72945c062916bbfbb509a4b364cfa4bb9b5b2606)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_monitor_json.c | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index 2227744..adf560a 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -1967,7 +1967,7 @@ int qemuMonitorJSONBlockStatsUpdateCapacity(qemuMonitorPtr mon,
+         virJSONValuePtr inserted;
+         virJSONValuePtr image;
+         qemuBlockStatsPtr bstats;
+-        const char *devname;
++        const char *dev_name;
+ 
+         if (!dev || dev->type != VIR_JSON_TYPE_OBJECT) {
+             virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+@@ -1976,18 +1976,18 @@ int qemuMonitorJSONBlockStatsUpdateCapacity(qemuMonitorPtr mon,
+             goto cleanup;
+         }
+ 
+-        if (!(devname = virJSONValueObjectGetString(dev, "device"))) {
++        if (!(dev_name = virJSONValueObjectGetString(dev, "device"))) {
+             virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                            _("query-block device entry was not "
+                              "in expected format"));
+             goto cleanup;
+         }
+ 
+-        if (STRPREFIX(devname, QEMU_DRIVE_HOST_PREFIX))
+-            devname += strlen(QEMU_DRIVE_HOST_PREFIX);
++        if (STRPREFIX(dev_name, QEMU_DRIVE_HOST_PREFIX))
++            dev_name += strlen(QEMU_DRIVE_HOST_PREFIX);
+ 
+         /* ignore missing info */
+-        if (!(bstats = virHashLookup(stats, devname)))
++        if (!(bstats = virHashLookup(stats, dev_name)))
+             continue;
+ 
+         /* drive may be empty */
+-- 
+2.1.2
+

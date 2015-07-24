@@ -1,0 +1,106 @@
+From c39165c5465ab2d729b52682c6d23898a49406d5 Mon Sep 17 00:00:00 2001
+Message-Id: <c39165c5465ab2d729b52682c6d23898a49406d5@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Thu, 18 Sep 2014 09:29:51 -0400
+Subject: [PATCH] vircgroup: Introduce virCgroupNewIOThread
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1101574
+
+Add virCgroupNewIOThread() to mimic virCgroupNewVcpu() except the naming
+scheme with use "iothread" rather than "vcpu".
+
+(cherry picked from commit 3abb95cad4d0c452c92e136a4e41f15f60bdd658)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/libvirt_private.syms |  1 +
+ src/util/vircgroup.c     | 43 +++++++++++++++++++++++++++++++++++++++++++
+ src/util/vircgroup.h     |  6 ++++++
+ 3 files changed, 50 insertions(+)
+
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index 18cf0c2..55fff46 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -1088,6 +1088,7 @@ virCgroupNewDetectMachine;
+ virCgroupNewDomainPartition;
+ virCgroupNewEmulator;
+ virCgroupNewIgnoreError;
++virCgroupNewIOThread;
+ virCgroupNewMachine;
+ virCgroupNewPartition;
+ virCgroupNewSelf;
+diff --git a/src/util/vircgroup.c b/src/util/vircgroup.c
+index 8b554a9..2842831 100644
+--- a/src/util/vircgroup.c
++++ b/src/util/vircgroup.c
+@@ -1492,6 +1492,49 @@ virCgroupNewEmulator(virCgroupPtr domain,
+ }
+ 
+ 
++/**
++ * virCgroupNewIOThread:
++ *
++ * @domain: group for the domain
++ * @iothreadid: id of the iothread
++ * @create: true to create if not already existing
++ * @group: Pointer to returned virCgroupPtr
++ *
++ * Returns 0 on success, or -1 on error
++ */
++int
++virCgroupNewIOThread(virCgroupPtr domain,
++                     int iothreadid,
++                     bool create,
++                     virCgroupPtr *group)
++{
++    int ret = -1;
++    char *name = NULL;
++    int controllers;
++
++    if (virAsprintf(&name, "iothread%d", iothreadid) < 0)
++        goto cleanup;
++
++    controllers = ((1 << VIR_CGROUP_CONTROLLER_CPU) |
++                   (1 << VIR_CGROUP_CONTROLLER_CPUACCT) |
++                   (1 << VIR_CGROUP_CONTROLLER_CPUSET));
++
++    if (virCgroupNew(-1, name, domain, controllers, group) < 0)
++        goto cleanup;
++
++    if (virCgroupMakeGroup(domain, *group, create, VIR_CGROUP_NONE) < 0) {
++        virCgroupRemove(*group);
++        virCgroupFree(group);
++        goto cleanup;
++    }
++
++    ret = 0;
++ cleanup:
++    VIR_FREE(name);
++    return ret;
++}
++
++
+ int
+ virCgroupNewDetect(pid_t pid,
+                    int controllers,
+diff --git a/src/util/vircgroup.h b/src/util/vircgroup.h
+index 90b41f7..19e82d1 100644
+--- a/src/util/vircgroup.h
++++ b/src/util/vircgroup.h
+@@ -76,6 +76,12 @@ int virCgroupNewEmulator(virCgroupPtr domain,
+                          virCgroupPtr *group)
+     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(3);
+ 
++int virCgroupNewIOThread(virCgroupPtr domain,
++                         int iothreadid,
++                         bool create,
++                         virCgroupPtr *group)
++    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(4);
++
+ int virCgroupNewDetect(pid_t pid,
+                        int controllers,
+                        virCgroupPtr *group);
+-- 
+2.1.0
+

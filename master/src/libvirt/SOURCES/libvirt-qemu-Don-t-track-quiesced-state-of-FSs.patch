@@ -1,0 +1,206 @@
+From c8ef4373f815e030c3dd505b00bd9fffebe333f3 Mon Sep 17 00:00:00 2001
+Message-Id: <c8ef4373f815e030c3dd505b00bd9fffebe333f3@dist-git>
+From: Michal Privoznik <mprivozn@redhat.com>
+Date: Fri, 28 Nov 2014 15:15:06 +0100
+Subject: [PATCH] qemu: Don't track quiesced state of FSs
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1160084
+
+As of b6d4dad11b (1.2.5) we are trying to keep the status of FSFreeze
+in the guest. Even though I've tried to fixed couple of corner cases
+(6ea54769ba18), it occurred to me just recently, that the approach is
+broken by design. Firstly, there are many other ways to talk to
+qemu-ga (even through libvirt) that filesystems can be thawed (e.g.
+qemu-agent-command) without libvirt noticing. Moreover, there are
+plenty of ways to thaw filesystems without even qemu-ga noticing (yes,
+qemu-ga keeps internal track of FSFreeze status). So, instead of
+keeping the track ourselves, or asking qemu-ga for stale state, it's
+the best to let qemu-ga deal with that (and possibly let guest kernel
+propagate an error).
+
+Moreover, there's one bug with the following approach, if fsfreeze
+command failed, we've executed fsthaw subsequently. So issuing
+domfsfreeze in virsh gave the following result:
+
+virsh # domfsfreeze gentoo
+Froze 1 filesystem(s)
+
+virsh # domfsfreeze gentoo
+error: Unable to freeze filesystems
+error: internal error: unable to execute QEMU agent command 'guest-fsfreeze-freeze': The command guest-fsfreeze-freeze has been disabled for this instance
+
+virsh # domfsfreeze gentoo
+Froze 1 filesystem(s)
+
+virsh # domfsfreeze gentoo
+error: Unable to freeze filesystems
+error: internal error: unable to execute QEMU agent command 'guest-fsfreeze-freeze': The command guest-fsfreeze-freeze has been disabled for this instance
+
+Signed-off-by: Michal Privoznik <mprivozn@redhat.com>
+(cherry picked from commit 6085d917d5c5839b7ed351e99fadbbb56f5178fe)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_domain.c  |  5 -----
+ src/qemu/qemu_domain.h  |  2 --
+ src/qemu/qemu_driver.c  | 44 ++------------------------------------------
+ src/qemu/qemu_process.c |  5 -----
+ 4 files changed, 2 insertions(+), 54 deletions(-)
+
+diff --git a/src/qemu/qemu_domain.c b/src/qemu/qemu_domain.c
+index d248d5b..01fa3ac 100644
+--- a/src/qemu/qemu_domain.c
++++ b/src/qemu/qemu_domain.c
+@@ -564,9 +564,6 @@ qemuDomainObjPrivateXMLFormat(virBufferPtr buf, void *data)
+         virBufferAddLit(buf, "</devices>\n");
+     }
+ 
+-    if (priv->quiesced)
+-        virBufferAddLit(buf, "<quiesced/>\n");
+-
+     return 0;
+ }
+ 
+@@ -751,8 +748,6 @@ qemuDomainObjPrivateXMLParse(xmlXPathContextPtr ctxt, void *data)
+     }
+     VIR_FREE(nodes);
+ 
+-    priv->quiesced = virXPathBoolean("boolean(./quiesced)", ctxt) == 1;
+-
+     return 0;
+ 
+  error:
+diff --git a/src/qemu/qemu_domain.h b/src/qemu/qemu_domain.h
+index e4ea4ce..ebb282a 100644
+--- a/src/qemu/qemu_domain.h
++++ b/src/qemu/qemu_domain.h
+@@ -187,8 +187,6 @@ struct _qemuDomainObjPrivate {
+     char **qemuDevices; /* NULL-terminated list of devices aliases known to QEMU */
+ 
+     bool hookRun;  /* true if there was a hook run over this domain */
+-
+-    bool quiesced; /* true if filesystems are quiesced */
+ };
+ 
+ typedef enum {
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index e096cee..a9a7d30 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -12627,34 +12627,17 @@ qemuDomainPrepareDiskChainElement(virQEMUDriverPtr driver,
+  * is sent but failed, and number of frozen filesystems on success. If -2 is
+  * returned, FSThaw should be called revert the quiesced status. */
+ static int
+-qemuDomainSnapshotFSFreeze(virQEMUDriverPtr driver,
++qemuDomainSnapshotFSFreeze(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
+                            virDomainObjPtr vm,
+                            const char **mountpoints,
+                            unsigned int nmountpoints)
+ {
+     qemuDomainObjPrivatePtr priv = vm->privateData;
+-    virQEMUDriverConfigPtr cfg;
+     int frozen;
+ 
+-    if (priv->quiesced) {
+-        virReportError(VIR_ERR_OPERATION_INVALID, "%s",
+-                       _("domain is already quiesced"));
+-        return -1;
+-    }
+-
+     if (!qemuDomainAgentAvailable(priv, true))
+         return -1;
+ 
+-    priv->quiesced = true;
+-
+-    cfg = virQEMUDriverGetConfig(driver);
+-    if (virDomainSaveStatus(driver->xmlopt, cfg->stateDir, vm) < 0) {
+-        priv->quiesced = false;
+-        virObjectUnref(cfg);
+-        return -1;
+-    }
+-    virObjectUnref(cfg);
+-
+     qemuDomainObjEnterAgent(vm);
+     frozen = qemuAgentFSFreeze(priv->agent, mountpoints, nmountpoints);
+     qemuDomainObjExitAgent(vm);
+@@ -12664,24 +12647,17 @@ qemuDomainSnapshotFSFreeze(virQEMUDriverPtr driver,
+ 
+ /* Return -1 on error, otherwise number of thawed filesystems. */
+ static int
+-qemuDomainSnapshotFSThaw(virQEMUDriverPtr driver,
++qemuDomainSnapshotFSThaw(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
+                          virDomainObjPtr vm,
+                          bool report)
+ {
+     qemuDomainObjPrivatePtr priv = vm->privateData;
+-    virQEMUDriverConfigPtr cfg;
+     int thawed;
+     virErrorPtr err = NULL;
+ 
+     if (!qemuDomainAgentAvailable(priv, report))
+         return -1;
+ 
+-    if (!priv->quiesced && report) {
+-        virReportError(VIR_ERR_OPERATION_INVALID, "%s",
+-                       _("domain is not quiesced"));
+-        return -1;
+-    }
+-
+     qemuDomainObjEnterAgent(vm);
+     if (!report)
+         err = virSaveLastError();
+@@ -12692,18 +12668,6 @@ qemuDomainSnapshotFSThaw(virQEMUDriverPtr driver,
+ 
+     virFreeError(err);
+ 
+-    if (!report || thawed >= 0) {
+-        priv->quiesced = false;
+-
+-        cfg = virQEMUDriverGetConfig(driver);
+-        if (virDomainSaveStatus(driver->xmlopt, cfg->stateDir, vm) < 0) {
+-            /* Revert the statuses when we failed to save them. */
+-            priv->quiesced = true;
+-            thawed = -1;
+-        }
+-        virObjectUnref(cfg);
+-    }
+-
+     return thawed;
+ }
+ 
+@@ -17562,10 +17526,6 @@ qemuDomainFSFreeze(virDomainPtr dom,
+     }
+ 
+     ret = qemuDomainSnapshotFSFreeze(driver, vm, mountpoints, nmountpoints);
+-    if (ret == -2) {
+-        qemuDomainSnapshotFSThaw(driver, vm, false);
+-        ret = -1;
+-    }
+ 
+  endjob:
+     if (!qemuDomainObjEndJob(driver, vm))
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index f384b33..1125f4c 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -537,10 +537,6 @@ qemuProcessHandleReset(qemuMonitorPtr mon ATTRIBUTE_UNUSED,
+     priv = vm->privateData;
+     if (priv->agent)
+         qemuAgentNotifyEvent(priv->agent, QEMU_AGENT_EVENT_RESET);
+-    /* Clear some domain runtime information. For instance,
+-     * fsfreeze won't survive domain reset. This, however,
+-     * required the domain status file to be rewritten onto disk. */
+-    priv->quiesced = false;
+ 
+     if (virDomainSaveStatus(driver->xmlopt, cfg->stateDir, vm) < 0)
+         VIR_WARN("Failed to save status on vm %s", vm->def->name);
+@@ -4972,7 +4968,6 @@ void qemuProcessStop(virQEMUDriverPtr driver,
+ 
+     virPortAllocatorRelease(driver->migrationPorts, priv->nbdPort);
+     priv->nbdPort = 0;
+-    priv->quiesced = false;
+ 
+     if (priv->agent) {
+         qemuAgentClose(priv->agent);
+-- 
+2.1.3
+

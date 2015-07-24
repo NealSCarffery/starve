@@ -1,0 +1,39 @@
+From 403c8a3286a5f2a6b86f1b76737eb76bc8a01cb6 Mon Sep 17 00:00:00 2001
+Message-Id: <403c8a3286a5f2a6b86f1b76737eb76bc8a01cb6@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Tue, 16 Sep 2014 18:11:04 +0200
+Subject: [PATCH] util: storage: Copy driver type when initializing chain
+ element
+
+virStorageSourceInitChainElement initializes a new storage chain element
+for use as a new disk source. If the new element doesn't contain the
+driver name, copy it from the old source.
+
+This fixes issue where a disk would forget the driver after a snapshot.
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1140984
+(cherry picked from commit 865421c94a63f43c0164d598a73226d0e4231c93)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/util/virstoragefile.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/util/virstoragefile.c b/src/util/virstoragefile.c
+index 5b6b2f5..79f4adb 100644
+--- a/src/util/virstoragefile.c
++++ b/src/util/virstoragefile.c
+@@ -1920,6 +1920,10 @@ virStorageSourceInitChainElement(virStorageSourcePtr newelem,
+         virStorageSourceSeclabelsCopy(newelem, old) < 0)
+         goto cleanup;
+ 
++    if (!newelem->driverName &&
++        VIR_STRDUP(newelem->driverName, old->driverName) < 0)
++        goto cleanup;
++
+     newelem->shared = old->shared;
+     newelem->readonly = old->readonly;
+ 
+-- 
+2.1.0
+

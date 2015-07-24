@@ -1,0 +1,35 @@
+From 4d07d05042b45aea07e2458021a88af24b3be225 Mon Sep 17 00:00:00 2001
+Message-Id: <4d07d05042b45aea07e2458021a88af24b3be225@dist-git>
+From: Wang Rui <moon.wangrui@huawei.com>
+Date: Tue, 25 Nov 2014 19:51:45 +0800
+Subject: [PATCH] qemu: add the missing jobinfo type in qemuDomainGetJobInfo
+
+Commit 6fcddfcd refactored job statistics but missed the jobinfo type updated
+in qemuDomainGetJobInfo. After this patch, we can use virDomainGetJobInfo to
+get jobinfo type again.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1167883
+
+Signed-off-by: Wang Rui <moon.wangrui@huawei.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+(cherry picked from commit 64b84911cecb82afa7ec08ce206eb1b71f76e04d)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_domain.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/qemu/qemu_domain.c b/src/qemu/qemu_domain.c
+index f61593b..d248d5b 100644
+--- a/src/qemu/qemu_domain.c
++++ b/src/qemu/qemu_domain.c
+@@ -258,6 +258,7 @@ int
+ qemuDomainJobInfoToInfo(qemuDomainJobInfoPtr jobInfo,
+                         virDomainJobInfoPtr info)
+ {
++    info->type = jobInfo->type;
+     info->timeElapsed = jobInfo->timeElapsed;
+     info->timeRemaining = jobInfo->timeRemaining;
+ 
+-- 
+2.1.3
+

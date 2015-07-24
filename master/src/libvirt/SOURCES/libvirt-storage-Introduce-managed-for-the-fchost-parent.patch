@@ -1,0 +1,380 @@
+From fc7567b997f6cee3cce2ce291992706ede61b9c3 Mon Sep 17 00:00:00 2001
+Message-Id: <fc7567b997f6cee3cce2ce291992706ede61b9c3@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Wed, 12 Nov 2014 13:34:50 -0500
+Subject: [PATCH] storage: Introduce 'managed' for the fchost parent
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1160926
+
+Introduce a 'managed' attribute to allow libvirt to decide whether to
+delete a vHBA vport created via external means such as nodedev-create.
+The code currently decides whether to delete the vHBA based solely on
+whether the parent was provided at creation time. However, that may not
+be the desired action, so rather than delete and force someone to create
+another vHBA via an additional nodedev-create allow the configuration of
+the storage pool to decide the desired action.
+
+During createVport when libvirt does the VPORT_CREATE, set the managed
+value to YES if not already set to indicate to the deleteVport code that
+it should delete the vHBA when the pool is destroyed.
+
+If libvirtd is restarted all the memory only state was lost, so for a
+persistent storage pool, use the virStoragePoolSaveConfig in order to
+write out the managed value.
+
+Because we're now saving the current configuration, we need to be sure
+to not save the parent in the output XML if it was undefined at start.
+Saving the name would cause future starts to always use the same parent
+which is not the expected result when not providing a parent. By not
+providing a parent, libvirt is expected to find the best available
+vHBA port for each subsequent (re)start.
+
+At deleteVport, use the new managed value to decide whether to execute
+the VPORT_DELETE.  Since we no longer save the parent in memory or in
+XML when provided, if it was not provided, then we have to look it up.
+
+(cherry picked from commit 5530f248db4974379f584eab5ad73dd20cf05de7)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ docs/formatstorage.html.in                         | 13 ++++
+ docs/schemas/basictypes.rng                        |  5 ++
+ src/conf/storage_conf.c                            | 17 +++++
+ src/conf/storage_conf.h                            |  1 +
+ src/storage/storage_backend_scsi.c                 | 88 ++++++++++++++++++----
+ .../pool-scsi-type-fc-host-managed.xml             | 15 ++++
+ .../pool-scsi-type-fc-host-managed.xml             | 18 +++++
+ tests/storagepoolxml2xmltest.c                     |  1 +
+ 8 files changed, 142 insertions(+), 16 deletions(-)
+ create mode 100644 tests/storagepoolxml2xmlin/pool-scsi-type-fc-host-managed.xml
+ create mode 100644 tests/storagepoolxml2xmlout/pool-scsi-type-fc-host-managed.xml
+
+diff --git a/docs/formatstorage.html.in b/docs/formatstorage.html.in
+index 7872112..cb6393c 100644
+--- a/docs/formatstorage.html.in
++++ b/docs/formatstorage.html.in
+@@ -189,6 +189,19 @@
+             defined for an existing scsi_host or by creating a vHBA.
+             <span class="since">Since 1.0.4</span>
+           </dd>
++          <dt><code>managed</code></dt>
++          <dd>An optional attribute to instruct the SCSI storage backend to
++            manage destroying the vHBA when the pool is destroyed. For
++            configurations that do not provide an already created vHBA
++            from a 'virsh nodedev-create', libvirt will set this property
++            to "yes". For configurations that have already created a vHBA
++            via 'virsh nodedev-create' and are using the wwnn/wwpn from
++            that vHBA and optionally the scsi_host parent, setting this
++            attribute to "yes" will allow libvirt to destroy the node device
++            when the pool is destroyed. If this attribute is set to "no" or
++            not defined in the XML, then libvirt will not destroy the vHBA.
++            <span class="since">Since 1.2.11</span>
++          </dd>
+         </dl>
+         <dl>
+           <dt><code>parentaddr</code></dt>
+diff --git a/docs/schemas/basictypes.rng b/docs/schemas/basictypes.rng
+index 14245c9..9ddd92b 100644
+--- a/docs/schemas/basictypes.rng
++++ b/docs/schemas/basictypes.rng
+@@ -389,6 +389,11 @@
+               <text/>
+             </attribute>
+           </optional>
++          <optional>
++            <attribute name='managed'>
++              <ref name="virYesNo"/>
++            </attribute>
++          </optional>
+           <attribute name='wwnn'>
+             <ref name='wwn'/>
+           </attribute>
+diff --git a/src/conf/storage_conf.c b/src/conf/storage_conf.c
+index 71e152f..9fd4601 100644
+--- a/src/conf/storage_conf.c
++++ b/src/conf/storage_conf.c
+@@ -474,6 +474,7 @@ virStoragePoolDefParseSource(xmlXPathContextPtr ctxt,
+     char *name = NULL;
+     char *port = NULL;
+     char *adapter_type = NULL;
++    char *managed = NULL;
+     int n;
+ 
+     relnode = ctxt->node;
+@@ -577,6 +578,18 @@ virStoragePoolDefParseSource(xmlXPathContextPtr ctxt,
+             VIR_STORAGE_POOL_SOURCE_ADAPTER_TYPE_FC_HOST) {
+             source->adapter.data.fchost.parent =
+                 virXPathString("string(./adapter/@parent)", ctxt);
++            managed = virXPathString("string(./adapter/@managed)", ctxt);
++            if (managed) {
++                source->adapter.data.fchost.managed =
++                    virTristateBoolTypeFromString(managed);
++                if (source->adapter.data.fchost.managed < 0) {
++                    virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                                   _("unknown fc_host managed setting '%s'"),
++                                   managed);
++                    goto cleanup;
++                }
++            }
++
+             source->adapter.data.fchost.wwnn =
+                 virXPathString("string(./adapter/@wwnn)", ctxt);
+             source->adapter.data.fchost.wwpn =
+@@ -674,6 +687,7 @@ virStoragePoolDefParseSource(xmlXPathContextPtr ctxt,
+     VIR_FREE(port);
+     VIR_FREE(nodeset);
+     VIR_FREE(adapter_type);
++    VIR_FREE(managed);
+     virStorageAuthDefFree(authdef);
+     return ret;
+ }
+@@ -1075,6 +1089,9 @@ virStoragePoolSourceFormat(virBufferPtr buf,
+         if (src->adapter.type == VIR_STORAGE_POOL_SOURCE_ADAPTER_TYPE_FC_HOST) {
+             virBufferEscapeString(buf, " parent='%s'",
+                                   src->adapter.data.fchost.parent);
++            if (src->adapter.data.fchost.managed)
++                virBufferAsprintf(buf, " managed='%s'",
++                                  virTristateBoolTypeToString(src->adapter.data.fchost.managed));
+             virBufferAsprintf(buf, " wwnn='%s' wwpn='%s'/>\n",
+                               src->adapter.data.fchost.wwnn,
+                               src->adapter.data.fchost.wwpn);
+diff --git a/src/conf/storage_conf.h b/src/conf/storage_conf.h
+index 67145a0..765f681 100644
+--- a/src/conf/storage_conf.h
++++ b/src/conf/storage_conf.h
+@@ -192,6 +192,7 @@ struct _virStoragePoolSourceAdapter {
+             char *parent;
+             char *wwnn;
+             char *wwpn;
++            int managed;        /* enum virTristateSwitch */
+         } fchost;
+     } data;
+ };
+diff --git a/src/storage/storage_backend_scsi.c b/src/storage/storage_backend_scsi.c
+index a5bb85f..3f61610 100644
+--- a/src/storage/storage_backend_scsi.c
++++ b/src/storage/storage_backend_scsi.c
+@@ -590,6 +590,9 @@ getVhbaSCSIHostParent(virConnectPtr conn,
+     if (!(def = virNodeDeviceDefParseString(xml, EXISTING_DEVICE, NULL)))
+         goto cleanup;
+ 
++    /* The caller checks whether the returned value is NULL or not
++     * before continuing
++     */
+     ignore_value(VIR_STRDUP(vhba_parent, def->parent));
+ 
+  cleanup:
+@@ -644,15 +647,21 @@ checkVhbaSCSIHostParent(virConnectPtr conn,
+ 
+ static int
+ createVport(virConnectPtr conn,
++            const char *configFile,
+             virStoragePoolDefPtr def)
+ {
+     virStoragePoolSourceAdapterPtr adapter = &def->source.adapter;
+     unsigned int parent_host;
+     char *name = NULL;
++    char *parent_hoststr = NULL;
+ 
+     if (adapter->type != VIR_STORAGE_POOL_SOURCE_ADAPTER_TYPE_FC_HOST)
+         return 0;
+ 
++    VIR_DEBUG("conn=%p, configFile='%s' parent='%s', wwnn='%s' wwpn='%s'",
++              conn, NULLSTR(configFile), NULLSTR(adapter->data.fchost.parent),
++              adapter->data.fchost.wwnn, adapter->data.fchost.wwpn);
++
+     /* If a parent was provided, then let's make sure it's vhost capable */
+     if (adapter->data.fchost.parent) {
+         if (virGetSCSIHostNumber(adapter->data.fchost.parent, &parent_host) < 0)
+@@ -687,15 +696,40 @@ createVport(virConnectPtr conn,
+     }
+ 
+     if (!adapter->data.fchost.parent) {
+-        if (!(adapter->data.fchost.parent = virFindFCHostCapableVport(NULL))) {
++        if (!(parent_hoststr = virFindFCHostCapableVport(NULL))) {
+             virReportError(VIR_ERR_XML_ERROR, "%s",
+                            _("'parent' for vHBA not specified, and "
+                              "cannot find one on this host"));
+             return -1;
+         }
+ 
+-        if (virGetSCSIHostNumber(adapter->data.fchost.parent, &parent_host) < 0)
++        if (virGetSCSIHostNumber(parent_hoststr, &parent_host) < 0) {
++            VIR_FREE(parent_hoststr);
+             return -1;
++        }
++
++        /* NOTE:
++         * We do not save the parent_hoststr in adapter->data.fchost.parent
++         * since we could be writing out the 'def' to the saved XML config.
++         * If we wrote out the name in the XML, then future starts would
++         * always use the same parent rather than finding the "best available"
++         * parent. Besides we have a way to determine the parent based on
++         * the 'name' field.
++         */
++        VIR_FREE(parent_hoststr);
++    }
++
++    /* Since we're creating the vHBA, then we need to manage removing it
++     * as well. Since we need this setting to "live" through a libvirtd
++     * restart, we need to save the persistent configuration. So if not
++     * already defined as YES, then force the issue.
++     */
++    if (adapter->data.fchost.managed != VIR_TRISTATE_BOOL_YES) {
++        adapter->data.fchost.managed = VIR_TRISTATE_BOOL_YES;
++        if (configFile) {
++            if (virStoragePoolSaveConfig(configFile, def) < 0)
++                return -1;
++        }
+     }
+ 
+     if (virManageVport(parent_host, adapter->data.fchost.wwpn,
+@@ -707,29 +741,50 @@ createVport(virConnectPtr conn,
+ }
+ 
+ static int
+-deleteVport(virStoragePoolSourceAdapter adapter)
++deleteVport(virConnectPtr conn,
++            virStoragePoolSourceAdapter adapter)
+ {
+     unsigned int parent_host;
+     char *name = NULL;
++    char *vhba_parent = NULL;
+     int ret = -1;
+ 
+     if (adapter.type != VIR_STORAGE_POOL_SOURCE_ADAPTER_TYPE_FC_HOST)
+         return 0;
+ 
+-    /* It must be a HBA instead of a vHBA as long as "parent"
+-     * is NULL. "createVport" guaranteed "parent" for a vHBA
+-     * cannot be NULL, it's either specified in XML, or detected
+-     * automatically.
+-     */
+-    if (!adapter.data.fchost.parent)
++    VIR_DEBUG("conn=%p parent='%s', managed='%d' wwnn='%s' wwpn='%s'",
++              conn, NULLSTR(adapter.data.fchost.parent),
++              adapter.data.fchost.managed,
++              adapter.data.fchost.wwnn,
++              adapter.data.fchost.wwpn);
++
++    /* If we're not managing the deletion of the vHBA, then just return */
++    if (adapter.data.fchost.managed != VIR_TRISTATE_BOOL_YES)
+         return 0;
+ 
++    /* Find our vHBA by searching the fc_host sysfs tree for our wwnn/wwpn */
+     if (!(name = virGetFCHostNameByWWN(NULL, adapter.data.fchost.wwnn,
+-                                       adapter.data.fchost.wwpn)))
+-        return -1;
+-
+-    if (virGetSCSIHostNumber(adapter.data.fchost.parent, &parent_host) < 0)
++                                       adapter.data.fchost.wwpn))) {
++        virReportError(VIR_ERR_INTERNAL_ERROR,
++                       _("Failed to find fc_host for wwnn='%s' and wwpn='%s'"),
++                       adapter.data.fchost.wwnn, adapter.data.fchost.wwpn);
+         goto cleanup;
++    }
++
++    /* If at startup time we provided a parent, then use that to
++     * get the parent_host value; otherwise, we have to determine
++     * the parent scsi_host which we did not save at startup time
++     */
++    if (adapter.data.fchost.parent) {
++        if (virGetSCSIHostNumber(adapter.data.fchost.parent, &parent_host) < 0)
++            goto cleanup;
++    } else {
++        if (!(vhba_parent = getVhbaSCSIHostParent(conn, name)))
++            goto cleanup;
++
++        if (virGetSCSIHostNumber(vhba_parent, &parent_host) < 0)
++            goto cleanup;
++    }
+ 
+     if (virManageVport(parent_host, adapter.data.fchost.wwpn,
+                        adapter.data.fchost.wwnn, VPORT_DELETE) < 0)
+@@ -738,6 +793,7 @@ deleteVport(virStoragePoolSourceAdapter adapter)
+     ret = 0;
+  cleanup:
+     VIR_FREE(name);
++    VIR_FREE(vhba_parent);
+     return ret;
+ }
+ 
+@@ -817,15 +873,15 @@ static int
+ virStorageBackendSCSIStartPool(virConnectPtr conn,
+                                virStoragePoolObjPtr pool)
+ {
+-    return createVport(conn, pool->def);
++    return createVport(conn, pool->configFile, pool->def);
+ }
+ 
+ static int
+-virStorageBackendSCSIStopPool(virConnectPtr conn ATTRIBUTE_UNUSED,
++virStorageBackendSCSIStopPool(virConnectPtr conn,
+                               virStoragePoolObjPtr pool)
+ {
+     virStoragePoolSourceAdapter adapter = pool->def->source.adapter;
+-    return deleteVport(adapter);
++    return deleteVport(conn, adapter);
+ }
+ 
+ virStorageBackend virStorageBackendSCSI = {
+diff --git a/tests/storagepoolxml2xmlin/pool-scsi-type-fc-host-managed.xml b/tests/storagepoolxml2xmlin/pool-scsi-type-fc-host-managed.xml
+new file mode 100644
+index 0000000..43611ee
+--- /dev/null
++++ b/tests/storagepoolxml2xmlin/pool-scsi-type-fc-host-managed.xml
+@@ -0,0 +1,15 @@
++<pool type='scsi'>
++  <name>hba0</name>
++  <uuid>e9392370-2917-565e-692b-d057f46512d6</uuid>
++  <source>
++    <adapter type='fc_host' parent='scsi_host5' managed='yes' wwnn='20000000c9831b4b' wwpn='10000000c9831b4b'/>
++  </source>
++  <target>
++    <path>/dev/disk/by-path</path>
++    <permissions>
++      <mode>0700</mode>
++      <owner>0</owner>
++      <group>0</group>
++    </permissions>
++  </target>
++</pool>
+diff --git a/tests/storagepoolxml2xmlout/pool-scsi-type-fc-host-managed.xml b/tests/storagepoolxml2xmlout/pool-scsi-type-fc-host-managed.xml
+new file mode 100644
+index 0000000..c8bb0db
+--- /dev/null
++++ b/tests/storagepoolxml2xmlout/pool-scsi-type-fc-host-managed.xml
+@@ -0,0 +1,18 @@
++<pool type='scsi'>
++  <name>hba0</name>
++  <uuid>e9392370-2917-565e-692b-d057f46512d6</uuid>
++  <capacity unit='bytes'>0</capacity>
++  <allocation unit='bytes'>0</allocation>
++  <available unit='bytes'>0</available>
++  <source>
++    <adapter type='fc_host' parent='scsi_host5' managed='yes' wwnn='20000000c9831b4b' wwpn='10000000c9831b4b'/>
++  </source>
++  <target>
++    <path>/dev/disk/by-path</path>
++    <permissions>
++      <mode>0700</mode>
++      <owner>0</owner>
++      <group>0</group>
++    </permissions>
++  </target>
++</pool>
+diff --git a/tests/storagepoolxml2xmltest.c b/tests/storagepoolxml2xmltest.c
+index d7ae10b..b692bf2 100644
+--- a/tests/storagepoolxml2xmltest.c
++++ b/tests/storagepoolxml2xmltest.c
+@@ -98,6 +98,7 @@ mymain(void)
+     DO_TEST("pool-scsi");
+     DO_TEST("pool-scsi-type-scsi-host");
+     DO_TEST("pool-scsi-type-fc-host");
++    DO_TEST("pool-scsi-type-fc-host-managed");
+     DO_TEST("pool-mpath");
+     DO_TEST("pool-iscsi-multiiqn");
+     DO_TEST("pool-iscsi-vendor-product");
+-- 
+2.1.3
+

@@ -1,0 +1,64 @@
+From c2f30fd3e2111d1645b83cbfecda655ec0b2d7dc Mon Sep 17 00:00:00 2001
+Message-Id: <c2f30fd3e2111d1645b83cbfecda655ec0b2d7dc@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Tue, 2 Sep 2014 15:38:31 +0200
+Subject: [PATCH] remote: Fix memory leak on error path when deserializing bulk
+ stats
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1136350
+
+The 'elem' variable along with the domain object would be leaked when
+taking the error path.
+
+Found by coverity.
+
+(cherry picked from commit 137d0165cd8c5daccc00786f8de272b57e68ff84)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/remote/remote_driver.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/src/remote/remote_driver.c b/src/remote/remote_driver.c
+index fda27f7..8bc4baa 100644
+--- a/src/remote/remote_driver.c
++++ b/src/remote/remote_driver.c
+@@ -7730,7 +7730,7 @@ remoteConnectGetAllDomainStats(virConnectPtr conn,
+     size_t i;
+     remote_connect_get_all_domain_stats_args args;
+     remote_connect_get_all_domain_stats_ret ret;
+-
++    virDomainStatsRecordPtr elem = NULL;
+     virDomainStatsRecordPtr *tmpret = NULL;
+ 
+     if (ndoms) {
+@@ -7769,7 +7769,6 @@ remoteConnectGetAllDomainStats(virConnectPtr conn,
+         goto cleanup;
+ 
+     for (i = 0; i < ret.retStats.retStats_len; i++) {
+-        virDomainStatsRecordPtr elem;
+         remote_domain_stats_record *rec = ret.retStats.retStats_val + i;
+ 
+         if (VIR_ALLOC(elem) < 0)
+@@ -7786,6 +7785,7 @@ remoteConnectGetAllDomainStats(virConnectPtr conn,
+             goto cleanup;
+ 
+         tmpret[i] = elem;
++        elem = NULL;
+     }
+ 
+     *retStats = tmpret;
+@@ -7793,6 +7793,10 @@ remoteConnectGetAllDomainStats(virConnectPtr conn,
+     rv = ret.retStats.retStats_len;
+ 
+  cleanup:
++    if (elem) {
++        virObjectUnref(elem->dom);
++        VIR_FREE(elem);
++    }
+     virDomainStatsRecordListFree(tmpret);
+     xdr_free((xdrproc_t)xdr_remote_connect_get_all_domain_stats_ret,
+              (char *) &ret);
+-- 
+2.1.0
+

@@ -1,0 +1,146 @@
+From cb1894016dbd5a776fcb86a7c0f00a898e7ba023 Mon Sep 17 00:00:00 2001
+Message-Id: <cb1894016dbd5a776fcb86a7c0f00a898e7ba023@dist-git>
+From: Michal Privoznik <mprivozn@redhat.com>
+Date: Thu, 18 Sep 2014 14:39:58 +0200
+Subject: [PATCH] qemu: Honor hugepages for UMA domains
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1135396
+
+There are two ways how to tell qemu to use huge pages. The first one
+is suitable for domains with NUMA nodes: the path to hugetlbfs mount
+is appended to NUMA node definition on the command line. The second
+one is suitable for UMA domains: here there's this global '-mem-path'
+argument that accepts path to the hugetlbfs mount point. However, the
+latter case was not used for all the cases that it should be. For
+instance:
+
+  <memoryBacking>
+    <hugepages>
+      <page size='2048' unit='KiB' nodeset='0'/>
+    </hugepages>
+  </memoryBacking>
+
+didn't trigger the '-mem-path' so the huge pages - despite being
+configured - were not used at all.
+
+Signed-off-by: Michal Privoznik <mprivozn@redhat.com>
+(cherry picked from commit 281f70013e9d6fff7f2d4b55f5133a837f023190)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_command.c                            | 25 ++++++++++++++---
+ .../qemuxml2argv-hugepages-pages5.args             |  7 +++++
+ .../qemuxml2argv-hugepages-pages5.xml              | 32 ++++++++++++++++++++++
+ tests/qemuxml2argvtest.c                           |  1 +
+ 4 files changed, 61 insertions(+), 4 deletions(-)
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-hugepages-pages5.args
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-hugepages-pages5.xml
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 45667d9..fb9c453 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -7685,7 +7685,7 @@ qemuBuildCommandLine(virConnectPtr conn,
+     virCommandAddArg(cmd, "-m");
+     def->mem.max_balloon = VIR_DIV_UP(def->mem.max_balloon, 1024) * 1024;
+     virCommandAddArgFormat(cmd, "%llu", def->mem.max_balloon / 1024);
+-    if (def->mem.nhugepages && !def->mem.hugepages[0].size) {
++    if (def->mem.nhugepages && (!def->cpu || !def->cpu->ncells)) {
+         char *mem_path;
+ 
+         if (!cfg->nhugetlbfs) {
+@@ -7701,9 +7701,26 @@ qemuBuildCommandLine(virConnectPtr conn,
+             goto error;
+         }
+ 
+-        if (!(mem_path = qemuGetDefaultHugepath(cfg->hugetlbfs,
+-                                                cfg->nhugetlbfs)))
+-            goto error;
++        if (def->mem.hugepages[0].size) {
++            for (j = 0; j < cfg->nhugetlbfs; j++) {
++                if (cfg->hugetlbfs[j].size == def->mem.hugepages[0].size)
++                    break;
++            }
++
++            if (j == cfg->nhugetlbfs) {
++                virReportError(VIR_ERR_INTERNAL_ERROR,
++                               _("Unable to find any usable hugetlbfs mount for %llu KiB"),
++                               def->mem.hugepages[0].size);
++                goto error;
++            }
++
++            if (!(mem_path = qemuGetHugepagePath(&cfg->hugetlbfs[j])))
++                goto error;
++        } else {
++            if (!(mem_path = qemuGetDefaultHugepath(cfg->hugetlbfs,
++                                                    cfg->nhugetlbfs)))
++                goto error;
++        }
+ 
+         virCommandAddArgList(cmd, "-mem-prealloc", "-mem-path",
+                              mem_path, NULL);
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-hugepages-pages5.args b/tests/qemuxml2argvdata/qemuxml2argv-hugepages-pages5.args
+new file mode 100644
+index 0000000..0e0f35a
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-hugepages-pages5.args
+@@ -0,0 +1,7 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=none \
++/usr/bin/qemu -S -M pc -m 1024 \
++-mem-prealloc \
++-mem-path /dev/hugepages2M/libvirt/qemu \
++-smp 2 -nographic \
++-monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -usb \
++-hda /dev/HostVG/QEMUGuest1 -net none -serial none -parallel none
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-hugepages-pages5.xml b/tests/qemuxml2argvdata/qemuxml2argv-hugepages-pages5.xml
+new file mode 100644
+index 0000000..50a9cd8
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-hugepages-pages5.xml
+@@ -0,0 +1,32 @@
++<domain type='qemu'>
++  <name>SomeDummyHugepagesGuest</name>
++  <uuid>ef1bdff4-27f3-4e85-a807-5fb4d58463cc</uuid>
++  <memory unit='KiB'>1048576</memory>
++  <currentMemory unit='KiB'>1048576</currentMemory>
++  <memoryBacking>
++    <hugepages>
++      <page size='2048' unit='KiB'/>
++    </hugepages>
++  </memoryBacking>
++  <vcpu placement='static'>2</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='block' device='disk'>
++      <source dev='/dev/HostVG/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' target='0' unit='0'/>
++    </disk>
++    <controller type='usb' index='0'/>
++    <controller type='ide' index='0'/>
++    <controller type='pci' index='0' model='pci-root'/>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index 3b5f31a..68fc01b 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -688,6 +688,7 @@ mymain(void)
+             QEMU_CAPS_OBJECT_MEMORY_FILE);
+     DO_TEST_FAILURE("hugepages-pages4", QEMU_CAPS_MEM_PATH,
+             QEMU_CAPS_OBJECT_MEMORY_RAM, QEMU_CAPS_OBJECT_MEMORY_FILE);
++    DO_TEST("hugepages-pages5", QEMU_CAPS_MEM_PATH);
+     DO_TEST("nosharepages", QEMU_CAPS_MACHINE_OPT, QEMU_CAPS_MEM_MERGE);
+     DO_TEST("disk-cdrom", NONE);
+     DO_TEST("disk-cdrom-network-http", QEMU_CAPS_KVM, QEMU_CAPS_DEVICE,
+-- 
+2.1.0
+

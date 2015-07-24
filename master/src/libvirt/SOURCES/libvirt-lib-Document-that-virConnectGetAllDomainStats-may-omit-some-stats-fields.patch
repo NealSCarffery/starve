@@ -1,0 +1,38 @@
+From 88213ead58c8367ca3fa921c3a154e846fade51c Mon Sep 17 00:00:00 2001
+Message-Id: <88213ead58c8367ca3fa921c3a154e846fade51c@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Wed, 1 Oct 2014 11:20:19 +0200
+Subject: [PATCH] lib: Document that virConnectGetAllDomainStats may omit some
+ stats fields
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1113116
+
+Add a note to make the users aware that some stats groups or fields may
+be missing in certain cases.
+
+(cherry picked from commit a6500ee4f2f0db3fb8c408075b7dbcd77f7669d2)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/libvirt.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/libvirt.c b/src/libvirt.c
+index d6aee93..af89aa2 100644
+--- a/src/libvirt.c
++++ b/src/libvirt.c
+@@ -21616,6 +21616,11 @@ virConnectGetDomainCapabilities(virConnectPtr conn,
+  * "block.<num>.errors" - Xen only: the 'oo_req' value as
+  *                        unsigned long long.
+  *
++ * Note that entire stats groups or individual stat fields may be missing from
++ * the output in case they are not supported by the given hypervisor, are not
++ * applicable for the current state of the guest domain, or their retrieval
++ * was not successful.
++ *
+  * Using 0 for @stats returns all stats groups supported by the given
+  * hypervisor.
+  *
+-- 
+2.1.2
+

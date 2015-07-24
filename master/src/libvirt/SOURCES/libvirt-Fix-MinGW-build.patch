@@ -1,0 +1,54 @@
+From ce9423c4be3408f3d230320ad3326f4b3c40d3c9 Mon Sep 17 00:00:00 2001
+Message-Id: <ce9423c4be3408f3d230320ad3326f4b3c40d3c9@dist-git>
+From: Pavel Hrdina <phrdina@redhat.com>
+Date: Fri, 26 Sep 2014 12:43:58 +0200
+Subject: [PATCH] Fix MinGW build
+
+When building on mingw the format string for long long/unsigned long
+long have to be I64d/I64u instead of lld/llu.
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+(cherry picked from commit b8b3c56566712757eebd76ac199b69673766226a)
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1115898
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ examples/object-events/event-test.c | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/examples/object-events/event-test.c b/examples/object-events/event-test.c
+index 9e09736..faf0cf2 100644
+--- a/examples/object-events/event-test.c
++++ b/examples/object-events/event-test.c
+@@ -476,6 +476,15 @@ myDomainEventTunableCallback(virConnectPtr conn ATTRIBUTE_UNUSED,
+     printf("%s EVENT: Domain %s(%d) tunable updated:\n",
+            __func__, virDomainGetName(dom), virDomainGetID(dom));
+ 
++#ifdef WIN32
++/* MinGW doesn't know the lld/llu so we have to use I64f/I64u instead. */
++# define LLD_FORMAT "%I64d"
++# define LLU_FORMAT "%I64u"
++#else /* WIN32 */
++# define LLD_FORMAT "%lld"
++# define LLU_FORMAT "%llu"
++#endif /* WIN32 */
++
+     for (i = 0; i < nparams; i++) {
+         switch (params[i].type) {
+         case VIR_TYPED_PARAM_INT:
+@@ -485,10 +494,10 @@ myDomainEventTunableCallback(virConnectPtr conn ATTRIBUTE_UNUSED,
+             printf("\t%s: %u\n", params[i].field, params[i].value.ui);
+             break;
+         case VIR_TYPED_PARAM_LLONG:
+-            printf("\t%s: %lld\n", params[i].field, params[i].value.l);
++            printf("\t%s: " LLD_FORMAT "\n", params[i].field, params[i].value.l);
+             break;
+         case VIR_TYPED_PARAM_ULLONG:
+-            printf("\t%s: %llu\n", params[i].field, params[i].value.ul);
++            printf("\t%s: " LLU_FORMAT "\n", params[i].field, params[i].value.ul);
+             break;
+         case VIR_TYPED_PARAM_DOUBLE:
+             printf("\t%s: %g\n", params[i].field, params[i].value.d);
+-- 
+2.1.1
+

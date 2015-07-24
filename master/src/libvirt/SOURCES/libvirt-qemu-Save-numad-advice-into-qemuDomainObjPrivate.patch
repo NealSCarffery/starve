@@ -1,0 +1,264 @@
+From 86d3bdb4d60def4336ac23f62d4ef3fcf49956bf Mon Sep 17 00:00:00 2001
+Message-Id: <86d3bdb4d60def4336ac23f62d4ef3fcf49956bf@dist-git>
+From: Martin Kletzander <mkletzan@redhat.com>
+Date: Thu, 15 Jan 2015 15:03:47 +0100
+Subject: [PATCH] qemu: Save numad advice into qemuDomainObjPrivate
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1161540
+
+Thanks to that we don't need to drag the pointer everywhere and future
+code will get cleaner.
+
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+(cherry picked from commit c74d58ad4770cb2e2060f81ce32bc78c8ed31e5a)
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+
+Conflicts:
+	src/qemu/qemu_cgroup.h -- 4882618e
+	src/qemu/qemu_process.c -- c63ef045
+
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_cgroup.c  | 18 +++++++-----------
+ src/qemu/qemu_cgroup.h  |  9 +++------
+ src/qemu/qemu_domain.c  |  1 +
+ src/qemu/qemu_domain.h  |  1 +
+ src/qemu/qemu_process.c | 21 ++++++++++-----------
+ 5 files changed, 22 insertions(+), 28 deletions(-)
+
+diff --git a/src/qemu/qemu_cgroup.c b/src/qemu/qemu_cgroup.c
+index ac12f43..fa94037 100644
+--- a/src/qemu/qemu_cgroup.c
++++ b/src/qemu/qemu_cgroup.c
+@@ -608,8 +608,7 @@ qemuSetupDevicesCgroup(virQEMUDriverPtr driver,
+ 
+ 
+ int
+-qemuSetupCpusetMems(virDomainObjPtr vm,
+-                    virBitmapPtr nodemask)
++qemuSetupCpusetMems(virDomainObjPtr vm)
+ {
+     virCgroupPtr cgroup_temp = NULL;
+     qemuDomainObjPrivatePtr priv = vm->privateData;
+@@ -620,7 +619,7 @@ qemuSetupCpusetMems(virDomainObjPtr vm,
+         return 0;
+ 
+     if (virDomainNumatuneMaybeFormatNodeset(vm->def->numatune,
+-                                            nodemask,
++                                            priv->autoNodeset,
+                                             &mem_mask, -1) < 0)
+         goto cleanup;
+ 
+@@ -640,7 +639,6 @@ qemuSetupCpusetMems(virDomainObjPtr vm,
+ 
+ static int
+ qemuSetupCpusetCgroup(virDomainObjPtr vm,
+-                      virBitmapPtr nodemask,
+                       virCapsPtr caps)
+ {
+     qemuDomainObjPrivatePtr priv = vm->privateData;
+@@ -655,7 +653,7 @@ qemuSetupCpusetCgroup(virDomainObjPtr vm,
+ 
+         if (vm->def->placement_mode == VIR_DOMAIN_CPU_PLACEMENT_MODE_AUTO) {
+             virBitmapPtr cpumap;
+-            if (!(cpumap = virCapabilitiesGetCpusForNodemask(caps, nodemask)))
++            if (!(cpumap = virCapabilitiesGetCpusForNodemask(caps, priv->autoNodeset)))
+                 goto cleanup;
+             cpu_mask = virBitmapFormat(cpumap);
+             virBitmapFree(cpumap);
+@@ -819,8 +817,7 @@ qemuConnectCgroup(virQEMUDriverPtr driver,
+ 
+ int
+ qemuSetupCgroup(virQEMUDriverPtr driver,
+-                virDomainObjPtr vm,
+-                virBitmapPtr nodemask)
++                virDomainObjPtr vm)
+ {
+     qemuDomainObjPrivatePtr priv = vm->privateData;
+     virCapsPtr caps = NULL;
+@@ -853,7 +850,7 @@ qemuSetupCgroup(virQEMUDriverPtr driver,
+     if (qemuSetupCpuCgroup(driver, vm) < 0)
+         goto cleanup;
+ 
+-    if (qemuSetupCpusetCgroup(vm, nodemask, caps) < 0)
++    if (qemuSetupCpusetCgroup(vm, caps) < 0)
+         goto cleanup;
+ 
+     ret = 0;
+@@ -1040,8 +1037,7 @@ qemuSetupCgroupForVcpu(virDomainObjPtr vm)
+ 
+ int
+ qemuSetupCgroupForEmulator(virQEMUDriverPtr driver,
+-                           virDomainObjPtr vm,
+-                           virBitmapPtr nodemask)
++                           virDomainObjPtr vm)
+ {
+     virBitmapPtr cpumask = NULL;
+     virBitmapPtr cpumap = NULL;
+@@ -1077,7 +1073,7 @@ qemuSetupCgroupForEmulator(virQEMUDriverPtr driver,
+         goto cleanup;
+ 
+     if (def->placement_mode == VIR_DOMAIN_CPU_PLACEMENT_MODE_AUTO) {
+-        if (!(cpumap = qemuPrepareCpumap(driver, nodemask)))
++        if (!(cpumap = qemuPrepareCpumap(driver, priv->autoNodeset)))
+             goto cleanup;
+         cpumask = cpumap;
+     } else if (def->cputune.emulatorpin) {
+diff --git a/src/qemu/qemu_cgroup.h b/src/qemu/qemu_cgroup.h
+index 2ae16df..8d9de3c 100644
+--- a/src/qemu/qemu_cgroup.h
++++ b/src/qemu/qemu_cgroup.h
+@@ -45,10 +45,8 @@ int qemuTeardownHostdevCgroup(virDomainObjPtr vm,
+ int qemuConnectCgroup(virQEMUDriverPtr driver,
+                       virDomainObjPtr vm);
+ int qemuSetupCgroup(virQEMUDriverPtr driver,
+-                    virDomainObjPtr vm,
+-                    virBitmapPtr nodemask);
+-int qemuSetupCpusetMems(virDomainObjPtr vm,
+-                        virBitmapPtr nodemask);
++                    virDomainObjPtr vm);
++int qemuSetupCpusetMems(virDomainObjPtr vm);
+ int qemuSetupCgroupVcpuBW(virCgroupPtr cgroup,
+                           unsigned long long period,
+                           long long quota);
+@@ -64,8 +62,7 @@ int qemuSetupCgroupIOThreadsPin(virCgroupPtr cgroup,
+ int qemuSetupCgroupForVcpu(virDomainObjPtr vm);
+ int qemuSetupCgroupForIOThreads(virDomainObjPtr vm);
+ int qemuSetupCgroupForEmulator(virQEMUDriverPtr driver,
+-                               virDomainObjPtr vm,
+-                               virBitmapPtr nodemask);
++                               virDomainObjPtr vm);
+ int qemuRemoveCgroup(virDomainObjPtr vm);
+ int qemuAddToCgroup(virDomainObjPtr vm);
+ 
+diff --git a/src/qemu/qemu_domain.c b/src/qemu/qemu_domain.c
+index 0cfc603..03ca663 100644
+--- a/src/qemu/qemu_domain.c
++++ b/src/qemu/qemu_domain.c
+@@ -461,6 +461,7 @@ qemuDomainObjPrivateFree(void *data)
+         qemuAgentClose(priv->agent);
+     }
+     VIR_FREE(priv->cleanupCallbacks);
++    virBitmapFree(priv->autoNodeset);
+     VIR_FREE(priv);
+ }
+ 
+diff --git a/src/qemu/qemu_domain.h b/src/qemu/qemu_domain.h
+index 9c94a65..53501f9 100644
+--- a/src/qemu/qemu_domain.h
++++ b/src/qemu/qemu_domain.h
+@@ -187,6 +187,7 @@ struct _qemuDomainObjPrivate {
+     char **qemuDevices; /* NULL-terminated list of devices aliases known to QEMU */
+ 
+     bool hookRun;  /* true if there was a hook run over this domain */
++    virBitmapPtr autoNodeset;
+ };
+ 
+ typedef enum {
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index c055eb7..90e45a8 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -2373,12 +2373,12 @@ qemuPrepareCpumap(virQEMUDriverPtr driver,
+  */
+ static int
+ qemuProcessInitCpuAffinity(virQEMUDriverPtr driver,
+-                           virDomainObjPtr vm,
+-                           virBitmapPtr nodemask)
++                           virDomainObjPtr vm)
+ {
+     int ret = -1;
+     virBitmapPtr cpumap = NULL;
+     virBitmapPtr cpumapToSet = NULL;
++    qemuDomainObjPrivatePtr priv = vm->privateData;
+ 
+     if (!vm->pid) {
+         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+@@ -2386,7 +2386,7 @@ qemuProcessInitCpuAffinity(virQEMUDriverPtr driver,
+         return -1;
+     }
+ 
+-    if (!(cpumap = qemuPrepareCpumap(driver, nodemask)))
++    if (!(cpumap = qemuPrepareCpumap(driver, priv->autoNodeset)))
+         return -1;
+ 
+     if (vm->def->placement_mode == VIR_DOMAIN_CPU_PLACEMENT_MODE_AUTO) {
+@@ -3115,13 +3115,13 @@ struct qemuProcessHookData {
+     virConnectPtr conn;
+     virDomainObjPtr vm;
+     virQEMUDriverPtr driver;
+-    virBitmapPtr nodemask;
+     virQEMUDriverConfigPtr cfg;
+ };
+ 
+ static int qemuProcessHook(void *data)
+ {
+     struct qemuProcessHookData *h = data;
++    qemuDomainObjPrivatePtr priv = h->vm->privateData;
+     int ret = -1;
+     int fd;
+     /* This method cannot use any mutexes, which are not
+@@ -3153,7 +3153,7 @@ static int qemuProcessHook(void *data)
+     if (virSecurityManagerClearSocketLabel(h->driver->securityManager, h->vm->def) < 0)
+         goto cleanup;
+ 
+-    if (virNumaSetupMemoryPolicy(h->vm->def->numatune, h->nodemask) < 0)
++    if (virNumaSetupMemoryPolicy(h->vm->def->numatune, priv->autoNodeset) < 0)
+         goto cleanup;
+ 
+     ret = 0;
+@@ -4511,7 +4511,7 @@ int qemuProcessStart(virConnectPtr conn,
+         if (virBitmapParse(nodeset, 0, &nodemask, VIR_DOMAIN_CPUMASK_LEN) < 0)
+             goto cleanup;
+     }
+-    hookData.nodemask = nodemask;
++    priv->autoNodeset = nodemask;
+ 
+     /* "volume" type disk's source must be translated before
+      * cgroup and security setting.
+@@ -4715,13 +4715,13 @@ int qemuProcessStart(virConnectPtr conn,
+     }
+ 
+     VIR_DEBUG("Setting up domain cgroup (if required)");
+-    if (qemuSetupCgroup(driver, vm, nodemask) < 0)
++    if (qemuSetupCgroup(driver, vm) < 0)
+         goto cleanup;
+ 
+     /* This must be done after cgroup placement to avoid resetting CPU
+      * affinity */
+     if (!vm->def->cputune.emulatorpin &&
+-        qemuProcessInitCpuAffinity(driver, vm, nodemask) < 0)
++        qemuProcessInitCpuAffinity(driver, vm) < 0)
+         goto cleanup;
+ 
+     VIR_DEBUG("Setting domain security labels");
+@@ -4769,7 +4769,7 @@ int qemuProcessStart(virConnectPtr conn,
+         goto cleanup;
+ 
+     VIR_DEBUG("Setting cgroup for emulator (if required)");
+-    if (qemuSetupCgroupForEmulator(driver, vm, nodemask) < 0)
++    if (qemuSetupCgroupForEmulator(driver, vm) < 0)
+         goto cleanup;
+ 
+     VIR_DEBUG("Setting affinity of emulator threads");
+@@ -4796,7 +4796,7 @@ int qemuProcessStart(virConnectPtr conn,
+         goto cleanup;
+ 
+     VIR_DEBUG("Setting up post-init cgroup restrictions");
+-    if (qemuSetupCpusetMems(vm, nodemask) < 0)
++    if (qemuSetupCpusetMems(vm) < 0)
+         goto cleanup;
+ 
+     VIR_DEBUG("Detecting VCPU PIDs");
+@@ -4938,7 +4938,6 @@ int qemuProcessStart(virConnectPtr conn,
+      * if we failed to initialize the now running VM. kill it off and
+      * pretend we never started it */
+     VIR_FREE(nodeset);
+-    virBitmapFree(nodemask);
+     virCommandFree(cmd);
+     VIR_FORCE_CLOSE(logfile);
+     if (priv->mon)
+-- 
+2.2.1
+

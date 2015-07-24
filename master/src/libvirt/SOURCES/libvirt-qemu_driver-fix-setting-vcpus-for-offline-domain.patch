@@ -1,0 +1,67 @@
+From 6f34957b6242c1537e91684af2864eeed434d5b1 Mon Sep 17 00:00:00 2001
+Message-Id: <6f34957b6242c1537e91684af2864eeed434d5b1@dist-git>
+From: Pavel Hrdina <phrdina@redhat.com>
+Date: Thu, 15 Jan 2015 15:03:51 +0100
+Subject: [PATCH] qemu_driver: fix setting vcpus for offline domain
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1161540
+
+Commit e3435caf fixed hot-plugging of vcpus with strict memory pinning
+on NUMA hosts, but unfortunately it also broke updating number of vcpus
+for offline guests using our API.
+
+The issue is that we try to create a cpu cgroup for non-running guest
+which fails as there are no cgroups for that domain. We should create
+cgroups and update cpuset.mems only if we are hot-plugging.
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+(cherry picked from commit e105dc981438bc33fa771bd67cece6234dbf6c8d)
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c | 26 ++++++++++++++------------
+ 1 file changed, 14 insertions(+), 12 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index afcf326..619f2d6 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -4672,21 +4672,23 @@ qemuDomainSetVcpusFlags(virDomainPtr dom, unsigned int nvcpus,
+ 
+     priv = vm->privateData;
+ 
+-    if (virCgroupNewEmulator(priv->cgroup, false, &cgroup_temp) < 0)
+-        goto cleanup;
+-
+-    if (!(all_nodes = virNumaGetHostNodeset()))
+-        goto cleanup;
+-
+-    if (!(all_nodes_str = virBitmapFormat(all_nodes)))
+-        goto cleanup;
+-
+     if (qemuDomainObjBeginJob(driver, vm, QEMU_JOB_MODIFY) < 0)
+         goto cleanup;
+ 
+-    if (virCgroupGetCpusetMems(cgroup_temp, &mem_mask) < 0 ||
+-        virCgroupSetCpusetMems(cgroup_temp, all_nodes_str) < 0)
+-        goto endjob;
++    if (flags & VIR_DOMAIN_AFFECT_LIVE && !(flags & VIR_DOMAIN_VCPU_GUEST)) {
++        if (virCgroupNewEmulator(priv->cgroup, false, &cgroup_temp) < 0)
++            goto cleanup;
++
++        if (!(all_nodes = virNumaGetHostNodeset()))
++            goto cleanup;
++
++        if (!(all_nodes_str = virBitmapFormat(all_nodes)))
++            goto cleanup;
++
++        if (virCgroupGetCpusetMems(cgroup_temp, &mem_mask) < 0 ||
++            virCgroupSetCpusetMems(cgroup_temp, all_nodes_str) < 0)
++            goto endjob;
++    }
+ 
+     maximum = (flags & VIR_DOMAIN_VCPU_MAXIMUM) != 0;
+     flags &= ~VIR_DOMAIN_VCPU_MAXIMUM;
+-- 
+2.2.1
+

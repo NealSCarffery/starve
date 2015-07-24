@@ -1,0 +1,113 @@
+From fce8dc52172734630bd5d274dd4bdf9845948f92 Mon Sep 17 00:00:00 2001
+Message-Id: <fce8dc52172734630bd5d274dd4bdf9845948f92@dist-git>
+From: Eric Blake <eblake@redhat.com>
+Date: Wed, 17 Dec 2014 03:09:02 -0700
+Subject: [PATCH] getstats: add block.n.path stat
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1041569
+
+I'm about to make block stats optionally more complex to cover
+backing chains, where block.count will no longer equal the number
+of <disks> for a domain.  For these reasons, it is nicer if the
+statistics output includes the source path (for local files).
+This patch doesn't add anything for network disks, although we
+may decide to add that later.
+
+With this patch, I now see the following for the same domain as
+in the previous patch (one qcow2 file, and an empty cdrom drive):
+$ virsh domstats --block foo
+Domain: 'foo'
+  block.count=2
+  block.0.name=hda
+  block.0.path=/var/lib/libvirt/images/foo.qcow2
+  block.1.name=hdc
+
+* src/libvirt-domain.c (virConnectGetAllDomainStats): Document
+new field.
+* tools/virsh.pod (domstats): Document new field.
+* src/qemu/qemu_driver.c (qemuDomainGetStatsBlock): Return the new
+stat for local files/block devices.
+(QEMU_ADD_NAME_PARAM): Add parameter.
+(qemuDomainGetStatsInterface): Update caller.
+
+Signed-off-by: Eric Blake <eblake@redhat.com>
+(cherry picked from commit 7b499262cb6d2bc2361bc4cd3742c0cea331666f)
+
+Conflicts:
+	src/libvirt-domain.c - file split from libvirt.c
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/libvirt.c          |  3 +++
+ src/qemu/qemu_driver.c | 11 +++++++----
+ tools/virsh.pod        |  2 ++
+ 3 files changed, 12 insertions(+), 4 deletions(-)
+
+diff --git a/src/libvirt.c b/src/libvirt.c
+index 1097693..2885965 100644
+--- a/src/libvirt.c
++++ b/src/libvirt.c
+@@ -21603,6 +21603,9 @@ virConnectGetDomainCapabilities(virConnectPtr conn,
+  * "block.<num>.name" - name of the block device <num> as string.
+  *                      matches the target name (vda/sda/hda) of the
+  *                      block device.
++ * "block.<num>.path" - string describing the source of block device <num>,
++ *                      if it is a file or block device (omitted for network
++ *                      sources and drives with no media inserted).
+  * "block.<num>.rd.reqs" - number of read requests as unsigned long long.
+  * "block.<num>.rd.bytes" - number of read bytes as unsigned long long.
+  * "block.<num>.rd.times" - total time (ns) spent on reads as
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index f0935d6..03b62d8 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -17898,11 +17898,11 @@ do { \
+         goto cleanup; \
+ } while (0)
+ 
+-#define QEMU_ADD_NAME_PARAM(record, maxparams, type, num, name) \
++#define QEMU_ADD_NAME_PARAM(record, maxparams, type, subtype, num, name) \
+ do { \
+     char param_name[VIR_TYPED_PARAM_FIELD_LENGTH]; \
+     snprintf(param_name, VIR_TYPED_PARAM_FIELD_LENGTH, \
+-             "%s.%zu.name", type, num); \
++             "%s.%zu.%s", type, num, subtype); \
+     if (virTypedParamsAddString(&(record)->params, \
+                                 &(record)->nparams, \
+                                 maxparams, \
+@@ -17948,7 +17948,7 @@ qemuDomainGetStatsInterface(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
+         memset(&tmp, 0, sizeof(tmp));
+ 
+         QEMU_ADD_NAME_PARAM(record, maxparams,
+-                            "net", i, dom->def->nets[i]->ifname);
++                            "net", "name", i, dom->def->nets[i]->ifname);
+ 
+         if (virNetInterfaceStats(dom->def->nets[i]->ifname, &tmp) < 0) {
+             virResetLastError();
+@@ -18041,7 +18041,10 @@ qemuDomainGetStatsBlock(virQEMUDriverPtr driver,
+         qemuBlockStats *entry;
+         virDomainDiskDefPtr disk = dom->def->disks[i];
+ 
+-        QEMU_ADD_NAME_PARAM(record, maxparams, "block", i, disk->dst);
++        QEMU_ADD_NAME_PARAM(record, maxparams, "block", "name", i, disk->dst);
++        if (virStorageSourceIsLocalStorage(disk->src) && disk->src->path)
++            QEMU_ADD_NAME_PARAM(record, maxparams, "block", "path",
++                                i, disk->src->path);
+ 
+         if (abbreviated || !disk->info.alias ||
+             !(entry = virHashLookup(stats, disk->info.alias))) {
+diff --git a/tools/virsh.pod b/tools/virsh.pod
+index d88fa9f..beef855 100644
+--- a/tools/virsh.pod
++++ b/tools/virsh.pod
+@@ -871,6 +871,8 @@ I<--interface> returns:
+ I<--block> returns:
+ "block.count" - number of block devices on this domain,
+ "block.<num>.name" - name of the target of the block device <num>,
++"block.<num>.path" - file source of block device <num>, if it is a
++local file or block device,
+ "block.<num>.rd.reqs" - number of read requests,
+ "block.<num>.rd.bytes" - number of read bytes,
+ "block.<num>.rd.times" - total time (ns) spent on reads,
+-- 
+2.2.0
+

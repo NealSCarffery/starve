@@ -1,0 +1,42 @@
+From 58fb8449e8c7d580c48f85b49993bf0a034e94f3 Mon Sep 17 00:00:00 2001
+Message-Id: <58fb8449e8c7d580c48f85b49993bf0a034e94f3@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Thu, 18 Sep 2014 09:29:58 -0400
+Subject: [PATCH] qemu: Fix iothreads issue
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1101574
+
+If there are no iothreads, then return from qemuProcessDetectIOThreadPIDs
+without error; otherwise, the following occurs:
+
+error: Failed to start domain $dom
+error: An error occurred, but the cause is unknown
+(cherry picked from commit b66c950fb9d5dc0e786cdf4ebe7e206cd5d7001c)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_process.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index ed73ae5..274fc1b 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -2109,9 +2109,13 @@ qemuProcessDetectIOThreadPIDs(virQEMUDriverPtr driver,
+         goto cleanup;
+     niothreads = qemuMonitorGetIOThreads(priv->mon, &iothreads);
+     qemuDomainObjExitMonitor(driver, vm);
+-    if (niothreads <= 0)
++    if (niothreads < 0)
+         goto cleanup;
+ 
++    /* Nothing to do */
++    if (niothreads == 0)
++        return 0;
++
+     if (niothreads != vm->def->iothreads) {
+         virReportError(VIR_ERR_INTERNAL_ERROR,
+                        _("got wrong number of IOThread pids from QEMU monitor. "
+-- 
+2.1.0
+

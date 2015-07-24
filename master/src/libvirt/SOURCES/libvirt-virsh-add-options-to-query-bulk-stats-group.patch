@@ -1,0 +1,96 @@
+From 9b04043536c8d36d6b777612c8050f8c722dfc8e Mon Sep 17 00:00:00 2001
+Message-Id: <9b04043536c8d36d6b777612c8050f8c722dfc8e@dist-git>
+From: Francesco Romani <fromani@redhat.com>
+Date: Wed, 1 Oct 2014 11:20:17 +0200
+Subject: [PATCH] virsh: add options to query bulk stats group
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1113116
+
+Add new bulk stats groups to the domstats command.
+
+Signed-off-by: Francesco Romani <fromani@redhat.com>
+(cherry picked from commit 1db475650a0fb6ebf4ac62a5067f10905319e313)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ tools/virsh-domain-monitor.c | 35 +++++++++++++++++++++++++++++++++++
+ tools/virsh.pod              |  4 +++-
+ 2 files changed, 38 insertions(+), 1 deletion(-)
+
+diff --git a/tools/virsh-domain-monitor.c b/tools/virsh-domain-monitor.c
+index 055d8d2..d013ca8 100644
+--- a/tools/virsh-domain-monitor.c
++++ b/tools/virsh-domain-monitor.c
+@@ -1972,6 +1972,26 @@ static const vshCmdOptDef opts_domstats[] = {
+      .type = VSH_OT_BOOL,
+      .help = N_("report domain state"),
+     },
++    {.name = "cpu-total",
++     .type = VSH_OT_BOOL,
++     .help = N_("report domain physical cpu usage"),
++    },
++    {.name = "balloon",
++     .type = VSH_OT_BOOL,
++     .help = N_("report domain balloon statistics"),
++    },
++    {.name = "vcpu",
++     .type = VSH_OT_BOOL,
++     .help = N_("report domain virtual cpu information"),
++    },
++    {.name = "interface",
++     .type = VSH_OT_BOOL,
++     .help = N_("report domain network interface information"),
++    },
++    {.name = "block",
++     .type = VSH_OT_BOOL,
++     .help = N_("report domain block device statistics"),
++    },
+     {.name = "list-active",
+      .type = VSH_OT_BOOL,
+      .help = N_("list only active domains"),
+@@ -2063,6 +2083,21 @@ cmdDomstats(vshControl *ctl, const vshCmd *cmd)
+     if (vshCommandOptBool(cmd, "state"))
+         stats |= VIR_DOMAIN_STATS_STATE;
+ 
++    if (vshCommandOptBool(cmd, "cpu-total"))
++        stats |= VIR_DOMAIN_STATS_CPU_TOTAL;
++
++    if (vshCommandOptBool(cmd, "balloon"))
++        stats |= VIR_DOMAIN_STATS_BALLOON;
++
++    if (vshCommandOptBool(cmd, "vcpu"))
++        stats |= VIR_DOMAIN_STATS_VCPU;
++
++    if (vshCommandOptBool(cmd, "interface"))
++        stats |= VIR_DOMAIN_STATS_INTERFACE;
++
++    if (vshCommandOptBool(cmd, "block"))
++        stats |= VIR_DOMAIN_STATS_BLOCK;
++
+     if (vshCommandOptBool(cmd, "list-active"))
+         flags |= VIR_CONNECT_GET_ALL_DOMAINS_STATS_ACTIVE;
+ 
+diff --git a/tools/virsh.pod b/tools/virsh.pod
+index 0f5523f..ea96d64 100644
+--- a/tools/virsh.pod
++++ b/tools/virsh.pod
+@@ -814,6 +814,7 @@ I<snapshot-create> for disk snapshots) will accept either target
+ or unique source names printed by this command.
+ 
+ =item B<domstats> [I<--raw>] [I<--enforce>] [I<--state>]
++[I<--cpu-total>] [I<--balloon>] [I<--vcpu>] [I<--interface>] [I<--block>]
+ [[I<--list-active>] [I<--list-inactive>] [I<--list-persistent>]
+ [I<--list-transient>] [I<--list-running>] [I<--list-paused>]
+ [I<--list-shutoff>] [I<--list-other>]] | [I<domain> ...]
+@@ -831,7 +832,8 @@ behavior use the I<--raw> flag.
+ 
+ The individual statistics groups are selectable via specific flags. By
+ default all supported statistics groups are returned. Supported
+-statistics groups flags are: I<--state>.
++statistics groups flags are: I<--state>, I<--cpu-total>, I<--balloon>,
++I<--vcpu>, I<--interface>, I<--block>.
+ 
+ Selecting a specific statistics groups doesn't guarantee that the
+ daemon supports the selected group of stats. Flag I<--enforce>
+-- 
+2.1.2
+

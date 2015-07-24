@@ -1,0 +1,392 @@
+From d0fd9e1092939dd2975d41fdbf1df017c71695e5 Mon Sep 17 00:00:00 2001
+Message-Id: <d0fd9e1092939dd2975d41fdbf1df017c71695e5@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Mon, 24 Nov 2014 17:51:14 +0100
+Subject: [PATCH] conf: Add channel state for virtio channels to the XML
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1146944
+
+To track state of virtio channels this patch adds a new output-only
+attribute called 'state' to the <target> element of virtio channels.
+
+This will be later populated with the guest state of the channel.
+
+(cherry picked from commit 24c25a68c21adc197325a6b43e69367c0085d1b2)
+
+Conflicts:
+	src/conf/domain_conf.c - context: brace cleanup not backported
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ docs/formatdomain.html.in                          |  9 ++++-
+ docs/schemas/domaincommon.rng                      |  8 ++++
+ src/conf/domain_conf.c                             | 32 +++++++++++++++-
+ src/conf/domain_conf.h                             | 12 ++++++
+ .../qemuxml2argv-channel-virtio-state.args         | 17 +++++++++
+ .../qemuxml2argv-channel-virtio-state.xml          | 42 +++++++++++++++++++++
+ tests/qemuxml2argvtest.c                           |  2 +
+ .../qemuxml2xmlout-channel-virtio-state-active.xml | 43 ++++++++++++++++++++++
+ ...emuxml2xmlout-channel-virtio-state-inactive.xml | 42 +++++++++++++++++++++
+ tests/qemuxml2xmltest.c                            |  1 +
+ 10 files changed, 204 insertions(+), 4 deletions(-)
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-state.args
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-state.xml
+ create mode 100644 tests/qemuxml2xmloutdata/qemuxml2xmlout-channel-virtio-state-active.xml
+ create mode 100644 tests/qemuxml2xmloutdata/qemuxml2xmlout-channel-virtio-state-inactive.xml
+
+diff --git a/docs/formatdomain.html.in b/docs/formatdomain.html.in
+index e044eab..f8d5b31 100644
+--- a/docs/formatdomain.html.in
++++ b/docs/formatdomain.html.in
+@@ -4896,7 +4896,7 @@ qemu-kvm -net nic,model=? /dev/null
+     &lt;/channel&gt;
+     &lt;channel type='unix'&gt;
+       &lt;source mode='bind' path='/var/lib/libvirt/qemu/f16x86_64.agent'/&gt;
+-      &lt;target type='virtio' name='org.qemu.guest_agent.0'/&gt;
++      &lt;target type='virtio' name='org.qemu.guest_agent.0' state='connected'/&gt;
+     &lt;/channel&gt;
+     &lt;channel type='spicevmc'&gt;
+       &lt;target type='virtio' name='com.redhat.spice.0'/&gt;
+@@ -4935,7 +4935,12 @@ qemu-kvm -net nic,model=? /dev/null
+         This is very useful in case of a qemu guest agent, where users don't
+         usually care about the source path since it's libvirt who talks to
+         the guest agent. In case users want to utilize this feature, they should
+-        leave <code>&lt;source&gt;</code> element out.
++        leave <code>&lt;source&gt;</code> element out. <span class="since">Since
++        1.2.11</span> the active XML for a virtio channel may contain an optional
++        <code>state</code> attribute that reflects whether a process in the
++        guest is active on the channel. This is an output-only attribute.
++        Possible values for the <code>state</code> attribute are
++        <code>connected</code> and <code>disconnected</code>.
+       </dd>
+       <dt><code>spicevmc</code></dt>
+       <dd>Paravirtualized SPICE channel. The domain must also have a
+diff --git a/docs/schemas/domaincommon.rng b/docs/schemas/domaincommon.rng
+index 7cb37c7..4e917b1 100644
+--- a/docs/schemas/domaincommon.rng
++++ b/docs/schemas/domaincommon.rng
+@@ -3384,6 +3384,14 @@
+       <optional>
+         <attribute name="name"/>
+       </optional>
++      <optional>
++        <attribute name="state">
++          <choice>
++            <value>connected</value>
++            <value>disconnected</value>
++          </choice>
++        </attribute>
++      </optional>
+     </element>
+   </define>
+   <define name="channel">
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index baf16dc..ef6e9cf 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -407,6 +407,11 @@ VIR_ENUM_IMPL(virDomainNetInterfaceLinkState, VIR_DOMAIN_NET_INTERFACE_LINK_STAT
+               "up",
+               "down")
+ 
++VIR_ENUM_IMPL(virDomainChrDeviceState, VIR_DOMAIN_CHR_DEVICE_STATE_LAST,
++              "default",
++              "connected",
++              "disconnected");
++
+ VIR_ENUM_IMPL(virDomainChrSerialTarget,
+               VIR_DOMAIN_CHR_SERIAL_TARGET_TYPE_LAST,
+               "isa-serial",
+@@ -7735,13 +7740,15 @@ virDomainChrTargetTypeFromString(virDomainChrDefPtr def,
+ 
+ static int
+ virDomainChrDefParseTargetXML(virDomainChrDefPtr def,
+-                              xmlNodePtr cur)
++                              xmlNodePtr cur,
++                              unsigned int flags)
+ {
+     int ret = -1;
+     unsigned int port;
+     char *targetType = virXMLPropString(cur, "type");
+     char *addrStr = NULL;
+     char *portStr = NULL;
++    char *stateStr = NULL;
+ 
+     if ((def->targetType =
+          virDomainChrTargetTypeFromString(def, def->deviceType,
+@@ -7798,6 +7805,20 @@ virDomainChrDefParseTargetXML(virDomainChrDefPtr def,
+ 
+         case VIR_DOMAIN_CHR_CHANNEL_TARGET_TYPE_VIRTIO:
+             def->target.name = virXMLPropString(cur, "name");
++
++            if (!(flags & VIR_DOMAIN_XML_INACTIVE) &&
++                (stateStr = virXMLPropString(cur, "state"))) {
++                int tmp;
++
++                if ((tmp = virDomainChrDeviceStateTypeFromString(stateStr)) <= 0) {
++                    virReportError(VIR_ERR_XML_ERROR,
++                                   _("invalid channel state value '%s'"),
++                                   stateStr);
++                    goto error;
++                }
++
++                def->state = tmp;
++            }
+             break;
+         }
+         break;
+@@ -7826,6 +7847,7 @@ virDomainChrDefParseTargetXML(virDomainChrDefPtr def,
+     VIR_FREE(targetType);
+     VIR_FREE(addrStr);
+     VIR_FREE(portStr);
++    VIR_FREE(stateStr);
+ 
+     return ret;
+ }
+@@ -8201,7 +8223,7 @@ virDomainChrDefParseXML(xmlXPathContextPtr ctxt,
+         if (cur->type == XML_ELEMENT_NODE) {
+             if (xmlStrEqual(cur->name, BAD_CAST "target")) {
+                 seenTarget = true;
+-                if (virDomainChrDefParseTargetXML(def, cur) < 0) {
++                if (virDomainChrDefParseTargetXML(def, cur, flags) < 0) {
+                     goto error;
+                 }
+             }
+@@ -17309,6 +17331,12 @@ virDomainChrDefFormat(virBufferPtr buf,
+             if (def->target.name) {
+                 virBufferEscapeString(buf, " name='%s'", def->target.name);
+             }
++
++            if (def->state != VIR_DOMAIN_CHR_DEVICE_STATE_DEFAULT &&
++                !(flags & VIR_DOMAIN_XML_INACTIVE)) {
++                virBufferAsprintf(buf, " state='%s'",
++                                  virDomainChrDeviceStateTypeToString(def->state));
++            }
+             break;
+         }
+ 
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index 6768089..f9cccb4 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -985,6 +985,16 @@ struct _virDomainNetDef {
+ # define VIR_NET_GENERATED_PREFIX "vnet"
+ 
+ typedef enum {
++    VIR_DOMAIN_CHR_DEVICE_STATE_DEFAULT = 0,
++    VIR_DOMAIN_CHR_DEVICE_STATE_CONNECTED,
++    VIR_DOMAIN_CHR_DEVICE_STATE_DISCONNECTED,
++
++    VIR_DOMAIN_CHR_DEVICE_STATE_LAST
++} virDomainChrDeviceState;
++
++VIR_ENUM_DECL(virDomainChrDeviceState)
++
++typedef enum {
+     VIR_DOMAIN_CHR_DEVICE_TYPE_PARALLEL = 0,
+     VIR_DOMAIN_CHR_DEVICE_TYPE_SERIAL,
+     VIR_DOMAIN_CHR_DEVICE_TYPE_CONSOLE,
+@@ -1104,6 +1114,8 @@ struct _virDomainChrDef {
+         char *name; /* virtio */
+     } target;
+ 
++    virDomainChrDeviceState state;
++
+     virDomainChrSourceDef source;
+ 
+     virDomainDeviceInfo info;
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-state.args b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-state.args
+new file mode 100644
+index 0000000..62bf14d
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-state.args
+@@ -0,0 +1,17 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=none \
++/usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults \
++-chardev socket,id=charmonitor,path=/tmp/test-monitor,server,nowait \
++-mon chardev=charmonitor,id=monitor,mode=readline \
++-no-acpi -boot c \
++-device virtio-serial-pci,id=virtio-serial1,bus=pci.0,addr=0xa \
++-usb -hda /dev/HostVG/QEMUGuest1 \
++-chardev pty,id=charchannel0 \
++-device virtserialport,bus=virtio-serial1.0,nr=3,chardev=charchannel0,\
++id=channel0,name=org.linux-kvm.port.foo \
++-chardev pty,id=charchannel1 \
++-device virtserialport,bus=virtio-serial1.0,nr=4,chardev=charchannel1,\
++id=channel1,name=org.linux-kvm.port.foo1 \
++-chardev pty,id=charchannel2 \
++-device virtserialport,bus=virtio-serial1.0,nr=5,chardev=charchannel2,\
++id=channel2,name=org.linux-kvm.port.foo2 \
++-device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-state.xml b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-state.xml
+new file mode 100644
+index 0000000..044b369
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-channel-virtio-state.xml
+@@ -0,0 +1,42 @@
++<domain type='qemu' id='2'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory unit='KiB'>219100</memory>
++  <currentMemory unit='KiB'>219100</currentMemory>
++  <vcpu placement='static' cpuset='1-4,8-20,525'>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='block' device='disk'>
++      <source dev='/dev/HostVG/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' target='0' unit='0'/>
++    </disk>
++    <controller type='usb' index='0'/>
++    <controller type='ide' index='0'/>
++    <controller type='virtio-serial' index='1'>
++      <address type='pci' domain='0x0000' bus='0x00' slot='0x0a' function='0x0'/>
++    </controller>
++    <controller type='pci' index='0' model='pci-root'/>
++    <channel type='pty'>
++      <target type='virtio' name='org.linux-kvm.port.foo' state='connected'/>
++      <address type='virtio-serial' controller='1' bus='0' port='3'/>
++    </channel>
++    <channel type='pty'>
++      <target type='virtio' name='org.linux-kvm.port.foo1' state='disconnected'/>
++      <address type='virtio-serial' controller='1' bus='0' port='4'/>
++    </channel>
++    <channel type='pty'>
++      <target type='virtio' name='org.linux-kvm.port.foo2'/>
++      <address type='virtio-serial' controller='1' bus='0' port='5'/>
++    </channel>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index 3efe3c9..97af90a 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -1051,6 +1051,8 @@ mymain(void)
+             QEMU_CAPS_CHARDEV, QEMU_CAPS_DEVICE, QEMU_CAPS_NODEFCONFIG);
+     DO_TEST("channel-virtio",
+             QEMU_CAPS_DEVICE, QEMU_CAPS_CHARDEV, QEMU_CAPS_NODEFCONFIG);
++    DO_TEST("channel-virtio-state",
++            QEMU_CAPS_DEVICE, QEMU_CAPS_CHARDEV, QEMU_CAPS_NODEFCONFIG);
+     DO_TEST("channel-virtio-auto",
+             QEMU_CAPS_DEVICE, QEMU_CAPS_CHARDEV, QEMU_CAPS_NODEFCONFIG);
+     DO_TEST("console-virtio",
+diff --git a/tests/qemuxml2xmloutdata/qemuxml2xmlout-channel-virtio-state-active.xml b/tests/qemuxml2xmloutdata/qemuxml2xmlout-channel-virtio-state-active.xml
+new file mode 100644
+index 0000000..4f050fc
+--- /dev/null
++++ b/tests/qemuxml2xmloutdata/qemuxml2xmlout-channel-virtio-state-active.xml
+@@ -0,0 +1,43 @@
++<domain type='qemu' id='2'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory unit='KiB'>219100</memory>
++  <currentMemory unit='KiB'>219100</currentMemory>
++  <vcpu placement='static' cpuset='1-4,8-20,525'>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='block' device='disk'>
++      <source dev='/dev/HostVG/QEMUGuest1'/>
++      <backingStore/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' target='0' unit='0'/>
++    </disk>
++    <controller type='usb' index='0'/>
++    <controller type='ide' index='0'/>
++    <controller type='virtio-serial' index='1'>
++      <address type='pci' domain='0x0000' bus='0x00' slot='0x0a' function='0x0'/>
++    </controller>
++    <controller type='pci' index='0' model='pci-root'/>
++    <channel type='pty'>
++      <target type='virtio' name='org.linux-kvm.port.foo' state='connected'/>
++      <address type='virtio-serial' controller='1' bus='0' port='3'/>
++    </channel>
++    <channel type='pty'>
++      <target type='virtio' name='org.linux-kvm.port.foo1' state='disconnected'/>
++      <address type='virtio-serial' controller='1' bus='0' port='4'/>
++    </channel>
++    <channel type='pty'>
++      <target type='virtio' name='org.linux-kvm.port.foo2'/>
++      <address type='virtio-serial' controller='1' bus='0' port='5'/>
++    </channel>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2xmloutdata/qemuxml2xmlout-channel-virtio-state-inactive.xml b/tests/qemuxml2xmloutdata/qemuxml2xmlout-channel-virtio-state-inactive.xml
+new file mode 100644
+index 0000000..5027a1e
+--- /dev/null
++++ b/tests/qemuxml2xmloutdata/qemuxml2xmlout-channel-virtio-state-inactive.xml
+@@ -0,0 +1,42 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory unit='KiB'>219100</memory>
++  <currentMemory unit='KiB'>219100</currentMemory>
++  <vcpu placement='static' cpuset='1-4,8-20,525'>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='block' device='disk'>
++      <source dev='/dev/HostVG/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' target='0' unit='0'/>
++    </disk>
++    <controller type='usb' index='0'/>
++    <controller type='ide' index='0'/>
++    <controller type='virtio-serial' index='1'>
++      <address type='pci' domain='0x0000' bus='0x00' slot='0x0a' function='0x0'/>
++    </controller>
++    <controller type='pci' index='0' model='pci-root'/>
++    <channel type='pty'>
++      <target type='virtio' name='org.linux-kvm.port.foo'/>
++      <address type='virtio-serial' controller='1' bus='0' port='3'/>
++    </channel>
++    <channel type='pty'>
++      <target type='virtio' name='org.linux-kvm.port.foo1'/>
++      <address type='virtio-serial' controller='1' bus='0' port='4'/>
++    </channel>
++    <channel type='pty'>
++      <target type='virtio' name='org.linux-kvm.port.foo2'/>
++      <address type='virtio-serial' controller='1' bus='0' port='5'/>
++    </channel>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2xmltest.c b/tests/qemuxml2xmltest.c
+index f29e4ed..50f5907 100644
+--- a/tests/qemuxml2xmltest.c
++++ b/tests/qemuxml2xmltest.c
+@@ -288,6 +288,7 @@ mymain(void)
+     DO_TEST("console-virtio-many");
+     DO_TEST("channel-guestfwd");
+     DO_TEST("channel-virtio");
++    DO_TEST_DIFFERENT("channel-virtio-state");
+ 
+     DO_TEST("hostdev-usb-address");
+     DO_TEST("hostdev-pci-address");
+-- 
+2.1.3
+

@@ -1,0 +1,46 @@
+From 12f71d1ec11e0acaf369b16a9bd6965f69f94e74 Mon Sep 17 00:00:00 2001
+Message-Id: <12f71d1ec11e0acaf369b16a9bd6965f69f94e74@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Wed, 22 Oct 2014 18:29:46 +0200
+Subject: [PATCH] qemu: restore: Fix restoring of VM when the restore hook
+ returns empty XML
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1142693
+
+The documentation for the restore hook states that returning an empty
+XML is equivalent with copying the input. There was a bug in the code
+checking the returned string by checking the string instead of the
+contents. Use the new helper to check if the string is empty.
+
+(cherry picked from commit e38677993734e9af3dbd0589e1cecd0b75f7e757)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 4c57fcd..039b987 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -5727,7 +5727,7 @@ qemuDomainRestoreFlags(virConnectPtr conn,
+                                    &xmlout)) < 0)
+             goto cleanup;
+ 
+-        if (hookret == 0 && xmlout) {
++        if (hookret == 0 && !virStringIsEmpty(xmlout)) {
+             VIR_DEBUG("Using hook-filtered domain XML: %s", xmlout);
+             hook_taint = true;
+             newxml = xmlout;
+@@ -5943,7 +5943,7 @@ qemuDomainObjRestore(virConnectPtr conn,
+                                    NULL, xml, &xmlout)) < 0)
+             goto cleanup;
+ 
+-        if (hookret == 0 && xmlout) {
++        if (hookret == 0 && !virStringIsEmpty(xmlout)) {
+             virDomainDefPtr tmp;
+ 
+             VIR_DEBUG("Using hook-filtered domain XML: %s", xmlout);
+-- 
+2.1.3
+

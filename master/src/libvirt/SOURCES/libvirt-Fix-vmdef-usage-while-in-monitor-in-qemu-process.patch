@@ -1,0 +1,114 @@
+From 3a2b715e02c2e0205e7787d9aefd332743ef5599 Mon Sep 17 00:00:00 2001
+Message-Id: <3a2b715e02c2e0205e7787d9aefd332743ef5599@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Mon, 19 Jan 2015 10:48:31 +0100
+Subject: [PATCH] Fix vmdef usage while in monitor in qemu process
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1161024
+
+Make local copy of the disk alias in qemuProcessInitPasswords,
+instead of referencing the one in domain definition, which
+might get freed if the domain crashes while we're in monitor.
+
+Also copy the memballoon period value.
+
+(cherry picked from commit c749eda4a2220cddb24467fbbcf22c9b7917b8a2)
+Signed-off-by: Ján Tomko <jtomko@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_process.c | 31 +++++++++++++++++++------------
+ 1 file changed, 19 insertions(+), 12 deletions(-)
+
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index 90e45a8..ae1dbdf 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -2550,6 +2550,8 @@ qemuProcessInitPasswords(virConnectPtr conn,
+     qemuDomainObjPrivatePtr priv = vm->privateData;
+     virQEMUDriverConfigPtr cfg = virQEMUDriverGetConfig(driver);
+     size_t i;
++    char *alias = NULL;
++    char *secret = NULL;
+ 
+     for (i = 0; i < vm->def->ngraphics; ++i) {
+         virDomainGraphicsDefPtr graphics = vm->def->graphics[i];
+@@ -2573,33 +2575,34 @@ qemuProcessInitPasswords(virConnectPtr conn,
+ 
+     if (virQEMUCapsGet(priv->qemuCaps, QEMU_CAPS_DEVICE)) {
+         for (i = 0; i < vm->def->ndisks; i++) {
+-            char *secret;
+             size_t secretLen;
+-            const char *alias;
+ 
+             if (!vm->def->disks[i]->src->encryption ||
+                 !virDomainDiskGetSource(vm->def->disks[i]))
+                 continue;
+ 
++            VIR_FREE(secret);
+             if (qemuProcessGetVolumeQcowPassphrase(conn,
+                                                    vm->def->disks[i],
+                                                    &secret, &secretLen) < 0)
+                 goto cleanup;
+ 
+-            alias = vm->def->disks[i]->info.alias;
+-            if (qemuDomainObjEnterMonitorAsync(driver, vm, asyncJob) < 0) {
+-                VIR_FREE(secret);
++            VIR_FREE(alias);
++            if (VIR_STRDUP(alias, vm->def->disks[i]->info.alias) < 0)
++                goto cleanup;
++            if (qemuDomainObjEnterMonitorAsync(driver, vm, asyncJob) < 0)
+                 goto cleanup;
+-            }
+             ret = qemuMonitorSetDrivePassphrase(priv->mon, alias, secret);
+-            VIR_FREE(secret);
+-            qemuDomainObjExitMonitor(driver, vm);
++            if (qemuDomainObjExitMonitor(driver, vm) < 0)
++                ret = -1;
+             if (ret < 0)
+                 goto cleanup;
+         }
+     }
+ 
+  cleanup:
++    VIR_FREE(alias);
++    VIR_FREE(secret);
+     virObjectUnref(cfg);
+     return ret;
+ }
+@@ -4251,6 +4254,7 @@ int qemuProcessStart(virConnectPtr conn,
+     virCommandPtr cmd = NULL;
+     struct qemuProcessHookData hookData;
+     unsigned long cur_balloon;
++    unsigned int period = 0;
+     size_t i;
+     bool rawio_set = false;
+     char *nodeset = NULL;
+@@ -4864,15 +4868,18 @@ int qemuProcessStart(virConnectPtr conn,
+                        vm->def->mem.cur_balloon);
+         goto cleanup;
+     }
+-    if (qemuDomainObjEnterMonitorAsync(driver, vm, asyncJob) < 0)
+-        goto cleanup;
+     if (vm->def->memballoon && vm->def->memballoon->period)
+-        qemuMonitorSetMemoryStatsPeriod(priv->mon, vm->def->memballoon->period);
++        period = vm->def->memballoon->period;
++    if (qemuDomainObjEnterMonitorAsync(driver, vm, asyncJob) < 0)
++        goto cleanup;
++    if (period)
++        qemuMonitorSetMemoryStatsPeriod(priv->mon, period);
+     if (qemuMonitorSetBalloon(priv->mon, cur_balloon) < 0) {
+         qemuDomainObjExitMonitor(driver, vm);
+         goto cleanup;
+     }
+-    qemuDomainObjExitMonitor(driver, vm);
++    if (qemuDomainObjExitMonitor(driver, vm) < 0)
++        goto cleanup;
+ 
+     VIR_DEBUG("Detecting actual memory size for video device");
+     if (qemuProcessUpdateVideoRamSize(driver, vm, asyncJob) < 0)
+-- 
+2.2.1
+

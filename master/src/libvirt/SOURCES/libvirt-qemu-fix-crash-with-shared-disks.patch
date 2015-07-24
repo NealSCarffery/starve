@@ -1,0 +1,94 @@
+From dc201f5982fafc2727a2206536c4afe1b1a9017d Mon Sep 17 00:00:00 2001
+Message-Id: <dc201f5982fafc2727a2206536c4afe1b1a9017d@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Thu, 18 Sep 2014 09:18:43 +0200
+Subject: [PATCH] qemu: fix crash with shared disks
+
+Commit f36a94f introduced a double free on all success paths
+in qemuSharedDeviceEntryInsert.
+
+Only call qemuSharedDeviceEntryFree on the error path and
+set entry to NULL before jumping there if the entry already
+is in the hash table.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1142722
+(cherry picked from commit 540ee872494316ef5bfc17ef3dd4338080c3e513)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_conf.c | 26 ++++++++++++--------------
+ src/qemu/qemu_conf.h |  3 +--
+ 2 files changed, 13 insertions(+), 16 deletions(-)
+
+diff --git a/src/qemu/qemu_conf.c b/src/qemu/qemu_conf.c
+index ac10b64..adc6caf 100644
+--- a/src/qemu/qemu_conf.c
++++ b/src/qemu/qemu_conf.c
+@@ -1011,38 +1011,36 @@ qemuSharedDeviceEntryInsert(virQEMUDriverPtr driver,
+                             const char *name)
+ {
+     qemuSharedDeviceEntry *entry = NULL;
+-    int ret = -1;
+ 
+     if ((entry = virHashLookup(driver->sharedDevices, key))) {
+         /* Nothing to do if the shared scsi host device is already
+          * recorded in the table.
+          */
+-        if (qemuSharedDeviceEntryDomainExists(entry, name, NULL)) {
+-            ret = 0;
+-            goto cleanup;
++        if (!qemuSharedDeviceEntryDomainExists(entry, name, NULL)) {
++            if (VIR_EXPAND_N(entry->domains, entry->ref, 1) < 0 ||
++                VIR_STRDUP(entry->domains[entry->ref - 1], name) < 0) {
++                /* entry is owned by the hash table here */
++                entry = NULL;
++                goto error;
++            }
+         }
+-
+-        if (VIR_EXPAND_N(entry->domains, entry->ref, 1) < 0 ||
+-            VIR_STRDUP(entry->domains[entry->ref - 1], name) < 0)
+-            goto cleanup;
+     } else {
+         if (VIR_ALLOC(entry) < 0 ||
+             VIR_ALLOC_N(entry->domains, 1) < 0 ||
+             VIR_STRDUP(entry->domains[0], name) < 0)
+-            goto cleanup;
++            goto error;
+ 
+         entry->ref = 1;
+ 
+         if (virHashAddEntry(driver->sharedDevices, key, entry))
+-            goto cleanup;
++            goto error;
+     }
+ 
+-    ret = 0;
++    return 0;
+ 
+- cleanup:
++ error:
+     qemuSharedDeviceEntryFree(entry, NULL);
+-
+-    return ret;
++    return -1;
+ }
+ 
+ 
+diff --git a/src/qemu/qemu_conf.h b/src/qemu/qemu_conf.h
+index 1f521e5..cb01fb6 100644
+--- a/src/qemu/qemu_conf.h
++++ b/src/qemu/qemu_conf.h
+@@ -294,8 +294,7 @@ bool qemuSharedDeviceEntryDomainExists(qemuSharedDeviceEntryPtr entry,
+ char *qemuGetSharedDeviceKey(const char *disk_path)
+     ATTRIBUTE_NONNULL(1);
+ 
+-void qemuSharedDeviceEntryFree(void *payload, const void *name)
+-    ATTRIBUTE_NONNULL(1);
++void qemuSharedDeviceEntryFree(void *payload, const void *name);
+ 
+ int qemuAddSharedDevice(virQEMUDriverPtr driver,
+                         virDomainDeviceDefPtr dev,
+-- 
+2.1.0
+

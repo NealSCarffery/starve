@@ -1,0 +1,124 @@
+From 8d1fbc8b00507f0874106b40fe9b72f4779ba7de Mon Sep 17 00:00:00 2001
+Message-Id: <8d1fbc8b00507f0874106b40fe9b72f4779ba7de@dist-git>
+From: Francesco Romani <fromani@redhat.com>
+Date: Wed, 1 Oct 2014 11:20:12 +0200
+Subject: [PATCH] qemu: bulk stats: implement CPU stats group
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1113116
+
+This patch implements the VIR_DOMAIN_STATS_CPU_TOTAL group of
+statistics.
+
+Signed-off-by: Francesco Romani <fromani@redhat.com>
+Signed-off-by: Peter Krempa <pkrempa@redhat.com>
+(cherry picked from commit 9ebbb8699eab6f9115b8ecbe171ee687a5dee198)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ include/libvirt/libvirt.h.in |  1 +
+ src/libvirt.c                |  8 ++++++++
+ src/qemu/qemu_driver.c       | 44 ++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 53 insertions(+)
+
+diff --git a/include/libvirt/libvirt.h.in b/include/libvirt/libvirt.h.in
+index 972bdfa..349ae93 100644
+--- a/include/libvirt/libvirt.h.in
++++ b/include/libvirt/libvirt.h.in
+@@ -2514,6 +2514,7 @@ struct _virDomainStatsRecord {
+ 
+ typedef enum {
+     VIR_DOMAIN_STATS_STATE = (1 << 0), /* return domain state */
++    VIR_DOMAIN_STATS_CPU_TOTAL = (1 << 1), /* return domain CPU info */
+ } virDomainStatsTypes;
+ 
+ typedef enum {
+diff --git a/src/libvirt.c b/src/libvirt.c
+index d0fdf11..70644bc 100644
+--- a/src/libvirt.c
++++ b/src/libvirt.c
+@@ -21555,6 +21555,14 @@ virConnectGetDomainCapabilities(virConnectPtr conn,
+  * "state.reason" - reason for entering given state, returned as int from
+  *                  virDomain*Reason enum corresponding to given state.
+  *
++ * VIR_DOMAIN_STATS_CPU_TOTAL: Return CPU statistics and usage information.
++ * The typed parameter keys are in this format:
++ * "cpu.time" - total cpu time spent for this domain in nanoseconds
++ *              as unsigned long long.
++ * "cpu.user" - user cpu time spent in nanoseconds as unsigned long long.
++ * "cpu.system" - system cpu time spent in nanoseconds as unsigned long long.
++ *
++ *
+  * Using 0 for @stats returns all stats groups supported by the given
+  * hypervisor.
+  *
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 1d94330..ea06a0d 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -96,6 +96,7 @@
+ #include "storage/storage_driver.h"
+ #include "virhostdev.h"
+ #include "domain_capabilities.h"
++#include "vircgroup.h"
+ 
+ #define VIR_FROM_THIS VIR_FROM_QEMU
+ 
+@@ -17445,6 +17446,48 @@ typedef enum {
+ #define HAVE_JOB(flags) ((flags) & QEMU_DOMAIN_STATS_HAVE_JOB)
+ 
+ 
++static int
++qemuDomainGetStatsCpu(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
++                      virDomainObjPtr dom,
++                      virDomainStatsRecordPtr record,
++                      int *maxparams,
++                      unsigned int privflags ATTRIBUTE_UNUSED)
++{
++    qemuDomainObjPrivatePtr priv = dom->privateData;
++    unsigned long long cpu_time = 0;
++    unsigned long long user_time = 0;
++    unsigned long long sys_time = 0;
++    int err = 0;
++
++    if (!priv->cgroup)
++        return 0;
++
++    err = virCgroupGetCpuacctUsage(priv->cgroup, &cpu_time);
++    if (!err && virTypedParamsAddULLong(&record->params,
++                                        &record->nparams,
++                                        maxparams,
++                                        "cpu.time",
++                                        cpu_time) < 0)
++        return -1;
++
++    err = virCgroupGetCpuacctStat(priv->cgroup, &user_time, &sys_time);
++    if (!err && virTypedParamsAddULLong(&record->params,
++                                        &record->nparams,
++                                        maxparams,
++                                        "cpu.user",
++                                        user_time) < 0)
++        return -1;
++    if (!err && virTypedParamsAddULLong(&record->params,
++                                        &record->nparams,
++                                        maxparams,
++                                        "cpu.system",
++                                        sys_time) < 0)
++        return -1;
++
++    return 0;
++}
++
++
+ typedef int
+ (*qemuDomainGetStatsFunc)(virQEMUDriverPtr driver,
+                           virDomainObjPtr dom,
+@@ -17460,6 +17503,7 @@ struct qemuDomainGetStatsWorker {
+ 
+ static struct qemuDomainGetStatsWorker qemuDomainGetStatsWorkers[] = {
+     { qemuDomainGetStatsState, VIR_DOMAIN_STATS_STATE, false },
++    { qemuDomainGetStatsCpu, VIR_DOMAIN_STATS_CPU_TOTAL, false },
+     { NULL, 0, false }
+ };
+ 
+-- 
+2.1.2
+

@@ -1,0 +1,138 @@
+From 4d1a798e093f8251d2f045529eae85ad68fc3dd1 Mon Sep 17 00:00:00 2001
+Message-Id: <4d1a798e093f8251d2f045529eae85ad68fc3dd1@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Mon, 6 Oct 2014 11:14:32 -0400
+Subject: [PATCH] qemu: Fix hot unplug of SCSI_HOST device
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1141732
+
+Introduced by commit id '8f76ad99' the logic to detach a scsi_host
+device (SCSI or iSCSI) fails when attempting to remove the 'drive'
+because as I found in my investigation - the DelDevice takes care of
+that for us.
+
+The investigation turned up commits to adjust the logic for the
+qemuMonitorDelDevice and qemuMonitorDriveDel processing for interfaces
+(commit id '81f76598'), disk bus=VIRTIO,SCSI,USB (commit id '0635785b'),
+and chr devices (commit id '55b21f9b'), but nothing with the host devices.
+
+This commit uses the model for the previous set of changes and applies
+it to the hostdev path. The call to qemuDomainDetachHostSCSIDevice will
+return to qemuDomainDetachThisHostDevice handling either the audit of
+the failure or the wait for the removal and then call into
+qemuDomainRemoveHostDevice for the event, removal from the domain hostdev
+list, and audit of the removal similar to other paths.
+
+NOTE: For now the 'conn' param to +qemuDomainDetachHostSCSIDevice is left
+as ATTRIBUTE_UNUSED.  Removing requires a cascade of other changes to be
+left for a future patch.
+
+(cherry picked from commit d2774e54cde2377c78a7572eb3fec0a663e5017f)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_hotplug.c | 50 +++++++++++++++++++++++++------------------------
+ 1 file changed, 26 insertions(+), 24 deletions(-)
+
+diff --git a/src/qemu/qemu_hotplug.c b/src/qemu/qemu_hotplug.c
+index 8eb2419..fe4994a 100644
+--- a/src/qemu/qemu_hotplug.c
++++ b/src/qemu/qemu_hotplug.c
+@@ -2622,10 +2622,26 @@ qemuDomainRemoveHostDevice(virQEMUDriverPtr driver,
+     virDomainNetDefPtr net = NULL;
+     virObjectEventPtr event;
+     size_t i;
++    int ret = -1;
++    qemuDomainObjPrivatePtr priv = vm->privateData;
++    char *drivestr = NULL;
+ 
+     VIR_DEBUG("Removing host device %s from domain %p %s",
+               hostdev->info->alias, vm, vm->def->name);
+ 
++    if (hostdev->source.subsys.type == VIR_DOMAIN_HOSTDEV_SUBSYS_TYPE_SCSI) {
++        /* build the actual drive id string as generated during
++         * qemuBuildSCSIHostdevDrvStr that is passed to qemu */
++        if (virAsprintf(&drivestr, "%s-%s",
++                        virDomainDeviceAddressTypeToString(hostdev->info->type),
++                        hostdev->info->alias) < 0)
++            goto cleanup;
++
++        qemuDomainObjEnterMonitor(driver, vm);
++        qemuMonitorDriveDel(priv->mon, drivestr);
++        qemuDomainObjExitMonitor(driver, vm);
++    }
++
+     event = virDomainEventDeviceRemovedNewFromObj(vm, hostdev->info->alias);
+     if (event)
+         qemuDomainEventQueue(driver, event);
+@@ -2678,8 +2694,12 @@ qemuDomainRemoveHostDevice(virQEMUDriverPtr driver,
+         networkReleaseActualDevice(vm->def, net);
+         virDomainNetDefFree(net);
+     }
++    ret = 0;
++
++ cleanup:
++    VIR_FREE(drivestr);
+     virObjectUnref(cfg);
+-    return 0;
++    return ret;
+ }
+ 
+ 
+@@ -3305,14 +3325,12 @@ qemuDomainDetachHostUSBDevice(virQEMUDriverPtr driver,
+ }
+ 
+ static int
+-qemuDomainDetachHostSCSIDevice(virConnectPtr conn,
++qemuDomainDetachHostSCSIDevice(virConnectPtr conn ATTRIBUTE_UNUSED,
+                                virQEMUDriverPtr driver,
+                                virDomainObjPtr vm,
+                                virDomainHostdevDefPtr detach)
+ {
+     qemuDomainObjPrivatePtr priv = vm->privateData;
+-    char *drvstr = NULL;
+-    char *devstr = NULL;
+     int ret = -1;
+ 
+     if (!detach->info->alias) {
+@@ -3327,33 +3345,17 @@ qemuDomainDetachHostSCSIDevice(virConnectPtr conn,
+         return -1;
+     }
+ 
+-    if (!(drvstr = qemuBuildSCSIHostdevDrvStr(conn, detach, priv->qemuCaps,
+-                                              &buildCommandLineCallbacks)))
+-        goto cleanup;
+-    if (!(devstr = qemuBuildSCSIHostdevDevStr(vm->def, detach, priv->qemuCaps)))
+-        goto cleanup;
+-
+     qemuDomainMarkDeviceForRemoval(vm, detach->info);
+ 
+     qemuDomainObjEnterMonitor(driver, vm);
+-    if ((ret = qemuMonitorDelDevice(priv->mon, detach->info->alias)) == 0) {
+-        if ((ret = qemuMonitorDriveDel(priv->mon, drvstr)) < 0) {
+-            virErrorPtr orig_err = virSaveLastError();
+-            if (qemuMonitorAddDevice(priv->mon, devstr) < 0)
+-                VIR_WARN("Unable to add device %s (%s) after failed "
+-                         "qemuMonitorDriveDel",
+-                         drvstr, devstr);
+-            if (orig_err) {
+-                virSetError(orig_err);
+-                virFreeError(orig_err);
+-            }
+-        }
++    if (qemuMonitorDelDevice(priv->mon, detach->info->alias) < 0) {
++        qemuDomainObjExitMonitor(driver, vm);
++        goto cleanup;
+     }
+     qemuDomainObjExitMonitor(driver, vm);
++    ret = 0;
+ 
+  cleanup:
+-    VIR_FREE(drvstr);
+-    VIR_FREE(devstr);
+     return ret;
+ }
+ 
+-- 
+2.1.2
+

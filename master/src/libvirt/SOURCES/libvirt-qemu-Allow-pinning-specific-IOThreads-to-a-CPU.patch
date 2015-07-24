@@ -1,0 +1,202 @@
+From 4e2265af50edd9b7772750a534310f87ba76e071 Mon Sep 17 00:00:00 2001
+Message-Id: <4e2265af50edd9b7772750a534310f87ba76e071@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Thu, 18 Sep 2014 09:29:54 -0400
+Subject: [PATCH] qemu: Allow pinning specific IOThreads to a CPU
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1101574
+
+Modify qemuProcessStart() in order to allowing setting affinity to
+specific CPU's for IOThreads. The process followed is similar to
+that for the vCPU's.
+
+This involves adding a function to fetch the IOThread id's via
+qemuMonitorGetIOThreads() and adding them to iothreadpids[] list.
+Then making sure all the cgroup data has been properly set up and
+finally assigning affinity.
+
+(cherry picked from commit 9bef96ec502a01abde055233a8ab428a6824a4c0)
+
+NOTE: Requires commit id 938fb12fad6d15c9fdb73f998c4e0ec1e278721f in order
+      to build (next patch)
+
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c  |  8 ++++
+ src/qemu/qemu_process.c | 98 +++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 106 insertions(+)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 0a5605a..a1379c2 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -8766,6 +8766,14 @@ qemuDomainSetNumaParamsLive(virDomainObjPtr vm,
+         virCgroupSetCpusetMems(priv->cgroup, nodeset_str) < 0)
+         goto cleanup;
+ 
++    for (i = 0; i < priv->niothreadpids; i++) {
++        if (virCgroupNewIOThread(priv->cgroup, i, false, &cgroup_temp) < 0 ||
++            virCgroupSetCpusetMems(cgroup_temp, nodeset_str) < 0)
++            goto cleanup;
++        virCgroupFree(&cgroup_temp);
++    }
++
++
+     ret = 0;
+  cleanup:
+     VIR_FREE(nodeset_str);
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index bf1f0de..ed73ae5 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -2093,6 +2093,51 @@ qemuProcessDetectVcpuPIDs(virQEMUDriverPtr driver,
+ }
+ 
+ 
++static int
++qemuProcessDetectIOThreadPIDs(virQEMUDriverPtr driver,
++                              virDomainObjPtr vm,
++                              int asyncJob)
++{
++    qemuDomainObjPrivatePtr priv = vm->privateData;
++    qemuMonitorIOThreadsInfoPtr *iothreads = NULL;
++    int niothreads = 0;
++    int ret = -1;
++    size_t i;
++
++    /* Get the list of IOThreads from qemu */
++    if (qemuDomainObjEnterMonitorAsync(driver, vm, asyncJob) < 0)
++        goto cleanup;
++    niothreads = qemuMonitorGetIOThreads(priv->mon, &iothreads);
++    qemuDomainObjExitMonitor(driver, vm);
++    if (niothreads <= 0)
++        goto cleanup;
++
++    if (niothreads != vm->def->iothreads) {
++        virReportError(VIR_ERR_INTERNAL_ERROR,
++                       _("got wrong number of IOThread pids from QEMU monitor. "
++                         "got %d, wanted %d"),
++                       niothreads, vm->def->iothreads);
++        goto cleanup;
++    }
++
++    if (VIR_ALLOC_N(priv->iothreadpids, niothreads) < 0)
++        goto cleanup;
++    priv->niothreadpids = niothreads;
++
++    for (i = 0; i < priv->niothreadpids; i++)
++        priv->iothreadpids[i] = iothreads[i]->thread_id;
++
++    ret = 0;
++
++ cleanup:
++    if (iothreads) {
++        for (i = 0; i < niothreads; i++)
++            qemuMonitorIOThreadsInfoFree(iothreads[i]);
++        VIR_FREE(iothreads);
++    }
++    return ret;
++}
++
+ /* Helper to prepare cpumap for affinity setting, convert
+  * NUMA nodeset into cpuset if @nodemask is not NULL, otherwise
+  * just return a new allocated bitmap.
+@@ -2285,6 +2330,41 @@ qemuProcessSetEmulatorAffinity(virDomainObjPtr vm)
+     return ret;
+ }
+ 
++/* Set CPU affinities for IOThreads threads. */
++static int
++qemuProcessSetIOThreadsAffinity(virDomainObjPtr vm)
++{
++    qemuDomainObjPrivatePtr priv = vm->privateData;
++    virDomainDefPtr def = vm->def;
++    virDomainVcpuPinDefPtr pininfo;
++    size_t i;
++    int ret = -1;
++
++    if (!def->cputune.niothreadspin)
++        return 0;
++
++    if (priv->iothreadpids == NULL) {
++        virReportError(VIR_ERR_OPERATION_INVALID,
++                       "%s", _("IOThread affinity is not supported"));
++        return -1;
++    }
++
++    for (i = 0; i < def->iothreads; i++) {
++        /* set affinity only for existing vcpus */
++        if (!(pininfo = virDomainVcpuPinFindByVcpu(def->cputune.iothreadspin,
++                                                   def->cputune.niothreadspin,
++                                                   i+1)))
++            continue;
++
++        if (virProcessSetAffinity(priv->iothreadpids[i], pininfo->cpumask) < 0)
++            goto cleanup;
++    }
++    ret = 0;
++
++ cleanup:
++    return ret;
++}
++
+ static int
+ qemuProcessInitPasswords(virConnectPtr conn,
+                          virQEMUDriverPtr driver,
+@@ -4411,6 +4491,10 @@ int qemuProcessStart(virConnectPtr conn,
+     if (qemuProcessDetectVcpuPIDs(driver, vm, asyncJob) < 0)
+         goto cleanup;
+ 
++    VIR_DEBUG("Detecting IOThread PIDs");
++    if (qemuProcessDetectIOThreadPIDs(driver, vm, asyncJob) < 0)
++        goto cleanup;
++
+     VIR_DEBUG("Setting cgroup for each VCPU (if required)");
+     if (qemuSetupCgroupForVcpu(vm) < 0)
+         goto cleanup;
+@@ -4419,6 +4503,10 @@ int qemuProcessStart(virConnectPtr conn,
+     if (qemuSetupCgroupForEmulator(driver, vm, nodemask) < 0)
+         goto cleanup;
+ 
++    VIR_DEBUG("Setting cgroup for each IOThread (if required)");
++    if (qemuSetupCgroupForIOThreads(vm) < 0)
++        goto cleanup;
++
+     VIR_DEBUG("Setting VCPU affinities");
+     if (qemuProcessSetVcpuAffinities(vm) < 0)
+         goto cleanup;
+@@ -4427,6 +4515,10 @@ int qemuProcessStart(virConnectPtr conn,
+     if (qemuProcessSetEmulatorAffinity(vm) < 0)
+         goto cleanup;
+ 
++    VIR_DEBUG("Setting affinity of IOThread threads");
++    if (qemuProcessSetIOThreadsAffinity(vm) < 0)
++        goto cleanup;
++
+     VIR_DEBUG("Setting any required VM passwords");
+     if (qemuProcessInitPasswords(conn, driver, vm, asyncJob) < 0)
+         goto cleanup;
+@@ -4842,6 +4934,8 @@ void qemuProcessStop(virQEMUDriverPtr driver,
+     virDomainObjSetState(vm, VIR_DOMAIN_SHUTOFF, reason);
+     VIR_FREE(priv->vcpupids);
+     priv->nvcpupids = 0;
++    VIR_FREE(priv->iothreadpids);
++    priv->niothreadpids = 0;
+     virObjectUnref(priv->qemuCaps);
+     priv->qemuCaps = NULL;
+     VIR_FREE(priv->pidfile);
+@@ -5034,6 +5128,10 @@ int qemuProcessAttach(virConnectPtr conn ATTRIBUTE_UNUSED,
+     if (qemuProcessDetectVcpuPIDs(driver, vm, QEMU_ASYNC_JOB_NONE) < 0)
+         goto error;
+ 
++    VIR_DEBUG("Detecting IOThread PIDs");
++    if (qemuProcessDetectIOThreadPIDs(driver, vm, QEMU_ASYNC_JOB_NONE) < 0)
++        goto error;
++
+     /* If we have -device, then addresses are assigned explicitly.
+      * If not, then we have to detect dynamic ones here */
+     if (!virQEMUCapsGet(priv->qemuCaps, QEMU_CAPS_DEVICE)) {
+-- 
+2.1.0
+

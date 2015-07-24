@@ -1,0 +1,263 @@
+From 6d5a89f712623c56228aa50e211b58dabf881cc5 Mon Sep 17 00:00:00 2001
+Message-Id: <6d5a89f712623c56228aa50e211b58dabf881cc5@dist-git>
+From: Eric Blake <eblake@redhat.com>
+Date: Wed, 17 Dec 2014 03:09:09 -0700
+Subject: [PATCH] getstats: crawl backing chain for qemu
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1041569
+
+Wire up backing chain recursion.  For the first time, it is now
+possible to get libvirt to expose that qemu tracks read statistics
+on backing files, as well as report maximum extent written on a
+backing file during a block-commit operation.
+
+For a running domain, where one of the two images has a backing
+file, I see the traditional output:
+
+$ virsh domstats --block testvm2
+Domain: 'testvm2'
+  block.count=2
+  block.0.name=vda
+  block.0.path=/tmp/wrapper.qcow2
+  block.0.rd.reqs=1
+  block.0.rd.bytes=512
+  block.0.rd.times=28858
+  block.0.wr.reqs=0
+  block.0.wr.bytes=0
+  block.0.wr.times=0
+  block.0.fl.reqs=0
+  block.0.fl.times=0
+  block.0.allocation=0
+  block.0.capacity=1310720000
+  block.0.physical=200704
+  block.1.name=vdb
+  block.1.path=/dev/sda7
+  block.1.rd.reqs=0
+  block.1.rd.bytes=0
+  block.1.rd.times=0
+  block.1.wr.reqs=0
+  block.1.wr.bytes=0
+  block.1.wr.times=0
+  block.1.fl.reqs=0
+  block.1.fl.times=0
+  block.1.allocation=0
+  block.1.capacity=1310720000
+
+vs. the new output:
+
+$ virsh domstats --block --backing testvm2
+Domain: 'testvm2'
+  block.count=3
+  block.0.name=vda
+  block.0.path=/tmp/wrapper.qcow2
+  block.0.rd.reqs=1
+  block.0.rd.bytes=512
+  block.0.rd.times=28858
+  block.0.wr.reqs=0
+  block.0.wr.bytes=0
+  block.0.wr.times=0
+  block.0.fl.reqs=0
+  block.0.fl.times=0
+  block.0.allocation=0
+  block.0.capacity=1310720000
+  block.0.physical=200704
+  block.1.name=vda
+  block.1.path=/dev/sda6
+  block.1.backingIndex=1
+  block.1.rd.reqs=0
+  block.1.rd.bytes=0
+  block.1.rd.times=0
+  block.1.wr.reqs=0
+  block.1.wr.bytes=0
+  block.1.wr.times=0
+  block.1.fl.reqs=0
+  block.1.fl.times=0
+  block.1.allocation=327680
+  block.1.capacity=786432000
+  block.2.name=vdb
+  block.2.path=/dev/sda7
+  block.2.rd.reqs=0
+  block.2.rd.bytes=0
+  block.2.rd.times=0
+  block.2.wr.reqs=0
+  block.2.wr.bytes=0
+  block.2.wr.times=0
+  block.2.fl.reqs=0
+  block.2.fl.times=0
+  block.2.allocation=0
+  block.2.capacity=1310720000
+
+I may later do a patch that trims the output to avoid 0 stats,
+particularly for backing files (which are more likely to have
+0 stats, at least for write statistics when no block-commit
+is performed).  Also, I still plan to expose physical size
+information (qemu doesn't expose it yet, so it requires a stat,
+and for block devices, a further open/seek operation).  But
+this patch is good enough without worrying about that yet.
+
+* src/qemu/qemu_driver.c (QEMU_DOMAIN_STATS_BACKING): New internal
+enum bit.
+(qemuConnectGetAllDomainStats): Recognize new user flag, and pass
+details to...
+(qemuDomainGetStatsBlock): ...here, where we can do longer recursion.
+(qemuDomainGetStatsOneBlock): Output new field.
+
+Signed-off-by: Eric Blake <eblake@redhat.com>
+(cherry picked from commit 3937ef9cf4ff9d6d5aba8b76d9db5e44ae15a2aa)
+
+Conflicts:
+	src/qemu/qemu_driver.c
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c | 61 ++++++++++++++++++++++++++++++++++++++++----------
+ 1 file changed, 49 insertions(+), 12 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index a2535f4..77f8cac 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -17732,8 +17732,10 @@ qemuDomainGetStatsState(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
+ 
+ 
+ typedef enum {
+-    QEMU_DOMAIN_STATS_HAVE_JOB = (1 << 0), /* job is entered, monitor can be
+-                                              accessed */
++    QEMU_DOMAIN_STATS_HAVE_JOB = 1 << 0, /* job is entered, monitor can be
++                                            accessed */
++    QEMU_DOMAIN_STATS_BACKING  = 1 << 1, /* include backing chain in
++                                            block stats */
+ } qemuDomainStatsFlags;
+ 
+ 
+@@ -17980,6 +17982,19 @@ qemuDomainGetStatsInterface(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
+ 
+ #undef QEMU_ADD_NET_PARAM
+ 
++#define QEMU_ADD_BLOCK_PARAM_UI(record, maxparams, num, name, value) \
++    do {                                                             \
++        char param_name[VIR_TYPED_PARAM_FIELD_LENGTH];               \
++        snprintf(param_name, VIR_TYPED_PARAM_FIELD_LENGTH,           \
++                 "block.%zu.%s", num, name);                         \
++        if (virTypedParamsAddUInt(&(record)->params,                 \
++                                  &(record)->nparams,                \
++                                  maxparams,                         \
++                                  param_name,                        \
++                                  value) < 0)                        \
++            goto cleanup;                                            \
++    } while (0)
++
+ /* expects a LL, but typed parameter must be ULL */
+ #define QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, num, name, value) \
+ do { \
+@@ -18017,20 +18032,27 @@ qemuDomainGetStatsOneBlock(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
+                            virDomainDiskDefPtr disk,
+                            virStorageSourcePtr src,
+                            size_t block_idx,
++                           unsigned int backing_idx,
+                            bool abbreviated,
+                            virHashTablePtr stats)
+ {
+     qemuBlockStats *entry;
+     int ret = -1;
++    char *alias = NULL;
++
++    if (disk->info.alias)
++        alias = qemuDomainStorageAlias(disk->info.alias, backing_idx);
+ 
+     QEMU_ADD_NAME_PARAM(record, maxparams, "block", "name", block_idx,
+                         disk->dst);
+     if (virStorageSourceIsLocalStorage(src) && src->path)
+         QEMU_ADD_NAME_PARAM(record, maxparams, "block", "path",
+                             block_idx, src->path);
++    if (backing_idx)
++        QEMU_ADD_BLOCK_PARAM_UI(record, maxparams, block_idx, "backingIndex",
++                                backing_idx);
+ 
+-    if (abbreviated || !disk->info.alias ||
+-        !(entry = virHashLookup(stats, disk->info.alias))) {
++    if (abbreviated || !alias || !(entry = virHashLookup(stats, alias))) {
+         /* FIXME: we could still look up sizing by sharing code
+          * with qemuDomainGetBlockInfo */
+         ret = 0;
+@@ -18066,6 +18088,7 @@ qemuDomainGetStatsOneBlock(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
+ 
+     ret = 0;
+  cleanup:
++    VIR_FREE(alias);
+     return ret;
+ }
+ 
+@@ -18084,14 +18107,17 @@ qemuDomainGetStatsBlock(virQEMUDriverPtr driver,
+     qemuDomainObjPrivatePtr priv = dom->privateData;
+     bool abbreviated = false;
+     int count_index = -1;
++    size_t visited = 0;
++    bool visitBacking = !!(privflags & QEMU_DOMAIN_STATS_BACKING);
+ 
+     if (!HAVE_JOB(privflags) || !virDomainObjIsActive(dom)) {
+         abbreviated = true; /* it's ok, just go ahead silently */
+     } else {
+         qemuDomainObjEnterMonitor(driver, dom);
+-        rc = qemuMonitorGetAllBlockStatsInfo(priv->mon, &stats, false);
++        rc = qemuMonitorGetAllBlockStatsInfo(priv->mon, &stats,
++                                             visitBacking);
+         ignore_value(qemuMonitorBlockStatsUpdateCapacity(priv->mon, stats,
+-                                                         false));
++                                                         visitBacking));
+         qemuDomainObjExitMonitor(driver, dom);
+ 
+         if (rc < 0) {
+@@ -18108,14 +18134,21 @@ qemuDomainGetStatsBlock(virQEMUDriverPtr driver,
+ 
+     for (i = 0; i < dom->def->ndisks; i++) {
+         virDomainDiskDefPtr disk = dom->def->disks[i];
++        virStorageSourcePtr src = disk->src;
++        unsigned int backing_idx = 0;
+ 
+-        if (qemuDomainGetStatsOneBlock(driver, NULL, dom, record, maxparams,
+-                                       disk, disk->src, i, abbreviated,
+-                                       stats) < 0)
+-            goto cleanup;
++        while (src && (backing_idx == 0 || visitBacking)) {
++            if (qemuDomainGetStatsOneBlock(driver, NULL, dom, record, maxparams,
++                                           disk, src, visited, backing_idx,
++                                           abbreviated, stats) < 0)
++                goto cleanup;
++            visited++;
++            backing_idx++;
++            src = src->backingStore;
++        }
+     }
+ 
+-    record->params[count_index].value.ui = i;
++    record->params[count_index].value.ui = visited;
+     ret = 0;
+ 
+  cleanup:
+@@ -18258,11 +18291,13 @@ qemuConnectGetAllDomainStats(virConnectPtr conn,
+     unsigned int domflags = 0;
+ 
+     if (ndoms)
+-        virCheckFlags(VIR_CONNECT_GET_ALL_DOMAINS_STATS_ENFORCE_STATS, -1);
++        virCheckFlags(VIR_CONNECT_GET_ALL_DOMAINS_STATS_BACKING |
++                      VIR_CONNECT_GET_ALL_DOMAINS_STATS_ENFORCE_STATS, -1);
+     else
+         virCheckFlags(VIR_CONNECT_LIST_DOMAINS_FILTERS_ACTIVE |
+                       VIR_CONNECT_LIST_DOMAINS_FILTERS_PERSISTENT |
+                       VIR_CONNECT_LIST_DOMAINS_FILTERS_STATE |
++                      VIR_CONNECT_GET_ALL_DOMAINS_STATS_BACKING |
+                       VIR_CONNECT_GET_ALL_DOMAINS_STATS_ENFORCE_STATS, -1);
+ 
+     if (virConnectGetAllDomainStatsEnsureACL(conn) < 0)
+@@ -18312,6 +18347,8 @@ qemuConnectGetAllDomainStats(virConnectPtr conn,
+             domflags |= QEMU_DOMAIN_STATS_HAVE_JOB;
+         /* else: without a job it's still possible to gather some data */
+ 
++        if (flags & VIR_CONNECT_GET_ALL_DOMAINS_STATS_BACKING)
++            domflags |= QEMU_DOMAIN_STATS_BACKING;
+         if (qemuDomainGetStats(conn, dom, stats, &tmp, domflags) < 0)
+             goto endjob;
+ 
+-- 
+2.2.0
+

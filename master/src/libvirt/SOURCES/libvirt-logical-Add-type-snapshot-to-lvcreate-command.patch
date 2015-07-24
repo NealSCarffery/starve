@@ -1,0 +1,79 @@
+From 66cee818fd9a9651cbaf2421068e8dae2a5b92b2 Mon Sep 17 00:00:00 2001
+Message-Id: <66cee818fd9a9651cbaf2421068e8dae2a5b92b2@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Wed, 17 Dec 2014 06:31:21 -0500
+Subject: [PATCH] logical: Add "--type snapshot" to lvcreate command
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1166592
+
+A recent lvm change has resulted in a change for the "default" type of
+logical volume created when the "--virtualsize" or "--V" is supplied on
+the command line (e.g. when the allocation and capacity values of a to
+be created volume differ). It seems that at the very least the following
+change adjusts the default type:
+
+https://git.fedorahosted.org/cgit/lvm2.git/commit/?id=e0164f21
+
+and the following may also have some impact.
+
+https://git.fedorahosted.org/cgit/lvm2.git/commit/?id=87fc3b71
+
+When using the virsh vol-create-as or vol-create xmlfile commands, the
+result is that libvirt will now create a "thin logical volume" and a
+"thin logical volume pool" rather than just a "thin snapshot logical
+volume". For example the following sequence:
+
+  # lvcreate --name test -L 2M -V 5M lvm_test
+    Rounding up size to full physical extent 4.00 MiB
+    Rounding up size to full physical extent 8.00 MiB
+    Logical volume "test" created.
+  # lvs lvm_test
+    LV    VG       Attr       LSize Pool  Origin Data%  Meta%  Move Log Cpy%Sync Convert
+    lvol1 lvm_test twi-a-tz-- 4.00m              0.00   0.98
+    test  lvm_test Vwi-a-tz-- 8.00m lvol1        0.00
+
+compared to the former code which had the following:
+
+    LV   VG       Attr       LSize  Pool Origin         Data%  Move Log Cpy%Sync Convert
+    test LVM_Test swi-a-s---  4.00m      [test_vorigin]   0.00
+
+Since libvirt doesn't know how to parse the thin logical volume
+and pool, it will fail to find the newly created volume and pool
+even though it exists in the volume group.
+
+It cannot find since the command used to find/parse returns a thin volume
+'test' with no associated device, for example the output is:
+
+  lvol1##UgUwkp-fTFP-C0rc-ufue-xrYh-dkPr-FGPFPx#lvol1_tdata(0)#thin-pool#1#4194304#4194304#4194304#twi-a-tz--
+  test##NcaIoH-4YWJ-QKu3-sJc3-EOcS-goff-cThLIL##thin#0#8388608#4194304#8388608#Vwi-a-tz--
+
+as compared to the former which had the following:
+
+      test#[test_vorigin]#Dt5Of3-4WE6-buvw-CWJ4-XOiz-ywOU-YULYw6#/dev/sda3(1300)#linear#1#4194304#4194304#4194304#swi-a-s---
+
+While it's possible to generate code to handle the new thin lv and pool, this
+patch will add a "--type snapshot" onto the lvcreate command libvirt uses
+in order to "for now" be able to continue to utilize the thin snapshots
+
+(cherry picked from commit cafb934db850944e3b3cf4e3f6c4e28df4610b81)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/storage/storage_backend_logical.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/storage/storage_backend_logical.c b/src/storage/storage_backend_logical.c
+index 4959985..8aa68a6 100644
+--- a/src/storage/storage_backend_logical.c
++++ b/src/storage/storage_backend_logical.c
+@@ -758,6 +758,7 @@ virStorageBackendLogicalCreateVol(virConnectPtr conn,
+         virCommandAddArgFormat(cmd, "%lluK",
+                                VIR_DIV_UP(vol->target.allocation
+                                           ? vol->target.allocation : 1, 1024));
++        virCommandAddArgList(cmd, "--type", "snapshot", NULL);
+         virCommandAddArg(cmd, "--virtualsize");
+         vol->target.sparse = true;
+     }
+-- 
+2.2.0
+

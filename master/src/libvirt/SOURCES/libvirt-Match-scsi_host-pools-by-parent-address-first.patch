@@ -1,0 +1,69 @@
+From b8ef2c7dbcaedff7a5eb49ccd339ab15b0ffe407 Mon Sep 17 00:00:00 2001
+Message-Id: <b8ef2c7dbcaedff7a5eb49ccd339ab15b0ffe407@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Sat, 1 Nov 2014 17:55:32 -0400
+Subject: [PATCH] Match scsi_host pools by parent address first
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1146837
+
+If both source adapters are specified by a parent address,
+just comparing the address is faster and catches even addresses
+that do not refer to valid adapters.
+
+(cherry picked from commit 77911d305dfe22f2c93e560ac71602efd73e8ffa)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/conf/storage_conf.c | 29 +++++++++++++++++++++++++++++
+ 1 file changed, 29 insertions(+)
+
+diff --git a/src/conf/storage_conf.c b/src/conf/storage_conf.c
+index 7fa3dbf..d614b2d 100644
+--- a/src/conf/storage_conf.c
++++ b/src/conf/storage_conf.c
+@@ -2093,6 +2093,28 @@ getSCSIHostNumber(virStoragePoolSourceAdapter adapter,
+     VIR_FREE(name);
+     return ret;
+ }
++static bool
++matchSCSIAdapterParent(virStoragePoolObjPtr pool,
++                       virStoragePoolDefPtr def)
++{
++    virDevicePCIAddressPtr pooladdr =
++        &pool->def->source.adapter.data.scsi_host.parentaddr;
++    virDevicePCIAddressPtr defaddr =
++        &def->source.adapter.data.scsi_host.parentaddr;
++    int pool_unique_id =
++        pool->def->source.adapter.data.scsi_host.unique_id;
++    int def_unique_id =
++        def->source.adapter.data.scsi_host.unique_id;
++    if (pooladdr->domain == defaddr->domain &&
++        pooladdr->bus == defaddr->bus &&
++        pooladdr->slot == defaddr->slot &&
++        pooladdr->function == defaddr->function &&
++        pool_unique_id == def_unique_id) {
++        return true;
++    }
++    return false;
++}
++
+ 
+ int
+ virStoragePoolSourceFindDuplicate(virStoragePoolObjListPtr pools,
+@@ -2142,6 +2164,13 @@ virStoragePoolSourceFindDuplicate(virStoragePoolObjListPtr pools,
+                        VIR_STORAGE_POOL_SOURCE_ADAPTER_TYPE_SCSI_HOST) {
+                 unsigned int pool_hostnum, def_hostnum;
+ 
++                if (pool->def->source.adapter.data.scsi_host.has_parent &&
++                    def->source.adapter.data.scsi_host.has_parent &&
++                    matchSCSIAdapterParent(pool, def)) {
++                    matchpool = pool;
++                    break;
++                }
++
+                 if (getSCSIHostNumber(pool->def->source.adapter,
+                                       &pool_hostnum) < 0 ||
+                     getSCSIHostNumber(def->source.adapter, &def_hostnum) < 0)
+-- 
+2.1.3
+

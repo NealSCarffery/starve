@@ -1,0 +1,36 @@
+From f48bbd58f075b118369898c44687c2c67c791998 Mon Sep 17 00:00:00 2001
+Message-Id: <f48bbd58f075b118369898c44687c2c67c791998@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Thu, 18 Sep 2014 09:30:00 -0400
+Subject: [PATCH] qemu: Fix call in qemuDomainSetNumaParamsLive for
+ virCgroupNewIOThread
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1101574
+
+Found by inspection of the "i+1" change.  IOThreads are numbered 1..n
+thus the virCgroupNewIOThread needs to create a 1..n value not 0 based.
+
+(cherry picked from commit 82494cd628eedd4c698a7f11a4001c586107c198)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index a1379c2..f914081 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -8767,7 +8767,8 @@ qemuDomainSetNumaParamsLive(virDomainObjPtr vm,
+         goto cleanup;
+ 
+     for (i = 0; i < priv->niothreadpids; i++) {
+-        if (virCgroupNewIOThread(priv->cgroup, i, false, &cgroup_temp) < 0 ||
++        if (virCgroupNewIOThread(priv->cgroup, i + 1, false,
++                                 &cgroup_temp) < 0 ||
+             virCgroupSetCpusetMems(cgroup_temp, nodeset_str) < 0)
+             goto cleanup;
+         virCgroupFree(&cgroup_temp);
+-- 
+2.1.0
+

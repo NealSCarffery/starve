@@ -1,0 +1,201 @@
+From afcec1b837a1be463234ead731483a28f9d8a428 Mon Sep 17 00:00:00 2001
+Message-Id: <afcec1b837a1be463234ead731483a28f9d8a428@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Mon, 19 Jan 2015 10:48:33 +0100
+Subject: [PATCH] Fix vmdef usage after domain crash in monitor on device
+ attach
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1161024
+
+If the domain crashed while we were in monitor,
+we cannot rely on the REALLOC done on live definition,
+since vm->def now points to the persistent definition.
+Skip adding the attached devices to domain definition
+if the domain crashed.
+
+In AttachChrDevice, the chardev was already added to the
+live definition and freed by qemuProcessStop in the case
+of a crash. Skip the device removal in that case.
+
+Also skip audit if the domain crashed in the meantime.
+
+(cherry picked from commit 3070bc8ee52efed073e5d351bfdb1072bbc6e303)
+Signed-off-by: Ján Tomko <jtomko@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_hotplug.c | 69 +++++++++++++++++++++++++++++++++++++------------
+ 1 file changed, 52 insertions(+), 17 deletions(-)
+
+diff --git a/src/qemu/qemu_hotplug.c b/src/qemu/qemu_hotplug.c
+index c78cc4e..8a3eb27 100644
+--- a/src/qemu/qemu_hotplug.c
++++ b/src/qemu/qemu_hotplug.c
+@@ -390,7 +390,11 @@ qemuDomainAttachVirtioDiskDevice(virConnectPtr conn,
+             memcpy(&disk->info.addr.pci, &guestAddr, sizeof(guestAddr));
+         }
+     }
+-    qemuDomainObjExitMonitor(driver, vm);
++    if (qemuDomainObjExitMonitor(driver, vm) < 0) {
++        releaseaddr = false;
++        ret = -1;
++        goto error;
++    }
+ 
+     virDomainAuditDisk(vm, NULL, disk->src, "attach", ret >= 0);
+ 
+@@ -485,7 +489,11 @@ int qemuDomainAttachControllerDevice(virQEMUDriverPtr driver,
+                                                  type,
+                                                  &controller->info.addr.pci);
+     }
+-    qemuDomainObjExitMonitor(driver, vm);
++    if (qemuDomainObjExitMonitor(driver, vm) < 0) {
++        releaseaddr = false;
++        ret = -1;
++        goto cleanup;
++    }
+ 
+     if (ret == 0) {
+         if (controller->info.type == VIR_DOMAIN_DEVICE_ADDRESS_TYPE_NONE)
+@@ -636,7 +644,10 @@ qemuDomainAttachSCSIDisk(virConnectPtr conn,
+             disk->info.addr.drive.unit = driveAddr.unit;
+         }
+     }
+-    qemuDomainObjExitMonitor(driver, vm);
++    if (qemuDomainObjExitMonitor(driver, vm) < 0) {
++        ret = -1;
++        goto error;
++    }
+ 
+     virDomainAuditDisk(vm, NULL, disk->src, "attach", ret >= 0);
+ 
+@@ -716,7 +727,10 @@ qemuDomainAttachUSBMassstorageDevice(virConnectPtr conn,
+     } else {
+         ret = qemuMonitorAddUSBDisk(priv->mon, src);
+     }
+-    qemuDomainObjExitMonitor(driver, vm);
++    if (qemuDomainObjExitMonitor(driver, vm) < 0) {
++        ret = -1;
++        goto error;
++    }
+ 
+     virDomainAuditDisk(vm, NULL, disk->src, "attach", ret >= 0);
+ 
+@@ -1277,7 +1291,8 @@ qemuDomainAttachHostPCIDevice(virQEMUDriverPtr driver,
+         qemuDomainObjEnterMonitor(driver, vm);
+         ret = qemuMonitorAddDeviceWithFd(priv->mon, devstr,
+                                          configfd, configfd_name);
+-        qemuDomainObjExitMonitor(driver, vm);
++        if (qemuDomainObjExitMonitor(driver, vm) < 0)
++            goto error;
+     } else {
+         virDevicePCIAddressPtr guestAddr = &hostdev->info->addr.pci;
+         virDevicePCIAddressPtr hostAddr = &hostdev->source.subsys.u.pci.addr;
+@@ -1293,7 +1308,8 @@ qemuDomainAttachHostPCIDevice(virQEMUDriverPtr driver,
+ 
+         qemuDomainObjEnterMonitor(driver, vm);
+         ret = qemuMonitorAddPCIHostDevice(priv->mon, hostAddr, guestAddr);
+-        qemuDomainObjExitMonitor(driver, vm);
++        if (qemuDomainObjExitMonitor(driver, vm) < 0)
++            goto error;
+ 
+         hostdev->info->type = VIR_DOMAIN_DEVICE_ADDRESS_TYPE_PCI;
+     }
+@@ -1353,12 +1369,11 @@ int qemuDomainAttachRedirdevDevice(virQEMUDriverPtr driver,
+         goto error;
+ 
+     qemuDomainObjEnterMonitor(driver, vm);
+-    if (virQEMUCapsGet(priv->qemuCaps, QEMU_CAPS_DEVICE))
+-        ret = qemuMonitorAddDevice(priv->mon, devstr);
+-    else
++    ret = qemuMonitorAddDevice(priv->mon, devstr);
++
++    if (qemuDomainObjExitMonitor(driver, vm) < 0)
+         goto error;
+ 
+-    qemuDomainObjExitMonitor(driver, vm);
+     virDomainAuditRedirdev(vm, redirdev, "attach", ret == 0);
+     if (ret < 0)
+         goto error;
+@@ -1480,17 +1495,29 @@ int qemuDomainAttachChrDevice(virQEMUDriverPtr driver,
+ 
+     qemuDomainObjEnterMonitor(driver, vm);
+     if (qemuMonitorAttachCharDev(priv->mon, charAlias, &chr->source) < 0) {
+-        qemuDomainObjExitMonitor(driver, vm);
++        if (qemuDomainObjExitMonitor(driver, vm) < 0) {
++            need_remove = false;
++            ret = -1;
++            goto cleanup;
++        }
+         goto audit;
+     }
+ 
+     if (devstr && qemuMonitorAddDevice(priv->mon, devstr) < 0) {
+         /* detach associated chardev on error */
+         qemuMonitorDetachCharDev(priv->mon, charAlias);
+-        qemuDomainObjExitMonitor(driver, vm);
++        if (qemuDomainObjExitMonitor(driver, vm) < 0) {
++            need_remove = false;
++            ret = -1;
++            goto cleanup;
++        }
+         goto audit;
+     }
+-    qemuDomainObjExitMonitor(driver, vm);
++    if (qemuDomainObjExitMonitor(driver, vm) < 0) {
++        need_remove = false;
++        ret = -1;
++        goto cleanup;
++    }
+ 
+     ret = 0;
+  audit:
+@@ -1546,7 +1573,10 @@ qemuDomainAttachHostUSBDevice(virQEMUDriverPtr driver,
+         ret = qemuMonitorAddUSBDeviceExact(priv->mon,
+                                            hostdev->source.subsys.u.usb.bus,
+                                            hostdev->source.subsys.u.usb.device);
+-    qemuDomainObjExitMonitor(driver, vm);
++    if (qemuDomainObjExitMonitor(driver, vm) < 0) {
++        ret = -1;
++        goto cleanup;
++    }
+     virDomainAuditHostdev(vm, hostdev, "attach", ret == 0);
+     if (ret < 0)
+         goto cleanup;
+@@ -1649,7 +1679,10 @@ qemuDomainAttachHostSCSIDevice(virConnectPtr conn,
+             }
+         }
+     }
+-    qemuDomainObjExitMonitor(driver, vm);
++    if (qemuDomainObjExitMonitor(driver, vm) < 0) {
++        ret = -1;
++        goto cleanup;
++    }
+ 
+     virDomainAuditHostdev(vm, hostdev, "attach", ret == 0);
+     if (ret < 0)
+@@ -1895,7 +1928,8 @@ int qemuDomainChangeNetLinkState(virQEMUDriverPtr driver,
+     dev->linkstate = linkstate;
+ 
+  cleanup:
+-    qemuDomainObjExitMonitor(driver, vm);
++    if (qemuDomainObjExitMonitor(driver, vm) < 0)
++        return -1;
+ 
+     return ret;
+ }
+@@ -3661,7 +3695,8 @@ qemuDomainChangeGraphicsPasswords(virQEMUDriverPtr driver,
+     }
+ 
+  end_job:
+-    qemuDomainObjExitMonitor(driver, vm);
++    if (qemuDomainObjExitMonitor(driver, vm) < 0)
++        ret = -1;
+  cleanup:
+     virObjectUnref(cfg);
+     return ret;
+-- 
+2.2.1
+

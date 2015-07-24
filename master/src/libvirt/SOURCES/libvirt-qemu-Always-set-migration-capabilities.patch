@@ -1,0 +1,254 @@
+From 73d70735326d8577eadfbc97d9cf2217da3d8e69 Mon Sep 17 00:00:00 2001
+Message-Id: <73d70735326d8577eadfbc97d9cf2217da3d8e69@dist-git>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Mon, 10 Nov 2014 14:46:26 +0100
+Subject: [PATCH] qemu: Always set migration capabilities
+
+We used to set migration capabilities only when a user asked for them in
+flags. This is fine when migration succeeds since the QEMU process is
+killed in the end but in case migration fails or if it's cancelled, some
+capabilities may remain turned on with no way to turn them off. To fix
+that, migration capabilities have to be turned on if requested but
+explicitly turned off in case they were not requested but QEMU supports
+them.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1163953
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+(cherry picked from commit ab393383c84eb049fc2d75c3e79249ca58062887)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_migration.c    | 42 +++++++++++++++++++++++++++++-------------
+ src/qemu/qemu_monitor.c      |  5 +++--
+ src/qemu/qemu_monitor.h      |  3 ++-
+ src/qemu/qemu_monitor_json.c |  5 +++--
+ src/qemu/qemu_monitor_json.h |  3 ++-
+ tests/qemumonitorjsontest.c  |  3 ++-
+ 6 files changed, 41 insertions(+), 20 deletions(-)
+
+diff --git a/src/qemu/qemu_migration.c b/src/qemu/qemu_migration.c
+index d6c8553..7745d77 100644
+--- a/src/qemu/qemu_migration.c
++++ b/src/qemu/qemu_migration.c
+@@ -1805,6 +1805,7 @@ qemuMigrationSetOffline(virQEMUDriverPtr driver,
+ static int
+ qemuMigrationSetCompression(virQEMUDriverPtr driver,
+                             virDomainObjPtr vm,
++                            bool state,
+                             qemuDomainAsyncJob job)
+ {
+     qemuDomainObjPrivatePtr priv = vm->privateData;
+@@ -1819,6 +1820,9 @@ qemuMigrationSetCompression(virQEMUDriverPtr driver,
+ 
+     if (ret < 0) {
+         goto cleanup;
++    } else if (ret == 0 && !state) {
++        /* Unsupported but we want it off anyway */
++        goto cleanup;
+     } else if (ret == 0) {
+         if (job == QEMU_ASYNC_JOB_MIGRATION_IN) {
+             virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
+@@ -1835,7 +1839,8 @@ qemuMigrationSetCompression(virQEMUDriverPtr driver,
+ 
+     ret = qemuMonitorSetMigrationCapability(
+                 priv->mon,
+-                QEMU_MONITOR_MIGRATION_CAPS_XBZRLE);
++                QEMU_MONITOR_MIGRATION_CAPS_XBZRLE,
++                state);
+ 
+  cleanup:
+     qemuDomainObjExitMonitor(driver, vm);
+@@ -1845,6 +1850,7 @@ qemuMigrationSetCompression(virQEMUDriverPtr driver,
+ static int
+ qemuMigrationSetAutoConverge(virQEMUDriverPtr driver,
+                              virDomainObjPtr vm,
++                             bool state,
+                              qemuDomainAsyncJob job)
+ {
+     qemuDomainObjPrivatePtr priv = vm->privateData;
+@@ -1859,6 +1865,9 @@ qemuMigrationSetAutoConverge(virQEMUDriverPtr driver,
+ 
+     if (ret < 0) {
+         goto cleanup;
++    } else if (ret == 0 && !state) {
++        /* Unsupported but we want it off anyway */
++        goto cleanup;
+     } else if (ret == 0) {
+         virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
+                        _("Auto-Converge is not supported by "
+@@ -1869,7 +1878,8 @@ qemuMigrationSetAutoConverge(virQEMUDriverPtr driver,
+ 
+     ret = qemuMonitorSetMigrationCapability(
+                 priv->mon,
+-                QEMU_MONITOR_MIGRATION_CAPS_AUTO_CONVERGE);
++                QEMU_MONITOR_MIGRATION_CAPS_AUTO_CONVERGE,
++                state);
+ 
+  cleanup:
+     qemuDomainObjExitMonitor(driver, vm);
+@@ -1880,6 +1890,7 @@ qemuMigrationSetAutoConverge(virQEMUDriverPtr driver,
+ static int
+ qemuMigrationSetPinAll(virQEMUDriverPtr driver,
+                        virDomainObjPtr vm,
++                       bool state,
+                        qemuDomainAsyncJob job)
+ {
+     qemuDomainObjPrivatePtr priv = vm->privateData;
+@@ -1894,6 +1905,9 @@ qemuMigrationSetPinAll(virQEMUDriverPtr driver,
+ 
+     if (ret < 0) {
+         goto cleanup;
++    } else if (ret == 0 && !state) {
++        /* Unsupported but we want it off anyway */
++        goto cleanup;
+     } else if (ret == 0) {
+         if (job == QEMU_ASYNC_JOB_MIGRATION_IN) {
+             virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
+@@ -1910,7 +1924,8 @@ qemuMigrationSetPinAll(virQEMUDriverPtr driver,
+ 
+     ret = qemuMonitorSetMigrationCapability(
+                 priv->mon,
+-                QEMU_MONITOR_MIGRATION_CAPS_RDMA_PIN_ALL);
++                QEMU_MONITOR_MIGRATION_CAPS_RDMA_PIN_ALL,
++                state);
+ 
+  cleanup:
+     qemuDomainObjExitMonitor(driver, vm);
+@@ -2745,8 +2760,8 @@ qemuMigrationPrepareAny(virQEMUDriverPtr driver,
+         dataFD[1] = -1; /* 'st' owns the FD now & will close it */
+     }
+ 
+-    if (flags & VIR_MIGRATE_COMPRESSED &&
+-        qemuMigrationSetCompression(driver, vm,
++    if (qemuMigrationSetCompression(driver, vm,
++                                    flags & VIR_MIGRATE_COMPRESSED,
+                                     QEMU_ASYNC_JOB_MIGRATION_IN) < 0)
+         goto stop;
+ 
+@@ -2755,8 +2770,9 @@ qemuMigrationPrepareAny(virQEMUDriverPtr driver,
+         goto stop;
+     }
+ 
+-    if (flags & VIR_MIGRATE_RDMA_PIN_ALL &&
+-        qemuMigrationSetPinAll(driver, vm, QEMU_ASYNC_JOB_MIGRATION_IN) < 0)
++    if (qemuMigrationSetPinAll(driver, vm,
++                               flags & VIR_MIGRATE_RDMA_PIN_ALL,
++                               QEMU_ASYNC_JOB_MIGRATION_IN) < 0)
+         goto stop;
+ 
+     if (mig->lockState) {
+@@ -3573,18 +3589,18 @@ qemuMigrationRun(virQEMUDriverPtr driver,
+             goto cleanup;
+     }
+ 
+-    if (flags & VIR_MIGRATE_COMPRESSED &&
+-        qemuMigrationSetCompression(driver, vm,
++    if (qemuMigrationSetCompression(driver, vm,
++                                    flags & VIR_MIGRATE_COMPRESSED,
+                                     QEMU_ASYNC_JOB_MIGRATION_OUT) < 0)
+         goto cleanup;
+ 
+-    if (flags & VIR_MIGRATE_AUTO_CONVERGE &&
+-        qemuMigrationSetAutoConverge(driver, vm,
++    if (qemuMigrationSetAutoConverge(driver, vm,
++                                     flags & VIR_MIGRATE_AUTO_CONVERGE,
+                                      QEMU_ASYNC_JOB_MIGRATION_OUT) < 0)
+         goto cleanup;
+ 
+-    if (flags & VIR_MIGRATE_RDMA_PIN_ALL &&
+-        qemuMigrationSetPinAll(driver, vm,
++    if (qemuMigrationSetPinAll(driver, vm,
++                               flags & VIR_MIGRATE_RDMA_PIN_ALL,
+                                QEMU_ASYNC_JOB_MIGRATION_OUT) < 0)
+         goto cleanup;
+ 
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index b516880..d2f0b46 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -3907,7 +3907,8 @@ int qemuMonitorGetMigrationCapability(qemuMonitorPtr mon,
+ }
+ 
+ int qemuMonitorSetMigrationCapability(qemuMonitorPtr mon,
+-                                      qemuMonitorMigrationCaps capability)
++                                      qemuMonitorMigrationCaps capability,
++                                      bool state)
+ {
+     VIR_DEBUG("mon=%p capability=%d", mon, capability);
+ 
+@@ -3923,7 +3924,7 @@ int qemuMonitorSetMigrationCapability(qemuMonitorPtr mon,
+         return -1;
+     }
+ 
+-    return qemuMonitorJSONSetMigrationCapability(mon, capability);
++    return qemuMonitorJSONSetMigrationCapability(mon, capability, state);
+ }
+ 
+ int qemuMonitorNBDServerStart(qemuMonitorPtr mon,
+diff --git a/src/qemu/qemu_monitor.h b/src/qemu/qemu_monitor.h
+index 69f41bf..70bb608 100644
+--- a/src/qemu/qemu_monitor.h
++++ b/src/qemu/qemu_monitor.h
+@@ -506,7 +506,8 @@ int qemuMonitorGetMigrationCapabilities(qemuMonitorPtr mon,
+ int qemuMonitorGetMigrationCapability(qemuMonitorPtr mon,
+                                       qemuMonitorMigrationCaps capability);
+ int qemuMonitorSetMigrationCapability(qemuMonitorPtr mon,
+-                                      qemuMonitorMigrationCaps capability);
++                                      qemuMonitorMigrationCaps capability,
++                                      bool state);
+ 
+ typedef enum {
+   QEMU_MONITOR_MIGRATE_BACKGROUND	= 1 << 0,
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index 4fb1d81..f1f65ea 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -5731,7 +5731,8 @@ qemuMonitorJSONGetMigrationCapability(qemuMonitorPtr mon,
+ 
+ int
+ qemuMonitorJSONSetMigrationCapability(qemuMonitorPtr mon,
+-                                      qemuMonitorMigrationCaps capability)
++                                      qemuMonitorMigrationCaps capability,
++                                      bool state)
+ {
+     int ret = -1;
+ 
+@@ -5751,7 +5752,7 @@ qemuMonitorJSONSetMigrationCapability(qemuMonitorPtr mon,
+                 qemuMonitorMigrationCapsTypeToString(capability)) < 0)
+         goto cleanup;
+ 
+-    if (virJSONValueObjectAppendBoolean(cap, "state", 1) < 0)
++    if (virJSONValueObjectAppendBoolean(cap, "state", state) < 0)
+         goto cleanup;
+ 
+     if (virJSONValueArrayAppend(caps, cap) < 0)
+diff --git a/src/qemu/qemu_monitor_json.h b/src/qemu/qemu_monitor_json.h
+index 8d88c6d..97397fe 100644
+--- a/src/qemu/qemu_monitor_json.h
++++ b/src/qemu/qemu_monitor_json.h
+@@ -142,7 +142,8 @@ int qemuMonitorJSONGetMigrationCapabilities(qemuMonitorPtr mon,
+ int qemuMonitorJSONGetMigrationCapability(qemuMonitorPtr mon,
+                                           qemuMonitorMigrationCaps capability);
+ int qemuMonitorJSONSetMigrationCapability(qemuMonitorPtr mon,
+-                                          qemuMonitorMigrationCaps capability);
++                                          qemuMonitorMigrationCaps capability,
++                                          bool state);
+ 
+ int qemuMonitorJSONMigrate(qemuMonitorPtr mon,
+                            unsigned int flags,
+diff --git a/tests/qemumonitorjsontest.c b/tests/qemumonitorjsontest.c
+index d53ab05..f7b7ea5 100644
+--- a/tests/qemumonitorjsontest.c
++++ b/tests/qemumonitorjsontest.c
+@@ -1939,7 +1939,8 @@ testQemuMonitorJSONqemuMonitorJSONGetMigrationCapability(const void *data)
+     }
+ 
+     if (qemuMonitorJSONSetMigrationCapability(qemuMonitorTestGetMonitor(test),
+-                                              QEMU_MONITOR_MIGRATION_CAPS_XBZRLE) < 0)
++                                              QEMU_MONITOR_MIGRATION_CAPS_XBZRLE,
++                                              true) < 0)
+         goto cleanup;
+ 
+     ret = 0;
+-- 
+2.1.3
+

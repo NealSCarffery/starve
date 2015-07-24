@@ -1,0 +1,53 @@
+From 3e96914925112a76ee1071696d70ae4be8281682 Mon Sep 17 00:00:00 2001
+Message-Id: <3e96914925112a76ee1071696d70ae4be8281682@dist-git>
+From: Pavel Hrdina <phrdina@redhat.com>
+Date: Fri, 26 Sep 2014 12:43:59 +0200
+Subject: [PATCH] event_example: cleanup example code for tunable event
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+(cherry picked from commit f06a6257d5c2c29aff5140c38583a7fcd07d2b93)
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1115898
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ examples/object-events/event-test.c | 15 ++++-----------
+ 1 file changed, 4 insertions(+), 11 deletions(-)
+
+diff --git a/examples/object-events/event-test.c b/examples/object-events/event-test.c
+index faf0cf2..0c6faf4 100644
+--- a/examples/object-events/event-test.c
++++ b/examples/object-events/event-test.c
+@@ -476,15 +476,6 @@ myDomainEventTunableCallback(virConnectPtr conn ATTRIBUTE_UNUSED,
+     printf("%s EVENT: Domain %s(%d) tunable updated:\n",
+            __func__, virDomainGetName(dom), virDomainGetID(dom));
+ 
+-#ifdef WIN32
+-/* MinGW doesn't know the lld/llu so we have to use I64f/I64u instead. */
+-# define LLD_FORMAT "%I64d"
+-# define LLU_FORMAT "%I64u"
+-#else /* WIN32 */
+-# define LLD_FORMAT "%lld"
+-# define LLU_FORMAT "%llu"
+-#endif /* WIN32 */
+-
+     for (i = 0; i < nparams; i++) {
+         switch (params[i].type) {
+         case VIR_TYPED_PARAM_INT:
+@@ -494,10 +485,12 @@ myDomainEventTunableCallback(virConnectPtr conn ATTRIBUTE_UNUSED,
+             printf("\t%s: %u\n", params[i].field, params[i].value.ui);
+             break;
+         case VIR_TYPED_PARAM_LLONG:
+-            printf("\t%s: " LLD_FORMAT "\n", params[i].field, params[i].value.l);
++            printf("\t%s: %" PRId64 "\n", params[i].field,
++                   (int64_t) params[i].value.l);
+             break;
+         case VIR_TYPED_PARAM_ULLONG:
+-            printf("\t%s: " LLU_FORMAT "\n", params[i].field, params[i].value.ul);
++            printf("\t%s: %" PRIu64 "\n", params[i].field,
++                   (uint64_t) params[i].value.ul);
+             break;
+         case VIR_TYPED_PARAM_DOUBLE:
+             printf("\t%s: %g\n", params[i].field, params[i].value.d);
+-- 
+2.1.1
+

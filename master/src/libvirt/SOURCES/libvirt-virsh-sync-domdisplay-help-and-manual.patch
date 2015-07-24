@@ -1,0 +1,54 @@
+From 60f875ebfda5c5512fec0f324d6e0ddf540f53f1 Mon Sep 17 00:00:00 2001
+Message-Id: <60f875ebfda5c5512fec0f324d6e0ddf540f53f1@dist-git>
+From: Martin Kletzander <mkletzan@redhat.com>
+Date: Fri, 21 Nov 2014 12:58:09 +0100
+Subject: [PATCH] virsh: sync domdisplay help and manual
+
+https://bugzilla.redhat.com/show_bug.cgi?id=997802
+
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+(cherry picked from commit 4c1b9e22b99cdc5e2ca38dd391a8e7142b31d51c)
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ tools/virsh-domain.c | 2 +-
+ tools/virsh.pod      | 8 +++++---
+ 2 files changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/tools/virsh-domain.c b/tools/virsh-domain.c
+index f182dd0..68c28fa 100644
+--- a/tools/virsh-domain.c
++++ b/tools/virsh-domain.c
+@@ -9518,7 +9518,7 @@ static const vshCmdOptDef opts_domdisplay[] = {
+     },
+     {.name = "type",
+      .type = VSH_OT_DATA,
+-     .help = N_("select particular graphics display "
++     .help = N_("select particular graphical display "
+                 "(e.g. \"vnc\", \"spice\", \"rdp\")")
+     },
+     {.name = NULL}
+diff --git a/tools/virsh.pod b/tools/virsh.pod
+index 0c25d59..c88c417 100644
+--- a/tools/virsh.pod
++++ b/tools/virsh.pod
+@@ -1097,11 +1097,13 @@ I<size> is a scaled integer (see B<NOTES> above) which defaults to KiB
+ "B" to get bytes (note that for historical reasons, this differs from
+ B<vol-resize> which defaults to bytes without a suffix).
+ 
+-=item B<domdisplay> I<domain> [I<--include-password>]
++=item B<domdisplay> I<domain> [I<--include-password>] [[I<--type>] B<type>]
+ 
+ Output a URI which can be used to connect to the graphical display of the
+-domain via VNC, SPICE or RDP. If I<--include-password> is specified, the
+-SPICE channel password will be included in the URI.
++domain via VNC, SPICE or RDP.  The particular graphical display type can
++be selected using the B<type> parameter (e.g. "vnc", "spice", "rdp").  If
++I<--include-password> is specified, the SPICE channel password will be
++included in the URI.
+ 
+ =item B<domfsfreeze> I<domain> [[I<--mountpoint>] B<mountpoint>...]
+ 
+-- 
+2.1.3
+

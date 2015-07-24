@@ -1,0 +1,40 @@
+From 871079dd76ebdcff9ccc1cbbdbed660ef2a3f8b1 Mon Sep 17 00:00:00 2001
+Message-Id: <871079dd76ebdcff9ccc1cbbdbed660ef2a3f8b1@dist-git>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Thu, 8 Jan 2015 14:48:05 +0100
+Subject: [PATCH] conf: Fix memory leak when parsing invalid network XML
+
+Don't leak the value of /network/bridge/macTableManager if it's invalid.
+
+The fix is a small part of upstream commit 3aa05241, which commit
+40961978 backported to 7.1 relied on.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1180136
+---
+ src/conf/network_conf.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/conf/network_conf.c b/src/conf/network_conf.c
+index 8015bf3..7b19592 100644
+--- a/src/conf/network_conf.c
++++ b/src/conf/network_conf.c
+@@ -2021,7 +2021,7 @@ static virNetworkDefPtr
+ virNetworkDefParseXML(xmlXPathContextPtr ctxt)
+ {
+     virNetworkDefPtr def;
+-    char *tmp;
++    char *tmp = NULL;
+     char *stp = NULL;
+     xmlNodePtr *ipNodes = NULL;
+     xmlNodePtr *routeNodes = NULL;
+@@ -2342,6 +2342,7 @@ virNetworkDefParseXML(xmlXPathContextPtr ctxt)
+     return def;
+ 
+  error:
++    VIR_FREE(tmp);
+     VIR_FREE(routeNodes);
+     VIR_FREE(stp);
+     virNetworkDefFree(def);
+-- 
+2.2.1
+

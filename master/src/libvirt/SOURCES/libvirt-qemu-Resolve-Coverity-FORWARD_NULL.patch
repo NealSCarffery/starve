@@ -1,0 +1,38 @@
+From 5f74be7990f83f8a8d3fe71c440c4d0e3dbc4d27 Mon Sep 17 00:00:00 2001
+Message-Id: <5f74be7990f83f8a8d3fe71c440c4d0e3dbc4d27@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Mon, 15 Sep 2014 15:13:50 -0400
+Subject: [PATCH] qemu: Resolve Coverity FORWARD_NULL
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1141209
+
+If we jump to cleanup before allocating the 'result', then the call
+to virBlkioDeviceArrayClear will deref result causing a problem.
+
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+(cherry picked from commit f28a31fcc42ec82fc60e409afd7d2f2220ae9d2d)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 04384fb..3c7f2ba 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -7688,8 +7688,10 @@ qemuDomainParseBlkioDeviceStr(char *blkioDeviceStr, const char *type,
+                    _("unable to parse blkio device '%s' '%s'"),
+                    type, blkioDeviceStr);
+  cleanup:
+-    virBlkioDeviceArrayClear(result, ndevices);
+-    VIR_FREE(result);
++    if (result) {
++        virBlkioDeviceArrayClear(result, ndevices);
++        VIR_FREE(result);
++    }
+     return -1;
+ }
+ 
+-- 
+2.1.0
+

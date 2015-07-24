@@ -1,0 +1,75 @@
+From 6e4847fa4fd206e8954d07eebda809568d2fa2a4 Mon Sep 17 00:00:00 2001
+Message-Id: <6e4847fa4fd206e8954d07eebda809568d2fa2a4@dist-git>
+From: Eric Blake <eblake@redhat.com>
+Date: Tue, 13 Jan 2015 08:31:58 -0700
+Subject: [PATCH] qemu: forbid second blockcommit during active commit
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1135339 documents some
+confusing behavior when a user tries to start an inactive block
+commit in a second connection while there is already an on-going
+active commit from a first connection.  Eventually, qemu will
+support multiple simultaneous block jobs, but as of now, it does
+not; furthermore, libvirt also needs an overhaul before we can
+support simultaneous jobs.  So, the best way to avoid confusing
+ourselves is to quit relying on qemu to tell us about the situation
+(where we risk getting in weird states) and instead forbid a
+duplicate block commit ourselves.
+
+Note that we are still relying on qemu to diagnose attempts to
+interrupt an inactive commit (since we only track XML of an active
+commit), but as inactive commit is less confusing for libvirt to
+manage, there is less that can go wrong by leaving that detection
+up to qemu.
+
+* src/qemu/qemu_driver.c (qemuDomainBlockCommit): Hoist check for
+active commit to occur earlier outside of conditions.
+
+Signed-off-by: Eric Blake <eblake@redhat.com>
+(cherry picked from commit e1125cebfc057059f444894c6cedf1f29379bca3)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c | 14 +++++++-------
+ 1 file changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 77f8cac..8830e04 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -1,7 +1,7 @@
+ /*
+  * qemu_driver.c: core driver methods for managing qemu guests
+  *
+- * Copyright (C) 2006-2014 Red Hat, Inc.
++ * Copyright (C) 2006-2015 Red Hat, Inc.
+  * Copyright (C) 2006 Daniel P. Berrange
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -16027,6 +16027,12 @@ qemuDomainBlockCommit(virDomainPtr dom,
+                        disk->dst);
+         goto endjob;
+     }
++    if (disk->mirror) {
++        virReportError(VIR_ERR_BLOCK_COPY_ACTIVE,
++                       _("disk '%s' already in active block job"),
++                       disk->dst);
++        goto endjob;
++    }
+     if (qemuDomainDetermineDiskChain(driver, vm, disk, false, true) < 0)
+         goto endjob;
+ 
+@@ -16051,12 +16057,6 @@ qemuDomainBlockCommit(virDomainPtr dom,
+                            disk->dst);
+             goto endjob;
+         }
+-        if (disk->mirror) {
+-            virReportError(VIR_ERR_BLOCK_COPY_ACTIVE,
+-                           _("disk '%s' already in active block job"),
+-                           disk->dst);
+-            goto endjob;
+-        }
+     } else if (flags & VIR_DOMAIN_BLOCK_COMMIT_ACTIVE) {
+         virReportError(VIR_ERR_INVALID_ARG,
+                        _("active commit requested but '%s' is not active"),
+-- 
+2.2.1
+

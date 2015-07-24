@@ -1,0 +1,115 @@
+From eeb166cea4a966f01d9241eba1d465d8466e7768 Mon Sep 17 00:00:00 2001
+Message-Id: <eeb166cea4a966f01d9241eba1d465d8466e7768@dist-git>
+From: Martin Kletzander <mkletzan@redhat.com>
+Date: Sat, 13 Dec 2014 10:10:52 +0100
+Subject: [PATCH] qemu: avoid rare race when undefining domain
+
+When one domain is being undefined and at the same time started, for
+example, there is a possibility of a rare problem occuring.
+
+ - Thread 1 does virDomainUndefine(), has the lock, checks that the
+   domain is active and because it's not, calls
+   virDomainObjListRemove().
+
+ - Thread 2 does virDomainCreate() and tries to lock the domain.
+
+ - Thread 1 needs to lock domain list in order to remove the domain from
+   it, but must unlock domain first (proper order is to lock domain list
+   first and the domain itself second).
+
+ - Thread 2 grabs the lock, starts the domain and releases the lock.
+
+ - Thread 1 grabs the lock and removes the domain from list.
+
+With this patch:
+
+ - The undefining domain gets marked as "to undefine" before it is
+    unlocked.
+
+ - If domain is found in any of the search APIs, it's returned only if
+   it is not marked as "to undefine".  The check is done while the
+   domain is locked.
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1150505
+
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+(cherry picked from commit c7d1c139ca3402e875002753952e80ce8054374e)
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/conf/domain_conf.c | 22 +++++++++++++++++++---
+ src/conf/domain_conf.h |  1 +
+ 2 files changed, 20 insertions(+), 3 deletions(-)
+
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 25f20f8..20ae4e7 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -1056,8 +1056,13 @@ virDomainObjPtr virDomainObjListFindByID(virDomainObjListPtr doms,
+     virDomainObjPtr obj;
+     virObjectLock(doms);
+     obj = virHashSearch(doms->objs, virDomainObjListSearchID, &id);
+-    if (obj)
++    if (obj) {
+         virObjectLock(obj);
++        if (obj->removing) {
++            virObjectUnlock(obj);
++            obj = NULL;
++        }
++    }
+     virObjectUnlock(doms);
+     return obj;
+ }
+@@ -1073,8 +1078,13 @@ virDomainObjPtr virDomainObjListFindByUUID(virDomainObjListPtr doms,
+     virUUIDFormat(uuid, uuidstr);
+ 
+     obj = virHashLookup(doms->objs, uuidstr);
+-    if (obj)
++    if (obj) {
+         virObjectLock(obj);
++        if (obj->removing) {
++            virObjectUnlock(obj);
++            obj = NULL;
++        }
++    }
+     virObjectUnlock(doms);
+     return obj;
+ }
+@@ -1099,8 +1109,13 @@ virDomainObjPtr virDomainObjListFindByName(virDomainObjListPtr doms,
+     virDomainObjPtr obj;
+     virObjectLock(doms);
+     obj = virHashSearch(doms->objs, virDomainObjListSearchName, name);
+-    if (obj)
++    if (obj) {
+         virObjectLock(obj);
++        if (obj->removing) {
++            virObjectUnlock(obj);
++            obj = NULL;
++        }
++    }
+     virObjectUnlock(doms);
+     return obj;
+ }
+@@ -2537,6 +2552,7 @@ void virDomainObjListRemove(virDomainObjListPtr doms,
+ {
+     char uuidstr[VIR_UUID_STRING_BUFLEN];
+ 
++    dom->removing = true;
+     virUUIDFormat(dom->def->uuid, uuidstr);
+     virObjectRef(dom);
+     virObjectUnlock(dom);
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index 04cee80..01d5aeb 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -2149,6 +2149,7 @@ struct _virDomainObj {
+     unsigned int autostart : 1;
+     unsigned int persistent : 1;
+     unsigned int updated : 1;
++    unsigned int removing : 1;
+ 
+     virDomainDefPtr def; /* The current definition */
+     virDomainDefPtr newDef; /* New definition to activate at shutdown */
+-- 
+2.2.0
+

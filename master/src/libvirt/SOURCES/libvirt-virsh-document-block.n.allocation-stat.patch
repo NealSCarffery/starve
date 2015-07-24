@@ -1,0 +1,59 @@
+From bf30179785785e77271500eadd6e425fa11978a5 Mon Sep 17 00:00:00 2001
+Message-Id: <bf30179785785e77271500eadd6e425fa11978a5@dist-git>
+From: Eric Blake <eblake@redhat.com>
+Date: Wed, 17 Dec 2014 03:08:58 -0700
+Subject: [PATCH] virsh: document block.n.allocation stat
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1041569
+
+Commit 7557ddf added some additional block.* stats to
+virDomainListGetStats, but failed to document them in 'man
+virsh'.  Also, I noticed some inconsistent use of commas.
+
+* tools/virsh.pod (domstats): Tweak commas, add missing stats.
+
+Signed-off-by: Eric Blake <eblake@redhat.com>
+(cherry picked from commit 7296e896c92c64ec5653095bcc2ed86b6a72a7d5)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ tools/virsh.pod | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/tools/virsh.pod b/tools/virsh.pod
+index c88c417..d88fa9f 100644
+--- a/tools/virsh.pod
++++ b/tools/virsh.pod
+@@ -837,7 +837,7 @@ I<--vcpu>, I<--interface>, I<--block>.
+ 
+ When selecting the I<--state> group the following fields are returned:
+ "state.state" - state of the VM, returned as number from virDomainState enum,
+-"state.reason" - reason for entering given state, returned as int from,
++"state.reason" - reason for entering given state, returned as int from
+ virDomain*Reason enum corresponding to given state.
+ 
+ I<--cpu-total> returns:
+@@ -866,9 +866,9 @@ I<--interface> returns:
+ "net.<num>.tx.bytes" - number of bytes transmitted,
+ "net.<num>.tx.pkts" - number of packets transmitted,
+ "net.<num>.tx.errs" - number of transmission errors,
+-"net.<num>.tx.drop" - number of transmit packets dropped,
++"net.<num>.tx.drop" - number of transmit packets dropped
+ 
+-I<block> returns:
++I<--block> returns:
+ "block.count" - number of block devices on this domain,
+ "block.<num>.name" - name of the target of the block device <num>,
+ "block.<num>.rd.reqs" - number of read requests,
+@@ -880,6 +880,9 @@ I<block> returns:
+ "block.<num>.fl.reqs" - total flush requests,
+ "block.<num>.fl.times" - total time (ns) spent on cache flushing,
+ "block.<num>.errors" - Xen only: the 'oo_req' value,
++"block.<num>.allocation" - offset of highest written sector in bytes,
++"block.<num>.capacity" - logical size of source file in bytes,
++"block.<num>.physical" - physical size of source file in bytes
+ 
+ Selecting a specific statistics groups doesn't guarantee that the
+ daemon supports the selected group of stats. Flag I<--enforce>
+-- 
+2.2.0
+

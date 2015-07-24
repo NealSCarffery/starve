@@ -1,0 +1,46 @@
+From 0a11b90fc609d5ff7c32f2f25ff25a4e7d4013d9 Mon Sep 17 00:00:00 2001
+Message-Id: <0a11b90fc609d5ff7c32f2f25ff25a4e7d4013d9@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Fri, 19 Sep 2014 08:32:36 -0400
+Subject: [PATCH] qemu: Add missing goto on rawio
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1103739
+
+Commit id '9a2f36ec' added a build conditional of CAP_SYS_RAWIO
+in order to determine whether or not a disk definition using rawio
+should be allowed on platforms without CAP_SYS_RAWIO. If one was
+found, virReportError was used but the code didn't goto cleanup.
+
+This patch adds the goto.
+
+(cherry picked from commit 8921d48868652e7dbb67aa7c77035ac2d5ccb5a3)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_process.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index a0eb845..528b6eb 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -4355,13 +4355,15 @@ int qemuProcessStart(virConnectPtr conn,
+         virDomainDeviceDef dev;
+         virDomainDiskDefPtr disk = vm->def->disks[i];
+ 
+-        if (vm->def->disks[i]->rawio == 1)
++        if (vm->def->disks[i]->rawio == 1) {
+ #ifdef CAP_SYS_RAWIO
+             virCommandAllowCap(cmd, CAP_SYS_RAWIO);
+ #else
+             virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                            _("Raw I/O is not supported on this platform"));
++            goto cleanup;
+ #endif
++        }
+ 
+         dev.type = VIR_DOMAIN_DEVICE_DISK;
+         dev.data.disk = disk;
+-- 
+2.1.1
+

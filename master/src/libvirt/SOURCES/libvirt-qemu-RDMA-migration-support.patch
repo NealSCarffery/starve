@@ -1,0 +1,154 @@
+From 298d5857152494dfd31f182ecc16f4aa16c5617f Mon Sep 17 00:00:00 2001
+Message-Id: <298d5857152494dfd31f182ecc16f4aa16c5617f@dist-git>
+From: "Michael R. Hines" <mrhines@us.ibm.com>
+Date: Tue, 23 Sep 2014 15:47:57 +0200
+Subject: [PATCH] qemu: RDMA migration support
+
+This patch adds support for RDMA protocol in migration URIs.
+
+USAGE: $ virsh migrate --live --migrateuri rdma://hostname domain qemu+ssh://hostname/system
+
+Since libvirt runs QEMU in a pretty restricted environment, several
+files needs to be added to cgroup_device_acl (in qemu.conf) for QEMU to
+be able to access the host's infiniband hardware. Full documenation of
+the feature can be found on QEMU wiki:
+http://wiki.qemu.org/Features/RDMALiveMigration
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1013055
+
+Signed-off-by: Michael R. Hines <mrhines@us.ibm.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+(cherry picked from commit ed22a4743437b6f646eb33659a212dd252a5b65d)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu.conf        |  8 ++++++++
+ src/qemu/qemu_command.c   |  8 ++++++++
+ src/qemu/qemu_migration.c | 39 +++++++++++++++++++++++++++++++++++++--
+ 3 files changed, 53 insertions(+), 2 deletions(-)
+
+diff --git a/src/qemu/qemu.conf b/src/qemu/qemu.conf
+index 79bba36..92ca715 100644
+--- a/src/qemu/qemu.conf
++++ b/src/qemu/qemu.conf
+@@ -274,6 +274,14 @@
+ #    "/dev/ptmx", "/dev/kvm", "/dev/kqemu",
+ #    "/dev/rtc","/dev/hpet", "/dev/vfio/vfio"
+ #]
++#
++# RDMA migration requires the following extra files to be added to the list:
++#   "/dev/infiniband/rdma_cm",
++#   "/dev/infiniband/issm0",
++#   "/dev/infiniband/issm1",
++#   "/dev/infiniband/umad0",
++#   "/dev/infiniband/umad1",
++#   "/dev/infiniband/uverbs0"
+ 
+ 
+ # The default format for Qemu/KVM guest save images is raw; that is, the
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 05f328a..7d4f3cc 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -9475,6 +9475,14 @@ qemuBuildCommandLine(virConnectPtr conn,
+                 goto error;
+             }
+             virCommandAddArg(cmd, migrateFrom);
++        } else if (STRPREFIX(migrateFrom, "rdma")) {
++            if (!virQEMUCapsGet(qemuCaps, QEMU_CAPS_MIGRATE_RDMA)) {
++                virReportError(VIR_ERR_OPERATION_UNSUPPORTED, "%s",
++                               _("incoming RDMA migration is not supported "
++                                 "with this QEMU binary"));
++                goto error;
++            }
++            virCommandAddArg(cmd, migrateFrom);
+         } else if (STREQ(migrateFrom, "stdio")) {
+             if (virQEMUCapsGet(qemuCaps, QEMU_CAPS_MIGRATE_QEMU_FD)) {
+                 virCommandAddArgFormat(cmd, "fd:%d", migrateFd);
+diff --git a/src/qemu/qemu_migration.c b/src/qemu/qemu_migration.c
+index 6b690b8..3433ec9 100644
+--- a/src/qemu/qemu_migration.c
++++ b/src/qemu/qemu_migration.c
+@@ -56,6 +56,7 @@
+ #include "virhook.h"
+ #include "virstring.h"
+ #include "virtypedparam.h"
++#include "virprocess.h"
+ 
+ #define VIR_FROM_THIS VIR_FROM_QEMU
+ 
+@@ -2653,6 +2654,13 @@ qemuMigrationPrepareAny(virQEMUDriverPtr driver,
+                                        QEMU_MIGRATION_COOKIE_NBD)))
+         goto cleanup;
+ 
++    if (STREQ(protocol, "rdma") && !vm->def->mem.hard_limit) {
++        virReportError(VIR_ERR_OPERATION_INVALID, "%s",
++                       _("cannot start RDMA migration with no memory hard "
++                         "limit set"));
++        goto cleanup;
++    }
++
+     if (qemuMigrationJobStart(driver, vm, QEMU_ASYNC_JOB_MIGRATION_IN) < 0)
+         goto cleanup;
+     qemuMigrationJobSetPhase(driver, vm, QEMU_MIGRATION_PHASE_PREPARE);
+@@ -2696,6 +2704,11 @@ qemuMigrationPrepareAny(virQEMUDriverPtr driver,
+                                     QEMU_ASYNC_JOB_MIGRATION_IN) < 0)
+         goto stop;
+ 
++    if (STREQ(protocol, "rdma") &&
++        virProcessSetMaxMemLock(vm->pid, vm->def->mem.hard_limit << 10) < 0) {
++        goto stop;
++    }
++
+     if (mig->lockState) {
+         VIR_DEBUG("Received lockstate %s", mig->lockState);
+         VIR_FREE(priv->lockState);
+@@ -2926,7 +2939,8 @@ qemuMigrationPrepareDirect(virQEMUDriverPtr driver,
+         if (!(uri = qemuMigrationParseURI(uri_in, &well_formed_uri)))
+             goto cleanup;
+ 
+-        if (STRNEQ(uri->scheme, "tcp")) {
++        if (STRNEQ(uri->scheme, "tcp") &&
++            STRNEQ(uri->scheme, "rdma")) {
+             virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED,
+                            _("unsupported scheme %s in migration URI %s"),
+                            uri->scheme, uri_in);
+@@ -3547,6 +3561,11 @@ qemuMigrationRun(virQEMUDriverPtr driver,
+ 
+     switch (spec->destType) {
+     case MIGRATION_DEST_HOST:
++        if (STREQ(spec->dest.host.protocol, "rdma") &&
++            virProcessSetMaxMemLock(vm->pid, vm->def->mem.hard_limit << 10) < 0) {
++            qemuDomainObjExitMonitor(driver, vm);
++            goto cleanup;
++        }
+         ret = qemuMonitorMigrateToHost(priv->mon, migrate_flags,
+                                        spec->dest.host.protocol,
+                                        spec->dest.host.name,
+@@ -3719,7 +3738,23 @@ static int doNativeMigrate(virQEMUDriverPtr driver,
+     if (!(uribits = qemuMigrationParseURI(uri, NULL)))
+         return -1;
+ 
+-    if (virQEMUCapsGet(priv->qemuCaps, QEMU_CAPS_MIGRATE_QEMU_FD))
++    if (STREQ(uribits->scheme, "rdma")) {
++        if (!virQEMUCapsGet(priv->qemuCaps, QEMU_CAPS_MIGRATE_RDMA)) {
++            virReportError(VIR_ERR_OPERATION_UNSUPPORTED, "%s",
++                           _("outgoing RDMA migration is not supported "
++                             "with this QEMU binary"));
++            return -1;
++        }
++        if (!vm->def->mem.hard_limit) {
++            virReportError(VIR_ERR_OPERATION_INVALID, "%s",
++                           _("cannot start RDMA migration with no memory hard "
++                             "limit set"));
++            return -1;
++        }
++    }
++
++    if (virQEMUCapsGet(priv->qemuCaps, QEMU_CAPS_MIGRATE_QEMU_FD) &&
++        STRNEQ(uribits->scheme, "rdma"))
+         spec.destType = MIGRATION_DEST_CONNECT_HOST;
+     else
+         spec.destType = MIGRATION_DEST_HOST;
+-- 
+2.1.1
+

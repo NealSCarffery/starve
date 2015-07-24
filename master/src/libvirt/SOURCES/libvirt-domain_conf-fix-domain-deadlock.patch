@@ -1,0 +1,37 @@
+From 75b4e447d3543c275de196c48569139ee2ecb50c Mon Sep 17 00:00:00 2001
+Message-Id: <75b4e447d3543c275de196c48569139ee2ecb50c@dist-git>
+From: Pavel Hrdina <phrdina@redhat.com>
+Date: Mon, 6 Oct 2014 16:52:24 +0200
+Subject: [PATCH] domain_conf: fix domain deadlock
+
+If you use public api virConnectListAllDomains() with second parameter
+set to NULL to get only the number of domains you will lock out all
+other operations with domains.
+
+Introduced by commit 2c680804.
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+(cherry picked from commit fc22b2e74890873848b43fffae43025d22053669)
+
+CVE-2014-3657
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/conf/domain_conf.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index b109330..d1d816d 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -20690,7 +20690,7 @@ virDomainListPopulate(void *payload,
+     /* just count the machines */
+     if (!data->domains) {
+         data->ndomains++;
+-        return;
++        goto cleanup;
+     }
+ 
+     if (!(dom = virGetDomain(data->conn, vm->def->name, vm->def->uuid))) {
+-- 
+2.1.2
+

@@ -1,0 +1,36 @@
+From aeeb94885f4ba16eef7694b561341d2b9959bb2a Mon Sep 17 00:00:00 2001
+Message-Id: <aeeb94885f4ba16eef7694b561341d2b9959bb2a@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Tue, 28 Oct 2014 22:28:44 -0400
+Subject: [PATCH] hotplug: Check for alias in controller detach
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1141621
+
+In qemuDomainDetachControllerDevice if the info.alias already exists
+a call to qemuAssignDeviceControllerAlias would overwrite the existing
+so avoid this possibility.
+
+(cherry picked from commit 65be7572d2ef0228b111c2a1bbc90ee95179b706)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_hotplug.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/qemu/qemu_hotplug.c b/src/qemu/qemu_hotplug.c
+index e5e5180..e7aa2f0 100644
+--- a/src/qemu/qemu_hotplug.c
++++ b/src/qemu/qemu_hotplug.c
+@@ -3236,7 +3236,8 @@ int qemuDomainDetachControllerDevice(virQEMUDriverPtr driver,
+         goto cleanup;
+     }
+ 
+-    if (virQEMUCapsGet(priv->qemuCaps, QEMU_CAPS_DEVICE)) {
++    if (virQEMUCapsGet(priv->qemuCaps, QEMU_CAPS_DEVICE) &&
++        !detach->info.alias) {
+         if (qemuAssignDeviceControllerAlias(detach) < 0)
+             goto cleanup;
+     }
+-- 
+2.1.3
+

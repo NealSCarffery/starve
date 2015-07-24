@@ -1,0 +1,39 @@
+From 66b00a2567f5e00e0d94ee5af4a1b1c65dd90341 Mon Sep 17 00:00:00 2001
+Message-Id: <66b00a2567f5e00e0d94ee5af4a1b1c65dd90341@dist-git>
+From: Michal Privoznik <mprivozn@redhat.com>
+Date: Mon, 29 Sep 2014 12:57:10 +0200
+Subject: [PATCH] qemuPrepareNVRAM: Save domain after NVRAM path generation
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1026772
+
+On a domain startup, the variable store path is generated if needed.
+The path is intended to be generated only once. However, the updated
+domain definition is not saved into config dir rather than state XML
+only. So later, whenever the domain is destroyed and the daemon is
+restarted, the generated path is forgotten and the file may be left
+behind on virDomainUndefine() call.
+
+Signed-off-by: Michal Privoznik <mprivozn@redhat.com>
+(cherry picked from commit 3a3c3780b478ccf137b434754c7c6b1ddbdf1ac2)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_process.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index 9294619..d675add 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -3874,6 +3874,9 @@ qemuPrepareNVRAM(virQEMUDriverConfigPtr cfg,
+             goto cleanup;
+ 
+         generated = true;
++
++        if (virDomainSaveConfig(cfg->configDir, def) < 0)
++            goto cleanup;
+     }
+ 
+     if (!virFileExists(loader->nvram)) {
+-- 
+2.1.2
+

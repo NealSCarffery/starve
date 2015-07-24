@@ -1,0 +1,43 @@
+From f361614b6a8dd6a687f90c5a3a5cf51d8918dcfe Mon Sep 17 00:00:00 2001
+Message-Id: <f361614b6a8dd6a687f90c5a3a5cf51d8918dcfe@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Thu, 6 Nov 2014 13:56:03 +0100
+Subject: [PATCH] Free job statistics from the migration cookie
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1161124
+
+==404== 232 bytes in 1 blocks are definitely lost in loss record 669 of 758
+==404==    at 0x4C2B934: calloc (in /usr/lib64/valgrind/vgpreload_memcheck-amd64-linux.so)
+==404==    by 0x52A2BF3: virAlloc (viralloc.c:144)
+==404==    by 0x1D49AD70: qemuMigrationCookieAddStatistics (qemu_migration.c:554)
+==404==    by 0x1D49AD70: qemuMigrationBakeCookie (qemu_migration.c:1228)
+==404==    by 0x1D4A43B8: qemuMigrationFinish (qemu_migration.c:5002)
+==404==    by 0x1D4C9339: qemuDomainMigrateFinish3Params (qemu_driver.c:11526)
+
+Introduced by commit 5d6fb96
+
+(cherry picked from commit 1d1c5ecd1360d74292a5db18fbd90fe27ec2551b)
+Signed-off-by: Ján Tomko <jtomko@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_migration.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/qemu/qemu_migration.c b/src/qemu/qemu_migration.c
+index cc245f6..98fd376 100644
+--- a/src/qemu/qemu_migration.c
++++ b/src/qemu/qemu_migration.c
+@@ -219,6 +219,7 @@ static void qemuMigrationCookieFree(qemuMigrationCookiePtr mig)
+     VIR_FREE(mig->lockState);
+     VIR_FREE(mig->lockDriver);
+     VIR_FREE(mig->nbd);
++    VIR_FREE(mig->jobInfo);
+     VIR_FREE(mig);
+ }
+ 
+-- 
+2.1.3
+

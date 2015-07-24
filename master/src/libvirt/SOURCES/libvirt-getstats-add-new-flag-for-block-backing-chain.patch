@@ -1,0 +1,159 @@
+From 1ee014e89e853b83dc0d384e67f4d073034b4995 Mon Sep 17 00:00:00 2001
+Message-Id: <1ee014e89e853b83dc0d384e67f4d073034b4995@dist-git>
+From: Eric Blake <eblake@redhat.com>
+Date: Wed, 17 Dec 2014 03:09:07 -0700
+Subject: [PATCH] getstats: add new flag for block backing chain
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1041569
+
+This patch introduces access to allocation information about
+a backing chain of a live domain.  While querying storage
+volumes for read-only disks could provide some of the details,
+we do NOT want to read() a file while qemu is writing it.
+Also, there is one case where we have to rely on qemu: when
+doing a block commit into a backing file, where that file is
+stored in qcow2 format on a host block device, we want to know
+the current highest write offset into that image, in order to
+know if the disk must be resized larger.  qemu-img does not
+(currently) show this information, and none of the earlier
+block APIs were extensible enough to expose it.  But
+virDomainListGetStats is perfect for the job!
+
+We don't need a new group of statistics, as the existing block
+group is sufficient.  On the other hand, as existing libvirt
+releases already report 1:1 mapping of block.count to <disk>
+devices, changing the array size could confuse older clients;
+and even with newer clients, the time and memory taken to
+report additional statistics is not always necessary (backing
+files are generally read-only except for block-commit, so while
+read statistics may change, sizing statistics will not).  So
+the choice here is to add a new flag that only newer callers
+will pass, when they are prepared for the additional information.
+
+This patch introduces the new API, but it will take more
+patches to get it implemented for qemu.
+
+* include/libvirt/libvirt-domain.h
+(VIR_CONNECT_GET_ALL_DOMAINS_STATS_BACKING): New flag.
+* src/libvirt-domain.c (virConnectGetAllDomainStats): Document it,
+and add a new field when it is in use.
+* tools/virsh-domain-monitor.c (cmdDomstats): Use new flag.
+* tools/virsh.pod (domstats): Document it.
+
+Signed-off-by: Eric Blake <eblake@redhat.com>
+(cherry picked from commit 4bffafb2eb076255dbd7e0d96f2b33a4fea0650e)
+
+Conflicts:
+	include/libvirt/libvirt-domain.h - file split from libvirt.h.in
+	src/libvirt-domain.c - file split from libvirt.c
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ include/libvirt/libvirt.h.in |  1 +
+ src/libvirt.c                | 15 ++++++++++++---
+ tools/virsh-domain-monitor.c |  7 +++++++
+ tools/virsh.pod              | 15 +++++++++++----
+ 4 files changed, 31 insertions(+), 7 deletions(-)
+
+diff --git a/include/libvirt/libvirt.h.in b/include/libvirt/libvirt.h.in
+index 9099cc4..94de8a6 100644
+--- a/include/libvirt/libvirt.h.in
++++ b/include/libvirt/libvirt.h.in
+@@ -2533,6 +2533,7 @@ typedef enum {
+     VIR_CONNECT_GET_ALL_DOMAINS_STATS_SHUTOFF = VIR_CONNECT_LIST_DOMAINS_SHUTOFF,
+     VIR_CONNECT_GET_ALL_DOMAINS_STATS_OTHER = VIR_CONNECT_LIST_DOMAINS_OTHER,
+ 
++    VIR_CONNECT_GET_ALL_DOMAINS_STATS_BACKING = 1 << 30, /* include backing chain for block stats */
+     VIR_CONNECT_GET_ALL_DOMAINS_STATS_ENFORCE_STATS = 1 << 31, /* enforce requested stats */
+ } virConnectGetAllDomainStatsFlags;
+ 
+diff --git a/src/libvirt.c b/src/libvirt.c
+index 2885965..5315881 100644
+--- a/src/libvirt.c
++++ b/src/libvirt.c
+@@ -21596,13 +21596,22 @@ virConnectGetDomainCapabilities(virConnectPtr conn,
+  * "net.<num>.tx.errs" - transmission errors as unsigned long long.
+  * "net.<num>.tx.drop" - transmit packets dropped as unsigned long long.
+  *
+- * VIR_DOMAIN_STATS_BLOCK: Return block devices statistics.
++ * VIR_DOMAIN_STATS_BLOCK: Return block devices statistics.  By default,
++ * this information is limited to the active layer of each <disk> of the
++ * domain (where block.count is equal to the number of disks), but adding
++ * VIR_CONNECT_GET_ALL_DOMAINS_STATS_BACKING to @flags will expand the
++ * array to cover backing chains (block.count corresponds to the number
++ * of host resources used together to provide the guest disks).
+  * The typed parameter keys are in this format:
+- * "block.count" - number of block devices on this domain
++ * "block.count" - number of block devices in the subsequent list,
+  *                 as unsigned int.
+  * "block.<num>.name" - name of the block device <num> as string.
+  *                      matches the target name (vda/sda/hda) of the
+- *                      block device.
++ *                      block device.  If the backing chain is listed,
++ *                      this name is the same for all host resources tied
++ *                      to the same guest device.
++ * "block.<num>.backingIndex" - unsigned int giving the <backingStore> index,
++ *                              only used when backing images are listed.
+  * "block.<num>.path" - string describing the source of block device <num>,
+  *                      if it is a file or block device (omitted for network
+  *                      sources and drives with no media inserted).
+diff --git a/tools/virsh-domain-monitor.c b/tools/virsh-domain-monitor.c
+index d013ca8..5c758cd 100644
+--- a/tools/virsh-domain-monitor.c
++++ b/tools/virsh-domain-monitor.c
+@@ -2032,6 +2032,10 @@ static const vshCmdOptDef opts_domstats[] = {
+      .type = VSH_OT_BOOL,
+      .help = N_("enforce requested stats parameters"),
+     },
++    {.name = "backing",
++     .type = VSH_OT_BOOL,
++     .help = N_("add backing chain information to block stats"),
++    },
+     {.name = "domain",
+      .type = VSH_OT_ARGV,
+      .flags = VSH_OFLAG_NONE,
+@@ -2125,6 +2129,9 @@ cmdDomstats(vshControl *ctl, const vshCmd *cmd)
+     if (vshCommandOptBool(cmd, "enforce"))
+         flags |= VIR_CONNECT_GET_ALL_DOMAINS_STATS_ENFORCE_STATS;
+ 
++    if (vshCommandOptBool(cmd, "backing"))
++        flags |= VIR_CONNECT_GET_ALL_DOMAINS_STATS_BACKING;
++
+     if (vshCommandOptBool(cmd, "domain")) {
+         if (VIR_ALLOC_N(domlist, 1) < 0)
+             goto cleanup;
+diff --git a/tools/virsh.pod b/tools/virsh.pod
+index beef855..c5b176a 100644
+--- a/tools/virsh.pod
++++ b/tools/virsh.pod
+@@ -813,7 +813,7 @@ that require a block device name (such as I<domblkinfo> or
+ I<snapshot-create> for disk snapshots) will accept either target
+ or unique source names printed by this command.
+ 
+-=item B<domstats> [I<--raw>] [I<--enforce>] [I<--state>]
++=item B<domstats> [I<--raw>] [I<--enforce>] [I<--backing>] [I<--state>]
+ [I<--cpu-total>] [I<--balloon>] [I<--vcpu>] [I<--interface>] [I<--block>]
+ [[I<--list-active>] [I<--list-inactive>] [I<--list-persistent>]
+ [I<--list-transient>] [I<--list-running>] [I<--list-paused>]
+@@ -868,9 +868,16 @@ I<--interface> returns:
+ "net.<num>.tx.errs" - number of transmission errors,
+ "net.<num>.tx.drop" - number of transmit packets dropped
+ 
+-I<--block> returns:
+-"block.count" - number of block devices on this domain,
+-"block.<num>.name" - name of the target of the block device <num>,
++I<--block> returns information about disks associated with each
++domain.  Using the I<--backing> flag extends this information to
++cover all resources in the backing chain, rather than the default
++of limiting information to the active layer for each guest disk.
++Information listed includes:
++"block.count" - number of block devices being listed,
++"block.<num>.name" - name of the target of the block device <num> (the
++same name for multiple entries if I<--backing> is present),
++"block.<num>.backingIndex" - when I<--backing> is present, matches up
++with the <backingStore> index listed in domain XML for backing files,
+ "block.<num>.path" - file source of block device <num>, if it is a
+ local file or block device,
+ "block.<num>.rd.reqs" - number of read requests,
+-- 
+2.2.0
+

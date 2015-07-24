@@ -1,0 +1,289 @@
+From abecf1fdcf58796b048eeaa6ccecc39f19ffdbcd Mon Sep 17 00:00:00 2001
+Message-Id: <abecf1fdcf58796b048eeaa6ccecc39f19ffdbcd@dist-git>
+From: Pavel Hrdina <phrdina@redhat.com>
+Date: Wed, 14 Jan 2015 13:38:27 +0100
+Subject: [PATCH] qemu_process: detect updated video ram size values from QEMU
+
+QEMU internally updates the size of video memory if the domain XML had
+provided too low memory size or there are some dependencies for a QXL
+devices 'vgamem' and 'ram' size. We need to know about the changes and
+store them into the status XML to not break migration or managedsave
+through different libvirt versions.
+
+The values would be loaded only if the "vgamem_mb" property exists for
+the device.  The presence of the "vgamem_mb" also tells that the
+"ram_size" and "vram_size" exists for QXL devices.
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+(cherry picked from commit ce745914b33e3f9a136d91655600b931e7a4178f)
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1180574
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_monitor.c      | 34 ++++++++++++++++++
+ src/qemu/qemu_monitor.h      |  4 +++
+ src/qemu/qemu_monitor_json.c | 69 ++++++++++++++++++++++++++++++++++++
+ src/qemu/qemu_monitor_json.h |  3 ++
+ src/qemu/qemu_process.c      | 83 ++++++++++++++++++++++++++++++++++++++++++++
+ 5 files changed, 193 insertions(+)
+
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index df7bb45..0b1b80e 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -1158,6 +1158,40 @@ qemuMonitorFindBalloonObjectPath(qemuMonitorPtr mon,
+     return ret;
+ }
+ 
++
++/**
++ * To update video memory size in status XML we need to load correct values from
++ * QEMU.  This is supported only with JSON monitor.
++ *
++ * Returns 0 on success, -1 on failure and sets proper error message.
++ */
++int
++qemuMonitorUpdateVideoMemorySize(qemuMonitorPtr mon,
++                                 virDomainVideoDefPtr video,
++                                 const char *videoName)
++{
++    int ret = -1;
++    char *path = NULL;
++
++    if (mon->json) {
++        ret = qemuMonitorFindObjectPath(mon, "/", videoName, &path);
++        if (ret < 0) {
++            if (ret == -2)
++                virReportError(VIR_ERR_INTERNAL_ERROR,
++                               _("Failed to find QOM Object path for "
++                                 "device '%s'"), videoName);
++            return -1;
++        }
++
++        ret = qemuMonitorJSONUpdateVideoMemorySize(mon, video, path);
++        VIR_FREE(path);
++        return ret;
++    }
++
++    return 0;
++}
++
++
+ int qemuMonitorHMPCommandWithFd(qemuMonitorPtr mon,
+                                 const char *cmd,
+                                 int scm_fd,
+diff --git a/src/qemu/qemu_monitor.h b/src/qemu/qemu_monitor.h
+index b08d74d..8930744 100644
+--- a/src/qemu/qemu_monitor.h
++++ b/src/qemu/qemu_monitor.h
+@@ -243,6 +243,10 @@ virJSONValuePtr qemuMonitorGetOptions(qemuMonitorPtr mon)
+     ATTRIBUTE_NONNULL(1);
+ void qemuMonitorSetOptions(qemuMonitorPtr mon, virJSONValuePtr options)
+     ATTRIBUTE_NONNULL(1);
++int qemuMonitorUpdateVideoMemorySize(qemuMonitorPtr mon,
++                                     virDomainVideoDefPtr video,
++                                     const char *videName)
++    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_NONNULL(3);
+ int qemuMonitorHMPCommandWithFd(qemuMonitorPtr mon,
+                                 const char *cmd,
+                                 int scm_fd,
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index 97151dc..9b3d17a 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -1443,6 +1443,75 @@ int qemuMonitorJSONGetVirtType(qemuMonitorPtr mon,
+ }
+ 
+ 
++/**
++ * Loads correct video memory size values from QEMU and update the video
++ * definition.
++ *
++ * Return 0 on success, -1 on failure and set proper error message.
++ */
++int
++qemuMonitorJSONUpdateVideoMemorySize(qemuMonitorPtr mon,
++                                     virDomainVideoDefPtr video,
++                                     char *path)
++{
++    qemuMonitorJSONObjectProperty prop = {
++        QEMU_MONITOR_OBJECT_PROPERTY_ULONG,
++        {0}
++    };
++
++    switch (video->type) {
++    case VIR_DOMAIN_VIDEO_TYPE_VGA:
++        if (qemuMonitorJSONGetObjectProperty(mon, path, "vgamem_mb", &prop) < 0) {
++            virReportError(VIR_ERR_INTERNAL_ERROR,
++                           _("QOM Objext '%s' has no property 'vgamem_mb'"),
++                           path);
++            return -1;
++        }
++        video->vram = prop.val.ul * 1024;
++        break;
++    case VIR_DOMAIN_VIDEO_TYPE_QXL:
++        if (qemuMonitorJSONGetObjectProperty(mon, path, "vram_size", &prop) < 0) {
++            virReportError(VIR_ERR_INTERNAL_ERROR,
++                           _("QOM Objext '%s' has no property 'vram_size'"),
++                           path);
++            return -1;
++        }
++        video->vram = prop.val.ul / 1024;
++        if (qemuMonitorJSONGetObjectProperty(mon, path, "ram_size", &prop) < 0) {
++            virReportError(VIR_ERR_INTERNAL_ERROR,
++                           _("QOM Objext '%s' has no property 'ram_size'"),
++                           path);
++            return -1;
++        }
++        video->ram = prop.val.ul / 1024;
++        if (qemuMonitorJSONGetObjectProperty(mon, path, "vgamem_mb", &prop) < 0) {
++            virReportError(VIR_ERR_INTERNAL_ERROR,
++                           _("QOM Objext '%s' has no property 'vgamem_mb'"),
++                           path);
++            return -1;
++        }
++        video->vgamem = prop.val.ul * 1024;
++        break;
++    case VIR_DOMAIN_VIDEO_TYPE_VMVGA:
++        if (qemuMonitorJSONGetObjectProperty(mon, path, "vgamem_mb", &prop) < 0) {
++            virReportError(VIR_ERR_INTERNAL_ERROR,
++                           _("QOM Objext '%s' has no property 'vgamem_mb'"),
++                           path);
++            return -1;
++        }
++        video->vram = prop.val.ul * 1024;
++        break;
++    case VIR_DOMAIN_VIDEO_TYPE_CIRRUS:
++    case VIR_DOMAIN_VIDEO_TYPE_XEN:
++    case VIR_DOMAIN_VIDEO_TYPE_VBOX:
++    case VIR_DOMAIN_VIDEO_TYPE_LAST:
++        break;
++    }
++
++    return 0;
++}
++
++
+ /*
+  * Returns: 0 if balloon not supported, +1 if balloon query worked
+  * or -1 on failure
+diff --git a/src/qemu/qemu_monitor_json.h b/src/qemu/qemu_monitor_json.h
+index d039991..ff20029 100644
+--- a/src/qemu/qemu_monitor_json.h
++++ b/src/qemu/qemu_monitor_json.h
+@@ -57,6 +57,9 @@ int qemuMonitorJSONGetCPUInfo(qemuMonitorPtr mon,
+                               int **pids);
+ int qemuMonitorJSONGetVirtType(qemuMonitorPtr mon,
+                                int *virtType);
++int qemuMonitorJSONUpdateVideoMemorySize(qemuMonitorPtr mon,
++                                         virDomainVideoDefPtr video,
++                                         char *path);
+ int qemuMonitorJSONGetBalloonInfo(qemuMonitorPtr mon,
+                                   unsigned long long *currmem);
+ int qemuMonitorJSONGetMemoryStats(qemuMonitorPtr mon,
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index d7b2688..d965938 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -3032,6 +3032,85 @@ qemuProcessCleanupChardevDevice(virDomainDefPtr def ATTRIBUTE_UNUSED,
+ }
+ 
+ 
++/**
++ * Loads and update video memory size for video devices according to QEMU
++ * process as the QEMU will silently update the values that we pass to QEMU
++ * through command line.  We need to load these updated values and store them
++ * into the status XML.
++ *
++ * We will fail if for some reason the values cannot be loaded from QEMU because
++ * its mandatory to get the correct video memory size to status XML to not break
++ * migration.
++ */
++static int
++qemuProcessUpdateVideoRamSize(virQEMUDriverPtr driver,
++                              virDomainObjPtr vm,
++                              int asyncJob)
++{
++    int ret = -1;
++    ssize_t i;
++    qemuDomainObjPrivatePtr priv = vm->privateData;
++    virDomainVideoDefPtr video = NULL;
++    virQEMUDriverConfigPtr cfg = NULL;
++
++    if (qemuDomainObjEnterMonitorAsync(driver, vm, asyncJob) < 0)
++        return -1;
++
++    for (i = 0; i < vm->def->nvideos; i++) {
++        video = vm->def->videos[i];
++
++        switch (video->type) {
++        case VIR_DOMAIN_VIDEO_TYPE_VGA:
++            if (virQEMUCapsGet(priv->qemuCaps, QEMU_CAPS_VGA_VGAMEM)) {
++                if (qemuMonitorUpdateVideoMemorySize(priv->mon, video, "VGA") < 0)
++                    goto error;
++            }
++            break;
++        case VIR_DOMAIN_VIDEO_TYPE_QXL:
++            if (i == 0) {
++                if (virQEMUCapsGet(priv->qemuCaps, QEMU_CAPS_QXL_VGA_VGAMEM)) {
++                    if (qemuMonitorUpdateVideoMemorySize(priv->mon, video,
++                                                         "qxl-vga") < 0)
++                        goto error;
++                }
++            } else {
++                if (virQEMUCapsGet(priv->qemuCaps, QEMU_CAPS_QXL_VGAMEM)) {
++                    if (qemuMonitorUpdateVideoMemorySize(priv->mon, video,
++                                                         "qxl") < 0)
++                        goto error;
++                }
++            }
++            break;
++        case VIR_DOMAIN_VIDEO_TYPE_VMVGA:
++            if (virQEMUCapsGet(priv->qemuCaps, QEMU_CAPS_VMWARE_SVGA_VGAMEM)) {
++                if (qemuMonitorUpdateVideoMemorySize(priv->mon, video,
++                                                     "vmware-svga") < 0)
++                    goto error;
++            }
++            break;
++        case VIR_DOMAIN_VIDEO_TYPE_CIRRUS:
++        case VIR_DOMAIN_VIDEO_TYPE_XEN:
++        case VIR_DOMAIN_VIDEO_TYPE_VBOX:
++        case VIR_DOMAIN_VIDEO_TYPE_LAST:
++            break;
++        }
++
++    }
++
++    qemuDomainObjExitMonitor(driver, vm);
++
++    cfg = virQEMUDriverGetConfig(driver);
++    ret = virDomainSaveStatus(driver->xmlopt, cfg->stateDir, vm);
++    virObjectUnref(cfg);
++
++    return ret;
++
++ error:
++    qemuDomainObjExitMonitor(driver, vm);
++    return -1;
++}
++
++
+ struct qemuProcessHookData {
+     virConnectPtr conn;
+     virDomainObjPtr vm;
+@@ -4795,6 +4874,10 @@ int qemuProcessStart(virConnectPtr conn,
+     }
+     qemuDomainObjExitMonitor(driver, vm);
+ 
++    VIR_DEBUG("Detecting actual memory size for video device");
++    if (qemuProcessUpdateVideoRamSize(driver, vm, asyncJob) < 0)
++        goto cleanup;
++
+     if (!(flags & VIR_QEMU_PROCESS_START_PAUSED)) {
+         VIR_DEBUG("Starting domain CPUs");
+         /* Allow the CPUS to start executing */
+-- 
+2.2.1
+

@@ -1,0 +1,104 @@
+From c5440555656b0e7bd784437ab905e53f0a25542b Mon Sep 17 00:00:00 2001
+Message-Id: <c5440555656b0e7bd784437ab905e53f0a25542b@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Wed, 24 Sep 2014 16:55:43 +0200
+Subject: [PATCH] conf: remove redundant local variable
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1139364
+
+Use just one int variable for all the FromString calls.
+
+(cherry picked from commit 0ece766bd2f3627ad53c418e23d078127b9fbc26)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/conf/domain_conf.c | 27 +++++++++++----------------
+ 1 file changed, 11 insertions(+), 16 deletions(-)
+
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 306843b..a4db3c3 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -6905,7 +6905,7 @@ virDomainNetDefParseXML(virDomainXMLOptionPtr xmlopt,
+     virNWFilterHashTablePtr filterparams = NULL;
+     virDomainActualNetDefPtr actual = NULL;
+     xmlNodePtr oldnode = ctxt->node;
+-    int ret;
++    int ret, val;
+ 
+     if (VIR_ALLOC(def) < 0)
+         return NULL;
+@@ -7252,13 +7252,12 @@ virDomainNetDefParseXML(virDomainXMLOptionPtr xmlopt,
+         }
+ 
+         if (mode != NULL) {
+-            int m;
+-            if ((m = virNetDevMacVLanModeTypeFromString(mode)) < 0) {
++            if ((val = virNetDevMacVLanModeTypeFromString(mode)) < 0) {
+                 virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                                _("Unknown mode has been specified"));
+                 goto error;
+             }
+-            def->data.direct.mode = m;
++            def->data.direct.mode = val;
+         } else {
+             def->data.direct.mode = VIR_NETDEV_MACVLAN_MODE_VEPA;
+         }
+@@ -7333,31 +7332,28 @@ virDomainNetDefParseXML(virDomainXMLOptionPtr xmlopt,
+     if (def->type != VIR_DOMAIN_NET_TYPE_HOSTDEV &&
+         STREQ_NULLABLE(def->model, "virtio")) {
+         if (backend != NULL) {
+-            int name;
+-            if ((name = virDomainNetBackendTypeFromString(backend)) < 0 ||
+-                name == VIR_DOMAIN_NET_BACKEND_TYPE_DEFAULT) {
++            if ((val = virDomainNetBackendTypeFromString(backend)) < 0 ||
++                val == VIR_DOMAIN_NET_BACKEND_TYPE_DEFAULT) {
+                 virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                                _("Unknown interface <driver name='%s'> "
+                                  "has been specified"),
+                                backend);
+                 goto error;
+             }
+-            def->driver.virtio.name = name;
++            def->driver.virtio.name = val;
+         }
+         if (txmode != NULL) {
+-            int m;
+-            if ((m = virDomainNetVirtioTxModeTypeFromString(txmode)) < 0 ||
+-                m == VIR_DOMAIN_NET_VIRTIO_TX_MODE_DEFAULT) {
++            if ((val = virDomainNetVirtioTxModeTypeFromString(txmode)) < 0 ||
++                val == VIR_DOMAIN_NET_VIRTIO_TX_MODE_DEFAULT) {
+                 virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                                _("Unknown interface <driver txmode='%s'> "
+                                  "has been specified"),
+                                txmode);
+                 goto error;
+             }
+-            def->driver.virtio.txmode = m;
++            def->driver.virtio.txmode = val;
+         }
+         if (ioeventfd) {
+-            int val;
+             if ((val = virTristateSwitchTypeFromString(ioeventfd)) <= 0) {
+                 virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                                _("unknown interface ioeventfd mode '%s'"),
+@@ -7367,14 +7363,13 @@ virDomainNetDefParseXML(virDomainXMLOptionPtr xmlopt,
+             def->driver.virtio.ioeventfd = val;
+         }
+         if (event_idx) {
+-            int idx;
+-            if ((idx = virTristateSwitchTypeFromString(event_idx)) <= 0) {
++            if ((val = virTristateSwitchTypeFromString(event_idx)) <= 0) {
+                 virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                                _("unknown interface event_idx mode '%s'"),
+                                event_idx);
+                 goto error;
+             }
+-            def->driver.virtio.event_idx = idx;
++            def->driver.virtio.event_idx = val;
+         }
+         if (queues) {
+             unsigned int q;
+-- 
+2.1.1
+

@@ -1,0 +1,172 @@
+From 3188a720b9f7d9335af7718862ca96f1cae6d4b1 Mon Sep 17 00:00:00 2001
+Message-Id: <3188a720b9f7d9335af7718862ca96f1cae6d4b1@dist-git>
+From: Pavel Hrdina <phrdina@redhat.com>
+Date: Thu, 13 Nov 2014 11:19:10 +0100
+Subject: [PATCH] nwfilter: fix deadlock caused updating network device and
+ nwfilter
+
+Commit 6e5c79a1 tried to fix deadlock between nwfilter{Define,Undefine}
+and starting of guest, but this same deadlock exists for
+updating/attaching network device to domain.
+
+The deadlock was introduced by removing global QEMU driver lock because
+nwfilter was counting on this lock and ensure that all driver locks are
+locked inside of nwfilter{Define,Undefine}.
+
+This patch extends usage of virNWFilterReadLockFilterUpdates to prevent
+the deadlock for all possible paths in QEMU driver. LXC and UML drivers
+still have global lock.
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1143780
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+(cherry picked from commit 41127244fb90f08cf5032a5d7553f5f0390d925e)
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c    | 12 ++++++++++++
+ src/qemu/qemu_migration.c |  4 ++++
+ src/qemu/qemu_process.c   |  5 +++++
+ 3 files changed, 21 insertions(+)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index d419689..6ed830c 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -5902,6 +5902,8 @@ qemuDomainRestoreFlags(virConnectPtr conn,
+                   VIR_DOMAIN_SAVE_PAUSED, -1);
+ 
+ 
++    virNWFilterReadLockFilterUpdates();
++
+     fd = qemuDomainSaveImageOpen(driver, path, &def, &header, &xml,
+                                  (flags & VIR_DOMAIN_SAVE_BYPASS_CACHE) != 0,
+                                  &wrapperFd, false, false);
+@@ -5979,6 +5981,7 @@ qemuDomainRestoreFlags(virConnectPtr conn,
+     virFileWrapperFdFree(wrapperFd);
+     if (vm)
+         virObjectUnlock(vm);
++    virNWFilterUnlockFilterUpdates();
+     return ret;
+ }
+ 
+@@ -7412,6 +7415,8 @@ static int qemuDomainAttachDeviceFlags(virDomainPtr dom, const char *xml,
+     virCheckFlags(VIR_DOMAIN_AFFECT_LIVE |
+                   VIR_DOMAIN_AFFECT_CONFIG, -1);
+ 
++    virNWFilterReadLockFilterUpdates();
++
+     cfg = virQEMUDriverGetConfig(driver);
+ 
+     affect = flags & (VIR_DOMAIN_AFFECT_LIVE | VIR_DOMAIN_AFFECT_CONFIG);
+@@ -7528,6 +7533,7 @@ static int qemuDomainAttachDeviceFlags(virDomainPtr dom, const char *xml,
+         virObjectUnlock(vm);
+     virObjectUnref(caps);
+     virObjectUnref(cfg);
++    virNWFilterUnlockFilterUpdates();
+     return ret;
+ }
+ 
+@@ -7558,6 +7564,8 @@ static int qemuDomainUpdateDeviceFlags(virDomainPtr dom,
+                   VIR_DOMAIN_AFFECT_CONFIG |
+                   VIR_DOMAIN_DEVICE_MODIFY_FORCE, -1);
+ 
++    virNWFilterReadLockFilterUpdates();
++
+     cfg = virQEMUDriverGetConfig(driver);
+ 
+     affect = flags & (VIR_DOMAIN_AFFECT_LIVE | VIR_DOMAIN_AFFECT_CONFIG);
+@@ -7674,6 +7682,7 @@ static int qemuDomainUpdateDeviceFlags(virDomainPtr dom,
+         virObjectUnlock(vm);
+     virObjectUnref(caps);
+     virObjectUnref(cfg);
++    virNWFilterUnlockFilterUpdates();
+     return ret;
+ }
+ 
+@@ -14415,6 +14424,8 @@ qemuDomainRevertToSnapshot(virDomainSnapshotPtr snapshot,
+      * and use of FORCE can cause multiple transitions.
+      */
+ 
++    virNWFilterReadLockFilterUpdates();
++
+     if (!(vm = qemuDomObjFromSnapshot(snapshot)))
+         return -1;
+ 
+@@ -14736,6 +14747,7 @@ qemuDomainRevertToSnapshot(virDomainSnapshotPtr snapshot,
+         virObjectUnlock(vm);
+     virObjectUnref(caps);
+     virObjectUnref(cfg);
++    virNWFilterUnlockFilterUpdates();
+ 
+     return ret;
+ }
+diff --git a/src/qemu/qemu_migration.c b/src/qemu/qemu_migration.c
+index 98fd376..d6c8553 100644
+--- a/src/qemu/qemu_migration.c
++++ b/src/qemu/qemu_migration.c
+@@ -57,6 +57,7 @@
+ #include "virstring.h"
+ #include "virtypedparam.h"
+ #include "virprocess.h"
++#include "nwfilter_conf.h"
+ 
+ #define VIR_FROM_THIS VIR_FROM_QEMU
+ 
+@@ -2525,6 +2526,8 @@ qemuMigrationPrepareAny(virQEMUDriverPtr driver,
+     if (virTimeMillisNow(&now) < 0)
+         return -1;
+ 
++    virNWFilterReadLockFilterUpdates();
++
+     if (flags & VIR_MIGRATE_OFFLINE) {
+         if (flags & (VIR_MIGRATE_NON_SHARED_DISK |
+                      VIR_MIGRATE_NON_SHARED_INC)) {
+@@ -2834,6 +2837,7 @@ qemuMigrationPrepareAny(virQEMUDriverPtr driver,
+         qemuDomainEventQueue(driver, event);
+     qemuMigrationCookieFree(mig);
+     virObjectUnref(caps);
++    virNWFilterUnlockFilterUpdates();
+     return ret;
+ 
+  stop:
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index ed095a2..9c640f0 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -68,6 +68,7 @@
+ #include "virhostdev.h"
+ #include "storage/storage_driver.h"
+ #include "configmake.h"
++#include "nwfilter_conf.h"
+ 
+ #define VIR_FROM_THIS VIR_FROM_QEMU
+ 
+@@ -3420,6 +3421,8 @@ qemuProcessReconnect(void *opaque)
+ 
+     VIR_FREE(data);
+ 
++    virNWFilterReadLockFilterUpdates();
++
+     virObjectLock(obj);
+ 
+     cfg = virQEMUDriverGetConfig(driver);
+@@ -3571,6 +3574,7 @@ qemuProcessReconnect(void *opaque)
+ 
+     virObjectUnref(conn);
+     virObjectUnref(cfg);
++    virNWFilterUnlockFilterUpdates();
+ 
+     return;
+ 
+@@ -3606,6 +3610,7 @@ qemuProcessReconnect(void *opaque)
+     }
+     virObjectUnref(conn);
+     virObjectUnref(cfg);
++    virNWFilterUnlockFilterUpdates();
+ }
+ 
+ static int
+-- 
+2.1.3
+

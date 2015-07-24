@@ -1,0 +1,71 @@
+From 25e86fba1910cccd107b66a23a0d5a71ae3e2621 Mon Sep 17 00:00:00 2001
+Message-Id: <25e86fba1910cccd107b66a23a0d5a71ae3e2621@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Mon, 15 Sep 2014 15:13:47 -0400
+Subject: [PATCH] qemu_driver: Resolve Coverity COPY_PASTE_ERROR
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1141209
+
+In qemuDomainSetBlkioParameters(), Coverity points out that the calls
+to qemuDomainParseBlkioDeviceStr() are slightly different and points
+out there may be a cut-n-paste error.
+
+In the first call (AFFECT_LIVE), the second parameter is "param->field";
+however, for the second call (AFFECT_CONFIG), the second parameter is
+"params->field".  It seems the "param->field" is correct especially since
+each path as a setting of "param" to "&params[i]".  Furthermore, there
+were a few more instances of using "params[i]" instead of "param->"
+which I cleaned up.
+
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+(cherry picked from commit f72f064269ea599bc0e67787e2c69f98e524fa56)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 496fab5..04384fb 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -7831,7 +7831,7 @@ qemuDomainSetBlkioParameters(virDomainPtr dom,
+             virTypedParameterPtr param = &params[i];
+ 
+             if (STREQ(param->field, VIR_DOMAIN_BLKIO_WEIGHT)) {
+-                if (virCgroupSetBlkioWeight(priv->cgroup, params[i].value.ui) < 0)
++                if (virCgroupSetBlkioWeight(priv->cgroup, param->value.ui) < 0)
+                     ret = -1;
+             } else if (STREQ(param->field, VIR_DOMAIN_BLKIO_DEVICE_WEIGHT) ||
+                        STREQ(param->field, VIR_DOMAIN_BLKIO_DEVICE_READ_IOPS) ||
+@@ -7842,7 +7842,7 @@ qemuDomainSetBlkioParameters(virDomainPtr dom,
+                 virBlkioDevicePtr devices = NULL;
+                 size_t j;
+ 
+-                if (qemuDomainParseBlkioDeviceStr(params[i].value.s,
++                if (qemuDomainParseBlkioDeviceStr(param->value.s,
+                                                   param->field,
+                                                   &devices,
+                                                   &ndevices) < 0) {
+@@ -7925,7 +7925,7 @@ qemuDomainSetBlkioParameters(virDomainPtr dom,
+             virTypedParameterPtr param = &params[i];
+ 
+             if (STREQ(param->field, VIR_DOMAIN_BLKIO_WEIGHT)) {
+-                persistentDef->blkio.weight = params[i].value.ui;
++                persistentDef->blkio.weight = param->value.ui;
+             } else if (STREQ(param->field, VIR_DOMAIN_BLKIO_DEVICE_WEIGHT) ||
+                        STREQ(param->field, VIR_DOMAIN_BLKIO_DEVICE_READ_IOPS) ||
+                        STREQ(param->field, VIR_DOMAIN_BLKIO_DEVICE_WRITE_IOPS) ||
+@@ -7934,8 +7934,8 @@ qemuDomainSetBlkioParameters(virDomainPtr dom,
+                 virBlkioDevicePtr devices = NULL;
+                 size_t ndevices;
+ 
+-                if (qemuDomainParseBlkioDeviceStr(params[i].value.s,
+-                                                  params->field,
++                if (qemuDomainParseBlkioDeviceStr(param->value.s,
++                                                  param->field,
+                                                   &devices,
+                                                   &ndevices) < 0) {
+                     ret = -1;
+-- 
+2.1.0
+

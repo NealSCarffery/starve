@@ -1,0 +1,38 @@
+From de1a3fee51c281ff94db6aaffcb0cd57d09b326e Mon Sep 17 00:00:00 2001
+Message-Id: <de1a3fee51c281ff94db6aaffcb0cd57d09b326e@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Tue, 28 Oct 2014 22:28:47 -0400
+Subject: [PATCH] hotplug: Check for alias in chrdev detach
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1141621
+
+If the QEMU_CAPS_DEVICE is set, then ensure the chr device alias has
+been properly set before making the calls to detach the device
+
+(cherry picked from commit 4d8a4165a797a3c8a3dc46ceba28796f24e8ea78)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_hotplug.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/qemu/qemu_hotplug.c b/src/qemu/qemu_hotplug.c
+index a7b0ec7..f1735d7 100644
+--- a/src/qemu/qemu_hotplug.c
++++ b/src/qemu/qemu_hotplug.c
+@@ -3706,6 +3706,12 @@ int qemuDomainDetachChrDevice(virQEMUDriverPtr driver,
+         return ret;
+     }
+ 
++    if (virQEMUCapsGet(priv->qemuCaps, QEMU_CAPS_DEVICE) &&
++        !tmpChr->info.alias) {
++        if (qemuAssignDeviceChrAlias(vmdef, tmpChr, -1) < 0)
++            return ret;
++    }
++
+     if (qemuBuildChrDeviceStr(&devstr, vm->def, chr, priv->qemuCaps) < 0)
+         return ret;
+ 
+-- 
+2.1.3
+

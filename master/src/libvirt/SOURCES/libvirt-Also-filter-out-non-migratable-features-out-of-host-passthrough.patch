@@ -1,0 +1,74 @@
+From 8340232d7fa0ec885f81de92dfd6e8d542141ce5 Mon Sep 17 00:00:00 2001
+Message-Id: <8340232d7fa0ec885f81de92dfd6e8d542141ce5@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Tue, 30 Sep 2014 11:04:27 +0200
+Subject: [PATCH] Also filter out non-migratable features out of
+ host-passthrough
+
+Commit de0aeaf filtered them out from the host-model features,
+to allow host-model to be migratable by default.
+
+Even though they are not passed to QEMU for host-passthrough,
+(and not enabled by default) filter them out too
+so the user does not think the domain has them.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1147584
+(cherry picked from commit f53bb1af90737205fdbfd26dc99865c02457d8c9)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/cpu/cpu_x86.c | 14 ++++++--------
+ 1 file changed, 6 insertions(+), 8 deletions(-)
+
+diff --git a/src/cpu/cpu_x86.c b/src/cpu/cpu_x86.c
+index 0df8653..e7a7702 100644
+--- a/src/cpu/cpu_x86.c
++++ b/src/cpu/cpu_x86.c
+@@ -2068,7 +2068,8 @@ x86UpdateCustom(virCPUDefPtr guest,
+ 
+ static int
+ x86UpdateHostModel(virCPUDefPtr guest,
+-                   const virCPUDef *host)
++                   const virCPUDef *host,
++                   bool passthrough)
+ {
+     virCPUDefPtr oldguest = NULL;
+     const struct x86_map *map;
+@@ -2076,8 +2077,6 @@ x86UpdateHostModel(virCPUDefPtr guest,
+     size_t i;
+     int ret = -1;
+ 
+-    guest->match = VIR_CPU_MATCH_EXACT;
+-
+     if (!(map = virCPUx86GetMap()))
+         goto cleanup;
+ 
+@@ -2100,8 +2099,7 @@ x86UpdateHostModel(virCPUDefPtr guest,
+             }
+         }
+     }
+-
+-    for (i = 0; i < oldguest->nfeatures; i++) {
++    for (i = 0; !passthrough && i < oldguest->nfeatures; i++) {
+         if (virCPUDefUpdateFeature(guest,
+                                    oldguest->features[i].name,
+                                    oldguest->features[i].policy) < 0)
+@@ -2125,12 +2123,12 @@ x86Update(virCPUDefPtr guest,
+         return x86UpdateCustom(guest, host);
+ 
+     case VIR_CPU_MODE_HOST_MODEL:
+-        return x86UpdateHostModel(guest, host);
++        guest->match = VIR_CPU_MATCH_EXACT;
++        return x86UpdateHostModel(guest, host, false);
+ 
+     case VIR_CPU_MODE_HOST_PASSTHROUGH:
+         guest->match = VIR_CPU_MATCH_MINIMUM;
+-        virCPUDefFreeModel(guest);
+-        return virCPUDefCopyModel(guest, host, true);
++        return x86UpdateHostModel(guest, host, true);
+ 
+     case VIR_CPU_MODE_LAST:
+         break;
+-- 
+2.1.2
+

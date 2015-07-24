@@ -1,0 +1,556 @@
+From ab2444643bb5f1549a5d089d7988758837dfc96e Mon Sep 17 00:00:00 2001
+Message-Id: <ab2444643bb5f1549a5d089d7988758837dfc96e@dist-git>
+From: Laine Stump <laine@laine.org>
+Date: Mon, 3 Nov 2014 10:00:15 -0500
+Subject: [PATCH] conf: add trustGuestRxFilters attribute to network and domain
+ interface
+
+https://bugzilla.redhat.com/show_bug.cgi?id=848199
+
+This new attribute will control whether or not libvirt will pay
+attention to guest notifications about changes to network device mac
+addresses and receive filters. The default for this is 'no' (for
+security reasons). If it is set to 'yes' *and* the specified device
+model and connection support it (currently only macvtap+virtio) then
+libvirt will watch for NIC_RX_FILTER_CHANGED events, and when it
+receives one, it will issue a query-rx-filter command, retrieve the
+result, and modify the host-side macvtap interface's mac address and
+unicast/multicast filters accordingly.
+
+The functionality behind this attribute will be in a later patch. This
+patch merely adds the attribute to the top-level of a domain's
+<interface> as well as to <network> and <portgroup>, and adds
+documentation and schema/xml2xml tests. Rather than adding even more
+test files, I've just added the net attribute in various applicable
+places of existing test files.
+
+(cherry picked from commit 07450cd42951d5007ab28d8e522f65d948181674)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ docs/formatdomain.html.in                          | 40 +++++++++++++++++----
+ docs/formatnetwork.html.in                         | 29 +++++++++++++--
+ docs/schemas/domaincommon.rng                      |  5 +++
+ docs/schemas/network.rng                           | 10 ++++++
+ src/conf/domain_conf.c                             | 42 ++++++++++++++++++++++
+ src/conf/domain_conf.h                             |  3 ++
+ src/conf/network_conf.c                            | 36 +++++++++++++++++++
+ src/conf/network_conf.h                            |  2 ++
+ src/libvirt_private.syms                           |  1 +
+ tests/networkxml2xmlin/vepa-net.xml                |  4 +--
+ tests/networkxml2xmlout/vepa-net.xml               |  4 +--
+ .../qemuxml2argv-net-virtio-network-portgroup.xml  |  4 +--
+ 12 files changed, 164 insertions(+), 16 deletions(-)
+
+diff --git a/docs/formatdomain.html.in b/docs/formatdomain.html.in
+index e00fe47..80af7fa 100644
+--- a/docs/formatdomain.html.in
++++ b/docs/formatdomain.html.in
+@@ -3343,10 +3343,9 @@
+ <pre>
+   ...
+   &lt;devices&gt;
+-    &lt;interface type='bridge'&gt;
+-      &lt;source bridge='xenbr0'/&gt;
+-      &lt;mac address='00:16:3e:5d:c7:9e'/&gt;
+-      &lt;script path='vif-bridge'/&gt;
++    &lt;interface type='direct' trustGuestRxFilters='yes'&gt;
++      &lt;source dev='eth0'/&gt;
++      &lt;mac address='52:54:00:5d:c7:9e'/&gt;
+       &lt;boot order='1'/&gt;
+       &lt;rom bar='off'/&gt;
+     &lt;/interface&gt;
+@@ -3356,8 +3355,23 @@
+     <p>
+       There are several possibilities for specifying a network
+       interface visible to the guest.  Each subsection below provides
+-      more details about common setup options.  Additionally,
+-      each <code>&lt;interface&gt;</code> element has an
++      more details about common setup options.
++    </p>
++    <p>
++      <span class="since">Since 1.2.10</span>),
++      the <code>interface</code> element
++      property <code>trustGuestRxFilters</code> provides the
++      capability for the host to detect and trust reports from the
++      guest regarding changes to the interface mac address and receive
++      filters by setting the attribute to <code>yes</code>. The default
++      setting for the attribute is <code>no</code> for security
++      reasons and support depends on the guest network device model as
++      well as the type of connection on the host - currently it is
++      only supported for the virtio ddevice model and for macvtap
++      connections on the host.
++    </p>
++    <p>
++      Each <code>&lt;interface&gt;</code> element has an
+       optional <code>&lt;address&gt;</code> sub-element that can tie
+       the interface to a particular pci slot, with
+       attribute <code>type='pci'</code>
+@@ -3589,6 +3603,18 @@
+       being the default mode. The individual modes cause the delivery of
+       packets to behave as follows:
+     </p>
++    <p>
++      If the model type is set to <code>virtio</code> and
++      interface's <code>trustGuestRxFilters</code> attribute is set
++      to <code>yes</code>, changes made to the interface mac address,
++      unicast/multicast receive filters, and vlan settings in the
++      guest will be monitored and propagated to the associated macvtap
++      device on the host (<span class="since">Since
++      1.2.10</span>). If <code>trustGuestRxFilters</code> is not set,
++      or is not supported for the device model in use, an attempted
++      change to the mac address originating from the guest side will
++      result in a non-working network connection.
++    </p>
+ 
+     <dl>
+       <dt><code>vepa</code></dt>
+@@ -3621,7 +3647,7 @@
+   ...
+   &lt;devices&gt;
+     ...
+-    &lt;interface type='direct'&gt;
++    &lt;interface type='direct' trustGuestRxFilters='no'&gt;
+       &lt;source dev='eth0' mode='vepa'/&gt;
+     &lt;/interface&gt;
+   &lt;/devices&gt;
+diff --git a/docs/formatnetwork.html.in b/docs/formatnetwork.html.in
+index 1a8ad8e..dc438ae 100644
+--- a/docs/formatnetwork.html.in
++++ b/docs/formatnetwork.html.in
+@@ -35,7 +35,7 @@
+     </p>
+ 
+     <pre>
+-      &lt;network ipv6='yes'&gt;
++      &lt;network ipv6='yes' trustGuestRxFilters='no'&gt;
+         &lt;name&gt;default&lt;/name&gt;
+         &lt;uuid&gt;3e3fce45-4f53-4fa7-bb32-11f34168b82b&lt;/uuid&gt;
+         ...</pre>
+@@ -60,6 +60,16 @@
+         to have guest-to-guest communications.  For further information,
+         see the example below for the example with no gateway addresses.
+         <span class="since">Since 1.0.1</span></dd>
++      <dt><code>trustGuestRxFilters='yes'</code></dt>
++      <dd>The optional parameter <code>trustGuestRxFilters</code> can
++        be used to set that attribute of the same name for each domain
++        interface connected to this network (<span class="since">since
++        1.2.10</span>). See
++        the <a href="formatdomain.html#elementSNICS">Network
++        interfaces</a> section of the domain XML documentation for
++        more details. Note that an explicit setting of this attribute
++        in a portgroup or the individual domain interface will
++        override the setting in the network.</dd>
+     </dl>
+ 
+     <h3><a name="elementsConnect">Connectivity</a></h3>
+@@ -606,7 +616,7 @@
+       &lt;outbound average='1000' peak='5000' burst='5120'/&gt;
+     &lt;/bandwidth&gt;
+   &lt;/portgroup&gt;</b>
+-  <b>&lt;portgroup name='sales'&gt;
++  <b>&lt;portgroup name='sales' trustGuestRxFilters='no'&gt;
+     &lt;virtualport type='802.1Qbh'&gt;
+       &lt;parameters profileid='salestest'/&gt;
+     &lt;/virtualport&gt;
+@@ -626,7 +636,7 @@
+       network can have multiple portgroup elements (and one of those
+       can optionally be designated as the 'default' portgroup for the
+       network), and each portgroup has a name, as well as various
+-      subelements associated with it. The currently supported
++      attributes and subelements associated with it. The currently supported
+       subelements are <code>&lt;bandwidth&gt;</code>
+       (described <a href="formatnetwork.html#elementQoS">here</a>)
+       and <code>&lt;virtualport&gt;</code>
+@@ -650,6 +660,19 @@
+       considered an error, and will prevent the interface from
+       starting.
+     </p>
++    <p>
++      portgroups also support the optional
++      parameter <code>trustGuestRxFilters</code> which can be used to
++      set that attribute of the same name for each domain interface
++      using this portgroup (<span class="since">since
++      1.2.10</span>). See
++      the <a href="formatdomain.html#elementSNICS">Network
++      interfaces</a> section of the domain XML documentation for more
++      details. Note that an explicit setting of this attribute in the
++      portgroup overrides the network-wide setting, and an explicit
++      setting in the individual domain interface will override the
++      setting in the portgroup.
++    </p>
+ 
+     <h5><a name="elementsStaticroute">Static Routes</a></h5>
+     <p>
+diff --git a/docs/schemas/domaincommon.rng b/docs/schemas/domaincommon.rng
+index 8d96daa..c010c45 100644
+--- a/docs/schemas/domaincommon.rng
++++ b/docs/schemas/domaincommon.rng
+@@ -2240,6 +2240,11 @@
+           </interleave>
+         </group>
+       </choice>
++      <optional>
++        <attribute name="trustGuestRxFilters">
++          <ref name="virYesNo"/>
++        </attribute>
++      </optional>
+     </element>
+   </define>
+   <!--
+diff --git a/docs/schemas/network.rng b/docs/schemas/network.rng
+index d84ccc0..2783f86 100644
+--- a/docs/schemas/network.rng
++++ b/docs/schemas/network.rng
+@@ -24,6 +24,11 @@
+           <ref name="virYesNo"/>
+         </attribute>
+       </optional>
++      <optional>
++        <attribute name="trustGuestRxFilters">
++          <ref name="virYesNo"/>
++        </attribute>
++      </optional>
+       <interleave>
+ 
+         <!-- The name of the network, used to refer to it through the API
+@@ -197,6 +202,11 @@
+                 <ref name="virYesNo"/>
+               </attribute>
+             </optional>
++            <optional>
++              <attribute name="trustGuestRxFilters">
++                <ref name="virYesNo"/>
++              </attribute>
++            </optional>
+             <interleave>
+               <optional>
+                 <ref name="virtualPortProfile"/>
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 58d5b80..8f16d10 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -6776,6 +6776,7 @@ virDomainActualNetDefParseXML(xmlNodePtr node,
+     char *type = NULL;
+     char *mode = NULL;
+     char *addrtype = NULL;
++    char *trustGuestRxFilters = NULL;
+ 
+     if (VIR_ALLOC(actual) < 0)
+         return -1;
+@@ -6803,6 +6804,16 @@ virDomainActualNetDefParseXML(xmlNodePtr node,
+         goto error;
+     }
+ 
++    trustGuestRxFilters = virXMLPropString(node, "trustGuestRxFilters");
++    if (trustGuestRxFilters &&
++        ((actual->trustGuestRxFilters
++          = virTristateBoolTypeFromString(trustGuestRxFilters)) <= 0)) {
++        virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                       _("unknown trustGuestRxFilters value '%s'"),
++                       trustGuestRxFilters);
++        goto error;
++    }
++
+     virtPortNode = virXPathNode("./virtualport", ctxt);
+     if (virtPortNode) {
+         if (actual->type == VIR_DOMAIN_NET_TYPE_BRIDGE ||
+@@ -6898,6 +6909,7 @@ virDomainActualNetDefParseXML(xmlNodePtr node,
+     VIR_FREE(type);
+     VIR_FREE(mode);
+     VIR_FREE(addrtype);
++    VIR_FREE(trustGuestRxFilters);
+     virDomainActualNetDefFree(actual);
+ 
+     ctxt->node = save_ctxt;
+@@ -6949,6 +6961,7 @@ virDomainNetDefParseXML(virDomainXMLOptionPtr xmlopt,
+     char *vhostuser_mode = NULL;
+     char *vhostuser_path = NULL;
+     char *vhostuser_type = NULL;
++    char *trustGuestRxFilters = NULL;
+     virNWFilterHashTablePtr filterparams = NULL;
+     virDomainActualNetDefPtr actual = NULL;
+     xmlNodePtr oldnode = ctxt->node;
+@@ -6970,6 +6983,16 @@ virDomainNetDefParseXML(virDomainXMLOptionPtr xmlopt,
+         def->type = VIR_DOMAIN_NET_TYPE_USER;
+     }
+ 
++    trustGuestRxFilters = virXMLPropString(node, "trustGuestRxFilters");
++    if (trustGuestRxFilters &&
++        ((def->trustGuestRxFilters
++          = virTristateBoolTypeFromString(trustGuestRxFilters)) <= 0)) {
++        virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                       _("unknown trustGuestRxFilters value '%s'"),
++                       trustGuestRxFilters);
++        goto error;
++    }
++
+     cur = node->children;
+     while (cur != NULL) {
+         if (cur->type == XML_ELEMENT_NODE) {
+@@ -7602,6 +7625,7 @@ virDomainNetDefParseXML(virDomainXMLOptionPtr xmlopt,
+     VIR_FREE(mode);
+     VIR_FREE(linkstate);
+     VIR_FREE(addrtype);
++    VIR_FREE(trustGuestRxFilters);
+     virNWFilterHashTableFree(filterparams);
+ 
+     return def;
+@@ -16689,6 +16713,9 @@ virDomainActualNetDefFormat(virBufferPtr buf,
+         if  (hostdef && hostdef->managed)
+             virBufferAddLit(buf, " managed='yes'");
+     }
++    if (def->trustGuestRxFilters)
++        virBufferAsprintf(buf, " trustGuestRxFilters='%s'",
++                          virTristateBoolTypeToString(def->trustGuestRxFilters));
+     virBufferAddLit(buf, ">\n");
+ 
+     virBufferAdjustIndent(buf, 2);
+@@ -16846,6 +16873,9 @@ virDomainNetDefFormat(virBufferPtr buf,
+     virBufferAsprintf(buf, "<interface type='%s'", typeStr);
+     if (hostdef && hostdef->managed)
+         virBufferAddLit(buf, " managed='yes'");
++    if (def->trustGuestRxFilters)
++        virBufferAsprintf(buf, " trustGuestRxFilters='%s'",
++                          virTristateBoolTypeToString(def->trustGuestRxFilters));
+     virBufferAddLit(buf, ">\n");
+ 
+     virBufferAdjustIndent(buf, 2);
+@@ -20321,6 +20351,18 @@ virDomainNetGetActualVlan(virDomainNetDefPtr iface)
+     return NULL;
+ }
+ 
++
++bool
++virDomainNetGetActualTrustGuestRxFilters(virDomainNetDefPtr iface)
++{
++    if (iface->type == VIR_DOMAIN_NET_TYPE_NETWORK &&
++        iface->data.network.actual)
++        return (iface->data.network.actual->trustGuestRxFilters
++                == VIR_TRISTATE_BOOL_YES);
++    return iface->trustGuestRxFilters == VIR_TRISTATE_BOOL_YES;
++}
++
++
+ /* Return listens[i] from the appropriate union for the graphics
+  * type, or NULL if this is an unsuitable type, or the index is out of
+  * bounds. If force0 is TRUE, i == 0, and there is no listen array,
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index 9da6d2d..21d19cf 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -886,6 +886,7 @@ struct _virDomainActualNetDef {
+     virNetDevVPortProfilePtr virtPortProfile;
+     virNetDevBandwidthPtr bandwidth;
+     virNetDevVlan vlan;
++    int trustGuestRxFilters; /* enum virTristateBool */
+     unsigned int class_id; /* class ID for bandwidth 'floor' */
+ };
+ 
+@@ -975,6 +976,7 @@ struct _virDomainNetDef {
+     virNWFilterHashTablePtr filterparams;
+     virNetDevBandwidthPtr bandwidth;
+     virNetDevVlan vlan;
++    int trustGuestRxFilters; /* enum virTristateBool */
+     int linkstate;
+ };
+ 
+@@ -2487,6 +2489,7 @@ virDomainNetGetActualVirtPortProfile(virDomainNetDefPtr iface);
+ virNetDevBandwidthPtr
+ virDomainNetGetActualBandwidth(virDomainNetDefPtr iface);
+ virNetDevVlanPtr virDomainNetGetActualVlan(virDomainNetDefPtr iface);
++bool virDomainNetGetActualTrustGuestRxFilters(virDomainNetDefPtr iface);
+ 
+ int virDomainControllerInsert(virDomainDefPtr def,
+                               virDomainControllerDefPtr controller)
+diff --git a/src/conf/network_conf.c b/src/conf/network_conf.c
+index 9571ee1..863d0e2 100644
+--- a/src/conf/network_conf.c
++++ b/src/conf/network_conf.c
+@@ -1615,6 +1615,7 @@ virNetworkPortGroupParseXML(virPortGroupDefPtr def,
+     xmlNodePtr vlanNode;
+     xmlNodePtr bandwidth_node;
+     char *isDefault = NULL;
++    char *trustGuestRxFilters = NULL;
+ 
+     int result = -1;
+ 
+@@ -1632,6 +1633,18 @@ virNetworkPortGroupParseXML(virPortGroupDefPtr def,
+     isDefault = virXPathString("string(./@default)", ctxt);
+     def->isDefault = isDefault && STRCASEEQ(isDefault, "yes");
+ 
++    trustGuestRxFilters
++        = virXPathString("string(./@trustGuestRxFilters)", ctxt);
++    if (trustGuestRxFilters) {
++        if ((def->trustGuestRxFilters
++             = virTristateBoolTypeFromString(trustGuestRxFilters)) <= 0) {
++            virReportError(VIR_ERR_XML_ERROR,
++                           _("Invalid trustGuestRxFilters setting '%s' "
++                             "in portgroup"), trustGuestRxFilters);
++            goto cleanup;
++        }
++    }
++
+     virtPortNode = virXPathNode("./virtualport", ctxt);
+     if (virtPortNode &&
+         (!(def->virtPortProfile = virNetDevVPortProfileParse(virtPortNode, 0)))) {
+@@ -1654,6 +1667,7 @@ virNetworkPortGroupParseXML(virPortGroupDefPtr def,
+         virPortGroupDefClear(def);
+     }
+     VIR_FREE(isDefault);
++    VIR_FREE(trustGuestRxFilters);
+ 
+     ctxt->node = save;
+     return result;
+@@ -2013,6 +2027,7 @@ virNetworkDefParseXML(xmlXPathContextPtr ctxt)
+     xmlNodePtr virtPortNode = NULL;
+     xmlNodePtr forwardNode = NULL;
+     char *ipv6nogwStr = NULL;
++    char *trustGuestRxFilters = NULL;
+     xmlNodePtr save = ctxt->node;
+     xmlNodePtr bandwidthNode = NULL;
+     xmlNodePtr vlanNode;
+@@ -2062,6 +2077,20 @@ virNetworkDefParseXML(xmlXPathContextPtr ctxt)
+         VIR_FREE(ipv6nogwStr);
+     }
+ 
++    trustGuestRxFilters
++        = virXPathString("string(./@trustGuestRxFilters)", ctxt);
++    if (trustGuestRxFilters) {
++        if ((def->trustGuestRxFilters
++             = virTristateBoolTypeFromString(trustGuestRxFilters)) <= 0) {
++            virReportError(VIR_ERR_XML_ERROR,
++                           _("Invalid trustGuestRxFilters setting '%s' "
++                             "in network '%s'"),
++                           trustGuestRxFilters, def->name);
++            goto error;
++        }
++        VIR_FREE(trustGuestRxFilters);
++    }
++
+     /* Parse network domain information */
+     def->domain = virXPathString("string(./domain[1]/@name)", ctxt);
+ 
+@@ -2295,6 +2324,7 @@ virNetworkDefParseXML(xmlXPathContextPtr ctxt)
+     VIR_FREE(ipNodes);
+     VIR_FREE(portGroupNodes);
+     VIR_FREE(ipv6nogwStr);
++    VIR_FREE(trustGuestRxFilters);
+     ctxt->node = save;
+     return NULL;
+ }
+@@ -2589,6 +2619,9 @@ virPortGroupDefFormat(virBufferPtr buf,
+     if (def->isDefault) {
+         virBufferAddLit(buf, " default='yes'");
+     }
++    if (def->trustGuestRxFilters)
++        virBufferAsprintf(buf, " trustGuestRxFilters='%s'",
++                          virTristateBoolTypeToString(def->trustGuestRxFilters));
+     virBufferAddLit(buf, ">\n");
+     virBufferAdjustIndent(buf, 2);
+     if (virNetDevVlanFormat(&def->vlan, buf) < 0)
+@@ -2667,6 +2700,9 @@ virNetworkDefFormatBuf(virBufferPtr buf,
+     }
+     if (def->ipv6nogw)
+         virBufferAddLit(buf, " ipv6='yes'");
++    if (def->trustGuestRxFilters)
++        virBufferAsprintf(buf, " trustGuestRxFilters='%s'",
++                          virTristateBoolTypeToString(def->trustGuestRxFilters));
+     virBufferAddLit(buf, ">\n");
+     virBufferAdjustIndent(buf, 2);
+     virBufferEscapeString(buf, "<name>%s</name>\n", def->name);
+diff --git a/src/conf/network_conf.h b/src/conf/network_conf.h
+index 7ed58cd..660cd2d 100644
+--- a/src/conf/network_conf.h
++++ b/src/conf/network_conf.h
+@@ -219,6 +219,7 @@ struct _virPortGroupDef {
+     virNetDevVPortProfilePtr virtPortProfile;
+     virNetDevBandwidthPtr bandwidth;
+     virNetDevVlan vlan;
++    int trustGuestRxFilters; /* enum virTristateBool */
+ };
+ 
+ typedef struct _virNetworkDef virNetworkDef;
+@@ -256,6 +257,7 @@ struct _virNetworkDef {
+     virPortGroupDefPtr portGroups;
+     virNetDevBandwidthPtr bandwidth;
+     virNetDevVlan vlan;
++    int trustGuestRxFilters; /* enum virTristateBool */
+ };
+ 
+ typedef struct _virNetworkObj virNetworkObj;
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index 401bbb5..9ec9716 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -330,6 +330,7 @@ virDomainNetGetActualBridgeName;
+ virDomainNetGetActualDirectDev;
+ virDomainNetGetActualDirectMode;
+ virDomainNetGetActualHostdev;
++virDomainNetGetActualTrustGuestRxFilters;
+ virDomainNetGetActualType;
+ virDomainNetGetActualVirtPortProfile;
+ virDomainNetGetActualVlan;
+diff --git a/tests/networkxml2xmlin/vepa-net.xml b/tests/networkxml2xmlin/vepa-net.xml
+index 030c1d1..07c59c5 100644
+--- a/tests/networkxml2xmlin/vepa-net.xml
++++ b/tests/networkxml2xmlin/vepa-net.xml
+@@ -1,4 +1,4 @@
+-<network>
++<network trustGuestRxFilters="no">
+   <name>vepa-net</name>
+   <uuid>81ff0d90-c91e-6742-64da-4a736edb9a8b</uuid>
+   <forward mode="vepa">
+@@ -14,7 +14,7 @@
+       <parameters typeid="2193047" typeidversion="3"/>
+     </virtualport>
+   </portgroup>
+-  <portgroup name="alice">
++  <portgroup name="alice" trustGuestRxFilters="yes">
+     <virtualport type="802.1Qbg">
+       <parameters managerid="13"/>
+     </virtualport>
+diff --git a/tests/networkxml2xmlout/vepa-net.xml b/tests/networkxml2xmlout/vepa-net.xml
+index 4d35a8a..b266620 100644
+--- a/tests/networkxml2xmlout/vepa-net.xml
++++ b/tests/networkxml2xmlout/vepa-net.xml
+@@ -1,4 +1,4 @@
+-<network>
++<network trustGuestRxFilters='no'>
+   <name>vepa-net</name>
+   <uuid>81ff0d90-c91e-6742-64da-4a736edb9a8b</uuid>
+   <forward dev='eth1' mode='vepa'>
+@@ -14,7 +14,7 @@
+       <parameters typeid='2193047' typeidversion='3'/>
+     </virtualport>
+   </portgroup>
+-  <portgroup name='alice'>
++  <portgroup name='alice' trustGuestRxFilters='yes'>
+     <virtualport type='802.1Qbg'>
+       <parameters managerid='13'/>
+     </virtualport>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-net-virtio-network-portgroup.xml b/tests/qemuxml2argvdata/qemuxml2argv-net-virtio-network-portgroup.xml
+index 950a9db..6cba439 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-net-virtio-network-portgroup.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-net-virtio-network-portgroup.xml
+@@ -22,7 +22,7 @@
+     <controller type='usb' index='0'/>
+     <controller type='ide' index='0'/>
+     <controller type='pci' index='0' model='pci-root'/>
+-    <interface type='network'>
++    <interface type='network' trustGuestRxFilters='yes'>
+       <mac address='00:11:22:33:44:55'/>
+       <source network='rednet' portgroup='bob'/>
+       <vlan>
+@@ -33,7 +33,7 @@
+       </virtualport>
+       <model type='virtio'/>
+     </interface>
+-    <interface type='network'>
++    <interface type='network' trustGuestRxFilters='no'>
+       <mac address='10:11:22:33:44:55'/>
+       <source network='blue' portgroup='sam'/>
+       <virtualport>
+-- 
+2.1.3
+

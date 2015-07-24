@@ -1,0 +1,748 @@
+From ad729e721aca43c17ab297e022edd9c7250d43ee Mon Sep 17 00:00:00 2001
+Message-Id: <ad729e721aca43c17ab297e022edd9c7250d43ee@dist-git>
+From: Pavel Hrdina <phrdina@redhat.com>
+Date: Tue, 25 Nov 2014 10:52:59 +0100
+Subject: [PATCH] video: cleanup usage of vram attribute and update
+ documentation
+
+The vram attribute was introduced to set the video memory but it is
+usable only for few hypervisors excluding QEMU/KVM and the old XEN
+driver. Only in case of QEMU the vram was used for QXL.
+
+This patch updates the documentation to reflect current code in libvirt
+and also changes the cases when we will set the default vram attribute.
+It also fixes existing strange default value for VGA devices 9MB to 16MB
+because the video ram should be rounded to power of two.
+
+The change of default value could affect migrations but I found out that
+QEMU always round the video ram to power of two internally so it's safe
+to change the default value to the next closest power of two and also
+silently correct every domain XML definition. And it's also safe because
+we don't pass the value to QEMU.
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1076098
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+(cherry picked from commit 81ba2298b27aa3257e7b5136f5dd5055076d7d9c)
+
+Conflicts:
+	src/xen/xen_driver.c - missing context 9320c3ff
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ docs/formatdomain.html.in                          | 66 ++++++++++++++--------
+ src/conf/domain_conf.c                             | 15 +++--
+ src/conf/domain_conf.h                             |  3 +-
+ src/qemu/qemu_command.c                            | 16 ++++--
+ ...qemuhotplug-console-compat-2+console-virtio.xml |  2 +-
+ .../qemuxml2argv-console-compat-2.xml              |  2 +-
+ .../qemuxml2argv-controller-order.xml              |  2 +-
+ .../qemuxml2argv-graphics-listen-network.xml       |  2 +-
+ .../qemuxml2argv-graphics-listen-network2.xml      |  2 +-
+ .../qemuxml2argv-graphics-sdl-fullscreen.xml       |  2 +-
+ .../qemuxml2argvdata/qemuxml2argv-graphics-sdl.xml |  2 +-
+ .../qemuxml2argv-graphics-spice-agentmouse.xml     |  2 +-
+ .../qemuxml2argv-graphics-spice-compression.args   |  2 +-
+ .../qemuxml2argv-graphics-spice-compression.xml    |  2 +-
+ .../qemuxml2argv-graphics-spice-sasl.args          |  2 +-
+ .../qemuxml2argv-graphics-spice-sasl.xml           |  2 +-
+ .../qemuxml2argv-graphics-spice-timeout.xml        |  2 +-
+ .../qemuxml2argv-graphics-spice.args               |  2 +-
+ .../qemuxml2argv-graphics-spice.xml                |  2 +-
+ .../qemuxml2argv-graphics-vnc-policy.xml           |  2 +-
+ .../qemuxml2argv-graphics-vnc-sasl.xml             |  2 +-
+ .../qemuxml2argv-graphics-vnc-socket.xml           |  2 +-
+ .../qemuxml2argv-graphics-vnc-tls.xml              |  2 +-
+ .../qemuxml2argv-graphics-vnc-websocket.xml        |  2 +-
+ .../qemuxml2argvdata/qemuxml2argv-graphics-vnc.xml |  2 +-
+ .../qemuxml2argv-net-bandwidth.xml                 |  2 +-
+ .../qemuxml2argv-pci-autoadd-addr.xml              |  2 +-
+ .../qemuxml2argv-pci-autoadd-idx.xml               |  2 +-
+ tests/qemuxml2argvdata/qemuxml2argv-pci-bridge.xml |  2 +-
+ .../qemuxml2argv-pcihole64-q35.args                |  2 +-
+ .../qemuxml2argv-pcihole64-q35.xml                 |  2 +-
+ .../qemuxml2argvdata/qemuxml2argv-pseries-disk.xml |  2 +-
+ tests/qemuxml2argvdata/qemuxml2argv-q35.args       |  2 +-
+ tests/qemuxml2argvdata/qemuxml2argv-q35.xml        |  2 +-
+ .../qemuxml2argv-serial-spiceport.args             |  2 +-
+ .../qemuxml2argv-serial-spiceport.xml              |  2 +-
+ .../qemuxml2xmlout-graphics-listen-network2.xml    |  2 +-
+ .../qemuxml2xmlout-graphics-spice-timeout.xml      |  2 +-
+ .../qemuxml2xmlout-pci-autoadd-addr.xml            |  2 +-
+ .../qemuxml2xmlout-pci-autoadd-idx.xml             |  2 +-
+ tests/qemuxml2xmloutdata/qemuxml2xmlout-q35.xml    |  2 +-
+ tests/virt-aa-helper-test                          |  2 +-
+ 42 files changed, 102 insertions(+), 74 deletions(-)
+
+diff --git a/docs/formatdomain.html.in b/docs/formatdomain.html.in
+index f8d5b31..4755e01 100644
+--- a/docs/formatdomain.html.in
++++ b/docs/formatdomain.html.in
+@@ -4636,7 +4636,7 @@ qemu-kvm -net nic,model=? /dev/null
+   ...
+   &lt;devices&gt;
+     &lt;video&gt;
+-      &lt;model type='vga' vram='8192' heads='1'&gt;
++      &lt;model type='vga' vram='16384' heads='1'&gt;
+         &lt;acceleration accel3d='yes' accel2d='yes'/&gt;
+       &lt;/model&gt;
+     &lt;/video&gt;
+@@ -4646,33 +4646,51 @@ qemu-kvm -net nic,model=? /dev/null
+     <dl>
+       <dt><code>video</code></dt>
+       <dd>
+-        The <code>video</code> element is the container for describing
+-        video devices. For backwards compatibility, if no <code>video</code>
+-        is set but there is a <code>graphics</code> in domain xml, then libvirt
+-        will add a default <code>video</code> according to the guest type.
+-        For a guest of type "kvm", the default <code>video</code> for it is:
+-        <code>type</code> with value "cirrus", <code>vram</code> with value
+-        "9216", and <code>heads</code> with value "1". By default, the first
+-        video device in domain xml is the primary one, but the optional
+-        attribute <code>primary</code> (<span class="since">since 1.0.2</span>)
+-        with value 'yes' can be used to mark the primary in cases of multiple
+-        video device. The non-primary must be type of "qxl". The optional
+-        attribute <code>ram</code> (<span class="since">since
+-        1.0.2</span>) is allowed for "qxl" type only and specifies
+-        the size of the primary bar, while <code>vram</code> specifies the
+-        secondary bar size.  If "ram" or "vram" are not supplied a default
+-        value is used.
++        <p>
++          The <code>video</code> element is the container for describing
++          video devices. For backwards compatibility, if no <code>video</code>
++          is set but there is a <code>graphics</code> in domain xml, then
++          libvirt will add a default <code>video</code> according to the guest
++          type.
++        </p>
++        <p>
++          For a guest of type "kvm", the default <code>video</code> is:
++          <code>type</code> with value "cirrus", <code>vram</code> with value
++          "16384" and <code>heads</code> with value "1". By default, the first
++          video device in domain xml is the primary one, but the optional
++          attribute <code>primary</code> (<span class="since">since 1.0.2</span>)
++          with value 'yes' can be used to mark the primary in cases of multiple
++          video device. The non-primary must be type of "qxl".
++        </p>
+       </dd>
+ 
+       <dt><code>model</code></dt>
+       <dd>
+-        The <code>model</code> element has a mandatory <code>type</code>
+-        attribute which takes the value "vga", "cirrus", "vmvga", "xen",
+-        "vbox", or "qxl" (<span class="since">since 0.8.6</span>)
+-        depending on the hypervisor features available.
+-        You can also provide the amount of video memory in kibibytes
+-        (blocks of 1024 bytes) using
+-        <code>vram</code> and the number of screen with <code>heads</code>.
++        <p>
++          The <code>model</code> element has a mandatory <code>type</code>
++          attribute which takes the value "vga", "cirrus", "vmvga", "xen",
++          "vbox", or "qxl" (<span class="since">since 0.8.6</span>) depending
++          on the hypervisor features available.
++        </p>
++        <p>
++          You can provide the amount of video memory in kibibytes (blocks of
++          1024 bytes) using <code>vram</code>. This is supported only for guest
++          type of "libxl", "parallels", "qemu", "vbox", "vmx" and "xen". If no
++          value is provided the default is used. If the size is not a power of
++          two it will be rounded to closest one.
++        </p>
++        <p>
++          The number of screen can be set using <code>heads</code>. This is
++          supported only for guests type of "parallels", "kvm", "vbox" and "vmx".
++        </p>
++        <p>
++          For guest type of kvm the optional attribute <code>ram</code>
++          (<span class="since">since 1.0.2</span>) is allowed for "qxl" type
++          only and specifies the size of the primary bar, while the optional
++          attribute <code>vram</code> specifies the secondary bar size.
++          If "ram" or "vram" are not supplied a default value is used. The ram
++          should also be rounded to power of two as vram.
++        </p>
+       </dd>
+ 
+       <dt><code>acceleration</code></dt>
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index ef6e9cf..0b0200b 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -3186,6 +3186,12 @@ virDomainDeviceDefPostParseInternal(virDomainDeviceDefPtr dev,
+         }
+     }
+ 
++    if (dev->type == VIR_DOMAIN_DEVICE_VIDEO) {
++        virDomainVideoDefPtr video = dev->data.video;
++        video->ram = VIR_ROUND_UP_POWER_OF_TWO(video->ram);
++        video->vram = VIR_ROUND_UP_POWER_OF_TWO(video->vram);
++    }
++
+     return 0;
+ }
+ 
+@@ -9993,12 +9999,11 @@ virSysinfoParseXML(xmlNodePtr node,
+     goto cleanup;
+ }
+ 
+-int
++unsigned int
+ virDomainVideoDefaultRAM(const virDomainDef *def,
+-                         int type)
++                         const virDomainVideoType type)
+ {
+     switch (type) {
+-        /* Weird, QEMU defaults to 9 MB ??! */
+     case VIR_DOMAIN_VIDEO_TYPE_VGA:
+     case VIR_DOMAIN_VIDEO_TYPE_CIRRUS:
+     case VIR_DOMAIN_VIDEO_TYPE_VMVGA:
+@@ -10007,7 +10012,7 @@ virDomainVideoDefaultRAM(const virDomainDef *def,
+         else if (def->virtType == VIR_DOMAIN_VIRT_VMWARE)
+             return 4 * 1024;
+         else
+-            return 9 * 1024;
++            return 16 * 1024;
+         break;
+ 
+     case VIR_DOMAIN_VIDEO_TYPE_XEN:
+@@ -10168,7 +10173,7 @@ virDomainVideoDefParseXML(xmlNodePtr node,
+     if (vram) {
+         if (virStrToLong_ui(vram, NULL, 10, &def->vram) < 0) {
+             virReportError(VIR_ERR_XML_ERROR,
+-                           _("cannot parse video ram '%s'"), vram);
++                           _("cannot parse video vram '%s'"), vram);
+             goto error;
+         }
+     } else {
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index f9cccb4..ae46467 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -2587,7 +2587,8 @@ int virDomainFSIndexByName(virDomainDefPtr def, const char *name);
+ virDomainFSDefPtr virDomainFSRemove(virDomainDefPtr def, size_t i);
+ 
+ int virDomainVideoDefaultType(const virDomainDef *def);
+-int virDomainVideoDefaultRAM(const virDomainDef *def, int type);
++unsigned int virDomainVideoDefaultRAM(const virDomainDef *def,
++                                      const virDomainVideoType type);
+ 
+ int virDomainObjListNumOfDomains(virDomainObjListPtr doms,
+                                  bool active,
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 09a22dc..8d73f89 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -4844,11 +4844,15 @@ qemuBuildDeviceVideoStr(virDomainDefPtr def,
+             goto error;
+         }
+ 
+-        /* QEMU accepts bytes for ram_size. */
+-        virBufferAsprintf(&buf, ",ram_size=%u", video->ram * 1024);
++        if (video->ram) {
++            /* QEMU accepts bytes for ram_size. */
++            virBufferAsprintf(&buf, ",ram_size=%u", video->ram * 1024);
++        }
+ 
+-        /* QEMU accepts bytes for vram_size. */
+-        virBufferAsprintf(&buf, ",vram_size=%u", video->vram * 1024);
++        if (video->vram) {
++            /* QEMU accepts bytes for vram_size. */
++            virBufferAsprintf(&buf, ",vram_size=%u", video->vram * 1024);
++        }
+     }
+ 
+     if (qemuBuildDeviceAddressStr(&buf, def, &video->info, qemuCaps) < 0)
+@@ -9108,8 +9112,8 @@ qemuBuildCommandLine(virConnectPtr conn,
+                     virQEMUCapsGet(qemuCaps, QEMU_CAPS_DEVICE)) {
+                     const char *dev = (virQEMUCapsGet(qemuCaps, QEMU_CAPS_DEVICE_QXL_VGA)
+                                        ? "qxl-vga" : "qxl");
+-                    int ram = def->videos[0]->ram;
+-                    int vram = def->videos[0]->vram;
++                    unsigned int ram = def->videos[0]->ram;
++                    unsigned int vram = def->videos[0]->vram;
+ 
+                     if (vram > (UINT_MAX / 1024)) {
+                         virReportError(VIR_ERR_OVERFLOW,
+diff --git a/tests/qemuhotplugtestdata/qemuhotplug-console-compat-2+console-virtio.xml b/tests/qemuhotplugtestdata/qemuhotplug-console-compat-2+console-virtio.xml
+index ec1c6e8..d848677 100644
+--- a/tests/qemuhotplugtestdata/qemuhotplug-console-compat-2+console-virtio.xml
++++ b/tests/qemuhotplugtestdata/qemuhotplug-console-compat-2+console-virtio.xml
+@@ -91,7 +91,7 @@
+       <address type='pci' domain='0x0000' bus='0x00' slot='0x04' function='0x0'/>
+     </sound>
+     <video>
+-      <model type='cirrus' vram='9216' heads='1'/>
++      <model type='cirrus' vram='16384' heads='1'/>
+       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x0'/>
+     </video>
+     <memballoon model='virtio'>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-console-compat-2.xml b/tests/qemuxml2argvdata/qemuxml2argv-console-compat-2.xml
+index 4d4ac47..a7209b2 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-console-compat-2.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-console-compat-2.xml
+@@ -88,7 +88,7 @@
+       <address type='pci' domain='0x0000' bus='0x00' slot='0x04' function='0x0'/>
+     </sound>
+     <video>
+-      <model type='cirrus' vram='9216' heads='1'/>
++      <model type='cirrus' vram='16384' heads='1'/>
+       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x0'/>
+     </video>
+     <memballoon model='virtio'>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-controller-order.xml b/tests/qemuxml2argvdata/qemuxml2argv-controller-order.xml
+index 6a98eaa..07db77e 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-controller-order.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-controller-order.xml
+@@ -73,7 +73,7 @@
+       <address type='pci' domain='0x0000' bus='0x00' slot='0x04' function='0x0'/>
+     </sound>
+     <video>
+-      <model type='cirrus' vram='9216' heads='1'/>
++      <model type='cirrus' vram='16384' heads='1'/>
+       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x0'/>
+     </video>
+     <hostdev mode='subsystem' type='usb' managed='yes'>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-listen-network.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-listen-network.xml
+index 98b7d6a..bf78ca8 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-listen-network.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-listen-network.xml
+@@ -28,7 +28,7 @@
+       <listen type='network' network='Bobsnetwork'/>
+     </graphics>
+     <video>
+-      <model type='cirrus' vram='9216' heads='1'/>
++      <model type='cirrus' vram='16384' heads='1'/>
+     </video>
+     <memballoon model='virtio'/>
+   </devices>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-listen-network2.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-listen-network2.xml
+index aa458d7..62353e9 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-listen-network2.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-listen-network2.xml
+@@ -28,7 +28,7 @@
+       <listen type='network' network='Bobsnetwork'/>
+     </graphics>
+     <video>
+-      <model type='cirrus' vram='9216' heads='1'/>
++      <model type='cirrus' vram='16384' heads='1'/>
+     </video>
+     <memballoon model='virtio'/>
+   </devices>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-sdl-fullscreen.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-sdl-fullscreen.xml
+index 0177654..1bac0b5 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-sdl-fullscreen.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-sdl-fullscreen.xml
+@@ -27,7 +27,7 @@
+     <input type='keyboard' bus='ps2'/>
+     <graphics type='sdl' display=':0.1' xauth='/root/.Xauthority' fullscreen='yes'/>
+     <video>
+-      <model type='cirrus' vram='9216' heads='1'/>
++      <model type='cirrus' vram='16384' heads='1'/>
+     </video>
+     <memballoon model='none'/>
+   </devices>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-sdl.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-sdl.xml
+index 6bebd10..5f94052 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-sdl.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-sdl.xml
+@@ -27,7 +27,7 @@
+     <input type='keyboard' bus='ps2'/>
+     <graphics type='sdl' display=':0.1' xauth='/root/.Xauthority'/>
+     <video>
+-      <model type='vga' vram='9216' heads='1'/>
++      <model type='vga' vram='16384' heads='1'/>
+     </video>
+     <memballoon model='none'/>
+   </devices>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-agentmouse.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-agentmouse.xml
+index 113a236..6a29f37 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-agentmouse.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-agentmouse.xml
+@@ -32,7 +32,7 @@
+       <address type='virtio-serial' controller='1' bus='0' port='3'/>
+     </channel>
+     <video>
+-      <model type='cirrus' vram='9216' heads='1'/>
++      <model type='cirrus' vram='16384' heads='1'/>
+     </video>
+     <memballoon model='virtio'/>
+   </devices>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-compression.args b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-compression.args
+index 59f064b..cdc916c 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-compression.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-compression.args
+@@ -6,6 +6,6 @@ x509-dir=/etc/pki/libvirt-spice,\
+ image-compression=auto_glz,jpeg-wan-compression=auto,\
+ zlib-glz-wan-compression=auto,\
+ playback-compression=on,streaming-video=filter -vga \
+-qxl -global qxl.ram_size=67108864 -global qxl.vram_size=18874368 \
++qxl -global qxl.ram_size=67108864 -global qxl.vram_size=33554432 \
+ -device qxl,id=video1,ram_size=67108864,vram_size=33554432,bus=pci.0,addr=0x4 \
+ -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-compression.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-compression.xml
+index 6c913b4..5c9683f 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-compression.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-compression.xml
+@@ -33,7 +33,7 @@
+       <streaming mode='filter'/>
+     </graphics>
+     <video>
+-      <model type='qxl' ram='65536' vram='18432' heads='1'/>
++      <model type='qxl' ram='65536' vram='32768' heads='1'/>
+     </video>
+     <video>
+       <model type='qxl' ram='65536' vram='32768' heads='1'/>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-sasl.args b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-sasl.args
+index 8847bce..0c9df16 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-sasl.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-sasl.args
+@@ -6,4 +6,4 @@ SASL_CONF_PATH=/root/.sasl2 QEMU_AUDIO_DRV=spice \
+ -spice port=5903,tls-port=5904,sasl,addr=127.0.0.1,\
+ x509-dir=/etc/pki/libvirt-spice,tls-channel=default \
+ -vga qxl -global qxl.ram_size=67108864 -global \
+-qxl.vram_size=18874368 -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
++qxl.vram_size=33554432 -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-sasl.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-sasl.xml
+index eb630fa..d86cd56 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-sasl.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-sasl.xml
+@@ -28,7 +28,7 @@
+       <listen type='address' address='127.0.0.1'/>
+     </graphics>
+     <video>
+-      <model type='qxl' ram='65536' vram='18432' heads='1'/>
++      <model type='qxl' ram='65536' vram='32768' heads='1'/>
+     </video>
+     <memballoon model='virtio'/>
+   </devices>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-timeout.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-timeout.xml
+index e6ecbed..5fad05f 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-timeout.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-timeout.xml
+@@ -77,7 +77,7 @@
+       <address type='pci' domain='0x0000' bus='0x00' slot='0x03' function='0x0'/>
+     </sound>
+     <video>
+-      <model type='vga' vram='9216' heads='1'/>
++      <model type='vga' vram='16384' heads='1'/>
+       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x0'/>
+     </video>
+     <memballoon model='virtio'>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice.args b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice.args
+index 8430d9c..704cec7 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice.args
+@@ -8,6 +8,6 @@ image-compression=auto_glz,jpeg-wan-compression=auto,\
+ zlib-glz-wan-compression=auto,\
+ playback-compression=on,streaming-video=filter,disable-copy-paste,\
+ disable-agent-file-xfer -vga qxl -global qxl.ram_size=67108864 \
+--global qxl.vram_size=18874368 \
++-global qxl.vram_size=33554432 \
+ -device qxl,id=video1,ram_size=67108864,vram_size=33554432,bus=pci.0,addr=0x4 \
+ -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice.xml
+index 8f58149..335ce69 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice.xml
+@@ -37,7 +37,7 @@
+       <filetransfer enable='no'/>
+     </graphics>
+     <video>
+-      <model type='qxl' ram='65536' vram='18432' heads='1'/>
++      <model type='qxl' ram='65536' vram='32768' heads='1'/>
+     </video>
+     <video>
+       <model type='qxl' ram='65536' vram='32768' heads='1'/>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-policy.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-policy.xml
+index 694343f..f78ff48 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-policy.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-policy.xml
+@@ -29,7 +29,7 @@
+       <listen type='address' address='127.0.0.1'/>
+     </graphics>
+     <video>
+-      <model type='cirrus' vram='9216' heads='1'/>
++      <model type='cirrus' vram='16384' heads='1'/>
+     </video>
+     <memballoon model='none'/>
+   </devices>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-sasl.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-sasl.xml
+index b35c2bd..e350142 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-sasl.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-sasl.xml
+@@ -29,7 +29,7 @@
+       <listen type='address' address='127.0.0.1'/>
+     </graphics>
+     <video>
+-      <model type='cirrus' vram='9216' heads='1'/>
++      <model type='cirrus' vram='16384' heads='1'/>
+     </video>
+     <memballoon model='none'/>
+   </devices>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-socket.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-socket.xml
+index 44df226..de70bc4 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-socket.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-socket.xml
+@@ -27,7 +27,7 @@
+     <input type='keyboard' bus='ps2'/>
+     <graphics type='vnc' socket='/tmp/foo.socket'/>
+     <video>
+-      <model type='cirrus' vram='9216' heads='1'/>
++      <model type='cirrus' vram='16384' heads='1'/>
+     </video>
+     <memballoon model='none'/>
+   </devices>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-tls.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-tls.xml
+index b35c2bd..e350142 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-tls.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-tls.xml
+@@ -29,7 +29,7 @@
+       <listen type='address' address='127.0.0.1'/>
+     </graphics>
+     <video>
+-      <model type='cirrus' vram='9216' heads='1'/>
++      <model type='cirrus' vram='16384' heads='1'/>
+     </video>
+     <memballoon model='none'/>
+   </devices>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-websocket.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-websocket.xml
+index cfa61be..afa4b5a 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-websocket.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc-websocket.xml
+@@ -22,7 +22,7 @@
+       <listen type='address' address='127.0.0.1'/>
+     </graphics>
+     <video>
+-      <model type='cirrus' vram='9216' heads='1'/>
++      <model type='cirrus' vram='16384' heads='1'/>
+     </video>
+     <memballoon model='none'/>
+   </devices>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc.xml
+index 356ac36..3313469 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-vnc.xml
+@@ -29,7 +29,7 @@
+       <listen type='address' address='2001:1:2:3:4:5:1234:1234'/>
+     </graphics>
+     <video>
+-      <model type='cirrus' vram='9216' heads='1'/>
++      <model type='cirrus' vram='16384' heads='1'/>
+     </video>
+     <memballoon model='none'/>
+   </devices>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-net-bandwidth.xml b/tests/qemuxml2argvdata/qemuxml2argv-net-bandwidth.xml
+index f70e20a..daecc8b 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-net-bandwidth.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-net-bandwidth.xml
+@@ -66,7 +66,7 @@
+       <address type='pci' domain='0x0000' bus='0x00' slot='0x03' function='0x0'/>
+     </sound>
+     <video>
+-      <model type='vga' vram='9216' heads='1'/>
++      <model type='vga' vram='16384' heads='1'/>
+       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x0'/>
+     </video>
+     <memballoon model='virtio'>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-pci-autoadd-addr.xml b/tests/qemuxml2argvdata/qemuxml2argv-pci-autoadd-addr.xml
+index 92db5e6..f8b0fc7 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-pci-autoadd-addr.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-pci-autoadd-addr.xml
+@@ -34,7 +34,7 @@
+     </controller>
+     <input type='mouse' bus='ps2'/>
+     <video>
+-      <model type='cirrus' vram='9216' heads='1'/>
++      <model type='cirrus' vram='16384' heads='1'/>
+       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x0'/>
+     </video>
+     <memballoon model='virtio'>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-pci-autoadd-idx.xml b/tests/qemuxml2argvdata/qemuxml2argv-pci-autoadd-idx.xml
+index f6a3ddf..db2fee9 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-pci-autoadd-idx.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-pci-autoadd-idx.xml
+@@ -35,7 +35,7 @@
+     <controller type='pci' index='8' model='pci-bridge'/>
+     <input type='mouse' bus='ps2'/>
+     <video>
+-      <model type='cirrus' vram='9216' heads='1'/>
++      <model type='cirrus' vram='16384' heads='1'/>
+       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x0'/>
+     </video>
+     <memballoon model='virtio'>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-pci-bridge.xml b/tests/qemuxml2argvdata/qemuxml2argv-pci-bridge.xml
+index a1cb38c..683c269 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-pci-bridge.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-pci-bridge.xml
+@@ -201,7 +201,7 @@
+       <listen type='address' address='127.0.0.1'/>
+     </graphics>
+     <video>
+-      <model type='cirrus' vram='9216' heads='1'/>
++      <model type='cirrus' vram='16384' heads='1'/>
+       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x0'/>
+     </video>
+     <memballoon model='virtio'>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-pcihole64-q35.args b/tests/qemuxml2argvdata/qemuxml2argv-pcihole64-q35.args
+index 6855cd2..c8045a4 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-pcihole64-q35.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-pcihole64-q35.args
+@@ -6,4 +6,4 @@ LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=none \
+ -device pci-bridge,chassis_nr=2,id=pci.2,bus=pci.1,addr=0x1 \
+ -drive file=/dev/HostVG/QEMUGuest1,if=none,id=drive-sata0-0-0 \
+ -device ide-drive,bus=ide.0,drive=drive-sata0-0-0,id=sata0-0-0 \
+--vga qxl -global qxl.ram_size=67108864 -global qxl.vram_size=18874368
++-vga qxl -global qxl.ram_size=67108864 -global qxl.vram_size=33554432
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-pcihole64-q35.xml b/tests/qemuxml2argvdata/qemuxml2argv-pcihole64-q35.xml
+index ee151be..168b2701 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-pcihole64-q35.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-pcihole64-q35.xml
+@@ -26,7 +26,7 @@
+     <controller type='pci' index='2' model='pci-bridge'/>
+     <controller type='sata' index='0'/>
+     <video>
+-      <model type='qxl' ram='65536' vram='18432' heads='1'/>
++      <model type='qxl' ram='65536' vram='32768' heads='1'/>
+     </video>
+     <memballoon model='none'/>
+   </devices>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-pseries-disk.xml b/tests/qemuxml2argvdata/qemuxml2argv-pseries-disk.xml
+index 1f896f8..d9ae4af 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-pseries-disk.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-pseries-disk.xml
+@@ -34,7 +34,7 @@
+     <input type='mouse' bus='usb'/>
+     <graphics type='sdl'/>
+     <video>
+-      <model type='cirrus' vram='9216' heads='1'/>
++      <model type='cirrus' vram='16384' heads='1'/>
+     </video>
+     <memballoon model='none'/>
+   </devices>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-q35.args b/tests/qemuxml2argvdata/qemuxml2argv-q35.args
+index 8cc5874..08bd96e 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-q35.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-q35.args
+@@ -5,4 +5,4 @@ LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=none \
+ -device pci-bridge,chassis_nr=2,id=pci.2,bus=pci.1,addr=0x1 \
+ -drive file=/dev/HostVG/QEMUGuest1,if=none,id=drive-sata0-0-0 \
+ -device ide-drive,bus=ide.0,drive=drive-sata0-0-0,id=sata0-0-0 \
+--vga qxl -global qxl.ram_size=67108864 -global qxl.vram_size=18874368
++-vga qxl -global qxl.ram_size=67108864 -global qxl.vram_size=33554432
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-q35.xml b/tests/qemuxml2argvdata/qemuxml2argv-q35.xml
+index edaf6cb..02df713 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-q35.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-q35.xml
+@@ -23,7 +23,7 @@
+     <controller type='pci' index='1' model='dmi-to-pci-bridge'/>
+     <controller type='pci' index='2' model='pci-bridge'/>
+     <video>
+-      <model type='qxl' ram='65536' vram='18432' heads='1'/>
++      <model type='qxl' ram='65536' vram='32768' heads='1'/>
+     </video>
+     <memballoon model='none'/>
+   </devices>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-spiceport.args b/tests/qemuxml2argvdata/qemuxml2argv-serial-spiceport.args
+index 8c631b1..a806d63 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-spiceport.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-spiceport.args
+@@ -9,5 +9,5 @@ LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=spice \
+ -device usb-tablet,id=input0 \
+ -spice port=5903,tls-port=5904,addr=127.0.0.1,x509-dir=/etc/pki/libvirt-spice \
+ -device \
+-qxl-vga,id=video0,ram_size=67107840,vram_size=67107840,bus=pci.0,addr=0x2 \
++qxl-vga,id=video0,ram_size=67108864,vram_size=67108864,bus=pci.0,addr=0x2 \
+ -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-spiceport.xml b/tests/qemuxml2argvdata/qemuxml2argv-serial-spiceport.xml
+index 36af468..905924e 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-spiceport.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-spiceport.xml
+@@ -37,7 +37,7 @@
+       <listen type='address' address='127.0.0.1'/>
+     </graphics>
+     <video>
+-      <model type='qxl' ram='65535' vram='65535' heads='1'/>
++      <model type='qxl' ram='65536' vram='65536' heads='1'/>
+     </video>
+     <memballoon model='virtio'/>
+   </devices>
+diff --git a/tests/qemuxml2xmloutdata/qemuxml2xmlout-graphics-listen-network2.xml b/tests/qemuxml2xmloutdata/qemuxml2xmlout-graphics-listen-network2.xml
+index ae40805..abee7b6 100644
+--- a/tests/qemuxml2xmloutdata/qemuxml2xmlout-graphics-listen-network2.xml
++++ b/tests/qemuxml2xmloutdata/qemuxml2xmlout-graphics-listen-network2.xml
+@@ -29,7 +29,7 @@
+       <listen type='network' network='Bobsnetwork'/>
+     </graphics>
+     <video>
+-      <model type='cirrus' vram='9216' heads='1'/>
++      <model type='cirrus' vram='16384' heads='1'/>
+     </video>
+     <memballoon model='virtio'/>
+   </devices>
+diff --git a/tests/qemuxml2xmloutdata/qemuxml2xmlout-graphics-spice-timeout.xml b/tests/qemuxml2xmloutdata/qemuxml2xmlout-graphics-spice-timeout.xml
+index 44c4cf7..348cbab 100644
+--- a/tests/qemuxml2xmloutdata/qemuxml2xmlout-graphics-spice-timeout.xml
++++ b/tests/qemuxml2xmloutdata/qemuxml2xmlout-graphics-spice-timeout.xml
+@@ -80,7 +80,7 @@
+       <address type='pci' domain='0x0000' bus='0x00' slot='0x03' function='0x0'/>
+     </sound>
+     <video>
+-      <model type='vga' vram='9216' heads='1'/>
++      <model type='vga' vram='16384' heads='1'/>
+       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x0'/>
+     </video>
+     <memballoon model='virtio'>
+diff --git a/tests/qemuxml2xmloutdata/qemuxml2xmlout-pci-autoadd-addr.xml b/tests/qemuxml2xmloutdata/qemuxml2xmlout-pci-autoadd-addr.xml
+index 13f0f5d..b65d86f 100644
+--- a/tests/qemuxml2xmloutdata/qemuxml2xmlout-pci-autoadd-addr.xml
++++ b/tests/qemuxml2xmloutdata/qemuxml2xmlout-pci-autoadd-addr.xml
+@@ -34,7 +34,7 @@
+     </controller>
+     <controller type='pci' index='0' model='pci-root'/>
+     <video>
+-      <model type='cirrus' vram='9216' heads='1'/>
++      <model type='cirrus' vram='16384' heads='1'/>
+       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x0'/>
+     </video>
+     <memballoon model='virtio'>
+diff --git a/tests/qemuxml2xmloutdata/qemuxml2xmlout-pci-autoadd-idx.xml b/tests/qemuxml2xmloutdata/qemuxml2xmlout-pci-autoadd-idx.xml
+index 8748437..b8658d1 100644
+--- a/tests/qemuxml2xmloutdata/qemuxml2xmlout-pci-autoadd-idx.xml
++++ b/tests/qemuxml2xmloutdata/qemuxml2xmlout-pci-autoadd-idx.xml
+@@ -35,7 +35,7 @@
+     <controller type='pci' index='8' model='pci-bridge'/>
+     <controller type='pci' index='0' model='pci-root'/>
+     <video>
+-      <model type='cirrus' vram='9216' heads='1'/>
++      <model type='cirrus' vram='16384' heads='1'/>
+       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x0'/>
+     </video>
+     <memballoon model='virtio'>
+diff --git a/tests/qemuxml2xmloutdata/qemuxml2xmlout-q35.xml b/tests/qemuxml2xmloutdata/qemuxml2xmlout-q35.xml
+index 96f8eaf..752c7d5 100644
+--- a/tests/qemuxml2xmloutdata/qemuxml2xmlout-q35.xml
++++ b/tests/qemuxml2xmloutdata/qemuxml2xmlout-q35.xml
+@@ -24,7 +24,7 @@
+     <controller type='pci' index='2' model='pci-bridge'/>
+     <controller type='sata' index='0'/>
+     <video>
+-      <model type='qxl' ram='65536' vram='18432' heads='1'/>
++      <model type='qxl' ram='65536' vram='32768' heads='1'/>
+     </video>
+     <memballoon model='none'/>
+   </devices>
+diff --git a/tests/virt-aa-helper-test b/tests/virt-aa-helper-test
+index 4b927c1..96471ff 100755
+--- a/tests/virt-aa-helper-test
++++ b/tests/virt-aa-helper-test
+@@ -95,7 +95,7 @@ cat > "$template_xml" <<EOM
+     <input type='mouse' bus='ps2'/>
+     <graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1'/>
+     <video>
+-      <model type='cirrus' vram='9216' heads='1'/>
++      <model type='cirrus' vram='16384' heads='1'/>
+     </video>
+   </devices>
+ </domain>
+-- 
+2.1.3
+

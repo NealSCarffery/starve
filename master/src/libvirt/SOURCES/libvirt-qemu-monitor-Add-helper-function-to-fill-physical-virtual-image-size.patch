@@ -1,0 +1,179 @@
+From b2e3b9d00f8e0210132f412ef5cee8367930d440 Mon Sep 17 00:00:00 2001
+Message-Id: <b2e3b9d00f8e0210132f412ef5cee8367930d440@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Wed, 1 Oct 2014 11:20:23 +0200
+Subject: [PATCH] qemu: monitor: Add helper function to fill physical/virtual
+ image size
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1113116
+
+While our code gathers block stats via "query-blockstats" some
+information need to be gathered via "query-block". Add a helper function
+that will update the blockstats structure if requested.
+
+(cherry picked from commit 8caded6b8ec567eadf5a339ba221d5de3b03a509)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_monitor.c      | 17 ++++++++++
+ src/qemu/qemu_monitor.h      |  6 ++++
+ src/qemu/qemu_monitor_json.c | 78 ++++++++++++++++++++++++++++++++++++++++++++
+ src/qemu/qemu_monitor_json.h |  2 ++
+ 4 files changed, 103 insertions(+)
+
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index 93e8f22..8e14366 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -1780,6 +1780,23 @@ qemuMonitorGetAllBlockStatsInfo(qemuMonitorPtr mon,
+     return qemuMonitorJSONGetAllBlockStatsInfo(mon, ret_stats);
+ }
+ 
++
++/* Updates "stats" to fill virtual and physical size of the image */
++int qemuMonitorBlockStatsUpdateCapacity(qemuMonitorPtr mon,
++                                        virHashTablePtr stats)
++{
++    VIR_DEBUG("mon=%p, stats=%p", mon, stats);
++
++    if (!mon->json) {
++        virReportError(VIR_ERR_OPERATION_UNSUPPORTED, "%s",
++                       _("block capacity/size info requires JSON monitor"));
++        return -1;
++    }
++
++    return qemuMonitorJSONBlockStatsUpdateCapacity(mon, stats);
++}
++
++
+ /* Return 0 and update @nparams with the number of block stats
+  * QEMU supports if success. Return -1 if failure.
+  */
+diff --git a/src/qemu/qemu_monitor.h b/src/qemu/qemu_monitor.h
+index 2551272..9c798cf 100644
+--- a/src/qemu/qemu_monitor.h
++++ b/src/qemu/qemu_monitor.h
+@@ -358,12 +358,18 @@ struct _qemuBlockStats {
+     long long wr_total_times;
+     long long flush_req;
+     long long flush_total_times;
++    unsigned long long capacity;
++    unsigned long long physical;
+ };
+ 
+ int qemuMonitorGetAllBlockStatsInfo(qemuMonitorPtr mon,
+                                     virHashTablePtr *ret_stats)
+     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2);
+ 
++int qemuMonitorBlockStatsUpdateCapacity(qemuMonitorPtr mon,
++                                        virHashTablePtr stats)
++    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2);
++
+ int qemuMonitorGetBlockStatsParamsNumber(qemuMonitorPtr mon,
+                                          int *nparams);
+ 
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index 2b23347..b0a9c99 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -1899,6 +1899,84 @@ int qemuMonitorJSONGetAllBlockStatsInfo(qemuMonitorPtr mon,
+ }
+ 
+ 
++int qemuMonitorJSONBlockStatsUpdateCapacity(qemuMonitorPtr mon,
++                                            virHashTablePtr stats)
++{
++    int ret = -1;
++    int rc;
++    size_t i;
++    virJSONValuePtr cmd;
++    virJSONValuePtr reply = NULL;
++    virJSONValuePtr devices;
++
++    if (!(cmd = qemuMonitorJSONMakeCommand("query-block", NULL)))
++        return -1;
++
++    if ((rc = qemuMonitorJSONCommand(mon, cmd, &reply)) < 0)
++        goto cleanup;
++
++    if (qemuMonitorJSONCheckError(cmd, reply) < 0)
++        goto cleanup;
++
++    devices = virJSONValueObjectGet(reply, "return");
++    if (!devices || devices->type != VIR_JSON_TYPE_ARRAY) {
++        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                       _("query-block reply was missing device list"));
++        goto cleanup;
++    }
++
++    for (i = 0; i < virJSONValueArraySize(devices); i++) {
++        virJSONValuePtr dev = virJSONValueArrayGet(devices, i);
++        virJSONValuePtr inserted;
++        virJSONValuePtr image;
++        qemuBlockStatsPtr bstats;
++        const char *devname;
++
++        if (!dev || dev->type != VIR_JSON_TYPE_OBJECT) {
++            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                           _("query-block device entry was not "
++                             "in expected format"));
++            goto cleanup;
++        }
++
++        if (!(devname = virJSONValueObjectGetString(dev, "device"))) {
++            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                           _("query-block device entry was not "
++                             "in expected format"));
++            goto cleanup;
++        }
++
++        if (STRPREFIX(devname, QEMU_DRIVE_HOST_PREFIX))
++            devname += strlen(QEMU_DRIVE_HOST_PREFIX);
++
++        /* ignore missing info */
++        if (!(bstats = virHashLookup(stats, devname)))
++            continue;
++
++        /* drive may be empty */
++        if (!(inserted = virJSONValueObjectGet(dev, "inserted")) ||
++            !(image = virJSONValueObjectGet(inserted, "image")))
++            continue;
++
++        if (virJSONValueObjectGetNumberUlong(image, "virtual-size",
++                                             &bstats->capacity) < 0)
++            continue;
++
++        /* if actual-size is missing, image is not thin provisioned */
++        if (virJSONValueObjectGetNumberUlong(image, "actual-size",
++                                             &bstats->physical) < 0)
++            bstats->physical = bstats->capacity;
++    }
++
++    ret = 0;
++
++ cleanup:
++    virJSONValueFree(cmd);
++    virJSONValueFree(reply);
++    return ret;
++}
++
++
+ int qemuMonitorJSONGetBlockStatsParamsNumber(qemuMonitorPtr mon,
+                                              int *nparams)
+ {
+diff --git a/src/qemu/qemu_monitor_json.h b/src/qemu/qemu_monitor_json.h
+index 8e65c4c..289bd11 100644
+--- a/src/qemu/qemu_monitor_json.h
++++ b/src/qemu/qemu_monitor_json.h
+@@ -81,6 +81,8 @@ int qemuMonitorJSONGetBlockStatsInfo(qemuMonitorPtr mon,
+                                      long long *errs);
+ int qemuMonitorJSONGetAllBlockStatsInfo(qemuMonitorPtr mon,
+                                         virHashTablePtr *ret_stats);
++int qemuMonitorJSONBlockStatsUpdateCapacity(qemuMonitorPtr mon,
++                                            virHashTablePtr stats);
+ int qemuMonitorJSONGetBlockStatsParamsNumber(qemuMonitorPtr mon,
+                                              int *nparams);
+ int qemuMonitorJSONGetBlockExtent(qemuMonitorPtr mon,
+-- 
+2.1.2
+

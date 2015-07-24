@@ -1,0 +1,45 @@
+From 977ca1a312cd9ade47cac3a9168894a4d796f637 Mon Sep 17 00:00:00 2001
+Message-Id: <977ca1a312cd9ade47cac3a9168894a4d796f637@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Tue, 4 Nov 2014 13:47:29 +0100
+Subject: [PATCH] Do not probe for power mgmt capabilities in lxc emulator
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+It fails after 30 seconds with this error:
+error : virDBusCall:1429 : error from service: CanSuspend:
+Did not receive a reply. Possible causes include: the remote
+application did not send a reply, the message bus security
+policy blocked the reply, the reply timeout expired, or the
+network connection was broken.
+
+Only probe for the power mgmt capabilities when driver is non-NULL.
+This speeds up domain startup by 30 seconds.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1159227
+(cherry picked from commit 7ead1a5d91a93b5614deeef7b0227bffcea9740d)
+Signed-off-by: Ján Tomko <jtomko@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/lxc/lxc_conf.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/src/lxc/lxc_conf.c b/src/lxc/lxc_conf.c
+index 17df7a8..e713ff8 100644
+--- a/src/lxc/lxc_conf.c
++++ b/src/lxc/lxc_conf.c
+@@ -82,7 +82,9 @@ virCapsPtr virLXCDriverCapsInit(virLXCDriverPtr driver)
+         VIR_WARN("Failed to query host NUMA topology, disabling NUMA capabilities");
+     }
+ 
+-    if (virNodeSuspendGetTargetMask(&caps->host.powerMgmt) < 0)
++    /* Only probe for power management capabilities in the driver,
++     * not in the emulator */
++    if (driver && virNodeSuspendGetTargetMask(&caps->host.powerMgmt) < 0)
+         VIR_WARN("Failed to get host power management capabilities");
+ 
+     if (virGetHostUUID(caps->host.host_uuid)) {
+-- 
+2.1.3
+

@@ -1,0 +1,34 @@
+From b868cc78d390d093e062ef5e9caa93954f15d193 Mon Sep 17 00:00:00 2001
+Message-Id: <b868cc78d390d093e062ef5e9caa93954f15d193@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Fri, 26 Sep 2014 13:45:01 +0200
+Subject: [PATCH] Check for NULL in qemu monitor event filter
+
+When virConnectDomainQemuMonitorEventRegister is called with the
+VIR_CONNECT_DOMAIN_QEMU_MONITOR_EVENT_REGISTER_REGEX flag,
+ignore the flag instead of crashing.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1144920
+(cherry picked from commit b987c4c3f4829eb8a0134b687cb9748ff724f98a)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/conf/domain_event.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/conf/domain_event.c b/src/conf/domain_event.c
+index bf187cd..3504b34 100644
+--- a/src/conf/domain_event.c
++++ b/src/conf/domain_event.c
+@@ -1798,7 +1798,7 @@ virDomainQemuMonitorEventStateRegisterID(virConnectPtr conn,
+     if (VIR_ALLOC(data) < 0)
+         return -1;
+     data->flags = flags;
+-    if (flags != -1) {
++    if (event && flags != -1) {
+         int rflags = REG_NOSUB;
+ 
+         if (flags & VIR_CONNECT_DOMAIN_QEMU_MONITOR_EVENT_REGISTER_NOCASE)
+-- 
+2.1.1
+

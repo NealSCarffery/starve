@@ -1,0 +1,38 @@
+From cb0430d18f4c17369642a099ce865947c16c2d46 Mon Sep 17 00:00:00 2001
+Message-Id: <cb0430d18f4c17369642a099ce865947c16c2d46@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Tue, 28 Oct 2014 22:28:45 -0400
+Subject: [PATCH] hotplug: Check for alias in disk detach
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1141621
+
+If the QEMU_CAPS_DEVICE is set, then ensure the disk device alias has
+been properly set in prior to making the calls to detach the device.
+
+(cherry picked from commit 5d02a9a0c5b0d033cf1a68c004bf3cb290666fa8)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_hotplug.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/qemu/qemu_hotplug.c b/src/qemu/qemu_hotplug.c
+index e7aa2f0..246b4b9 100644
+--- a/src/qemu/qemu_hotplug.c
++++ b/src/qemu/qemu_hotplug.c
+@@ -3008,6 +3008,12 @@ qemuDomainDetachVirtioDiskDevice(virQEMUDriverPtr driver,
+         }
+     }
+ 
++    if (virQEMUCapsGet(priv->qemuCaps, QEMU_CAPS_DEVICE) &&
++        !detach->info.alias) {
++        if (qemuAssignDeviceDiskAlias(vm->def, detach, priv->qemuCaps) < 0)
++            goto cleanup;
++    }
++
+     qemuDomainMarkDeviceForRemoval(vm, &detach->info);
+ 
+     qemuDomainObjEnterMonitor(driver, vm);
+-- 
+2.1.3
+

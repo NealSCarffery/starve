@@ -1,0 +1,38 @@
+From 0d9504047c2f88a6c6ab176784840170a1ef0707 Mon Sep 17 00:00:00 2001
+Message-Id: <0d9504047c2f88a6c6ab176784840170a1ef0707@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Tue, 28 Oct 2014 22:28:48 -0400
+Subject: [PATCH] hotplug: Check for alias in net detach
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1141621
+
+If the QEMU_CAPS_DEVICE is set, then ensure the host device alias has
+been properly set before making the calls to detach the device
+
+(cherry picked from commit 96af61ddc1d1297200a497eb73628f0c3b0e3ad3)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_hotplug.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/qemu/qemu_hotplug.c b/src/qemu/qemu_hotplug.c
+index f1735d7..fd4a8f2 100644
+--- a/src/qemu/qemu_hotplug.c
++++ b/src/qemu/qemu_hotplug.c
+@@ -3540,6 +3540,12 @@ qemuDomainDetachNetDevice(virQEMUDriverPtr driver,
+         }
+     }
+ 
++    if (virQEMUCapsGet(priv->qemuCaps, QEMU_CAPS_DEVICE) &&
++        !detach->info.alias) {
++        if (qemuAssignDeviceNetAlias(vm->def, detach, -1) < 0)
++            goto cleanup;
++    }
++
+     qemuDomainMarkDeviceForRemoval(vm, &detach->info);
+ 
+     qemuDomainObjEnterMonitor(driver, vm);
+-- 
+2.1.3
+

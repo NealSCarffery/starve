@@ -1,0 +1,49 @@
+From 4bba1d479ff2e68a3c69bcc6e8c482d07ec728d9 Mon Sep 17 00:00:00 2001
+Message-Id: <4bba1d479ff2e68a3c69bcc6e8c482d07ec728d9@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Thu, 11 Dec 2014 13:28:09 +0100
+Subject: [PATCH] Do not format CPU features without a model
+
+For host-passthrough CPU we don't honor the CPU
+features specified in the XML, but we allow
+outputting them via the UPDATE_CPU flag for dumpxml,
+this gives user a rough idea of what features the CPU
+might have.
+
+After restoring a managedsave'd domain, the features
+might end up in the live status XML (in /var/run) without
+the model. This XML cannot be parsed by the daemon after
+restart and the domain might disappear.
+
+This fix skips formatting the features for HOST_PASSTHROUGH
+when UPDATE_CPU is not specified, so the newly restored domains
+and newly created snapshots won't be affected.
+
+Note: this doesn't fix existing snapshots or already restored
+running domains.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1030793
+https://bugzilla.redhat.com/show_bug.cgi?id=1151885
+(cherry picked from commit dd324bb2703b9cf619c521b2a04f186cd9734f0a)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/conf/cpu_conf.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/conf/cpu_conf.c b/src/conf/cpu_conf.c
+index e190641..72555a7 100644
+--- a/src/conf/cpu_conf.c
++++ b/src/conf/cpu_conf.c
+@@ -664,7 +664,7 @@ virCPUDefFormatBuf(virBufferPtr buf,
+         virBufferAddLit(buf, "/>\n");
+     }
+ 
+-    for (i = 0; i < def->nfeatures; i++) {
++    for (i = 0; formatModel && i < def->nfeatures; i++) {
+         virCPUFeatureDefPtr feature = def->features + i;
+ 
+         if (!feature->name) {
+-- 
+2.2.0
+

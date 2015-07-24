@@ -1,0 +1,51 @@
+From 33cfcaf372eba54ed1da4969a95281cf12b78a66 Mon Sep 17 00:00:00 2001
+Message-Id: <33cfcaf372eba54ed1da4969a95281cf12b78a66@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Thu, 18 Sep 2014 09:30:03 -0400
+Subject: [PATCH] Fixes for domains with no iothreads
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1101574
+
+Plug a memory leak and silence a warning.
+
+(cherry picked from commit c1480871bbf4de10a06efd39dc0a61ae3889db2d)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_cgroup.c  | 2 +-
+ src/qemu/qemu_process.c | 6 ++++--
+ 2 files changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/src/qemu/qemu_cgroup.c b/src/qemu/qemu_cgroup.c
+index 9d39370..7c6b2c1 100644
+--- a/src/qemu/qemu_cgroup.c
++++ b/src/qemu/qemu_cgroup.c
+@@ -1131,7 +1131,7 @@ qemuSetupCgroupForIOThreads(virDomainObjPtr vm)
+     if (priv->cgroup == NULL)
+         return 0;
+ 
+-    if (priv->niothreadpids == 0) {
++    if (def->iothreads && priv->niothreadpids == 0) {
+         VIR_WARN("Unable to get iothreads' pids.");
+         return 0;
+     }
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index 3b43912..776edee 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -2116,8 +2116,10 @@ qemuProcessDetectIOThreadPIDs(virQEMUDriverPtr driver,
+         goto cleanup;
+ 
+     /* Nothing to do */
+-    if (niothreads == 0)
+-        return 0;
++    if (niothreads == 0) {
++        ret = 0;
++        goto cleanup;
++    }
+ 
+     if (niothreads != vm->def->iothreads) {
+         virReportError(VIR_ERR_INTERNAL_ERROR,
+-- 
+2.1.0
+

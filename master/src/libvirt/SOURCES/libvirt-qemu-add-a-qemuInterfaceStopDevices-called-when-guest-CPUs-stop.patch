@@ -1,0 +1,174 @@
+From 9957213b20eb24113a8cf1d939674e4bb3d6a3b7 Mon Sep 17 00:00:00 2001
+Message-Id: <9957213b20eb24113a8cf1d939674e4bb3d6a3b7@dist-git>
+From: Laine Stump <laine@laine.org>
+Date: Sun, 14 Dec 2014 23:44:51 -0500
+Subject: [PATCH] qemu: add a qemuInterfaceStopDevices(), called when guest
+ CPUs stop
+
+This patch is a part of a more complete fix for:
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=1081461
+
+We now have a qemuInterfaceStartDevices() which does the final
+activation needed for the host-side tap/macvtap devices that are used
+for qemu network connections. It will soon make sense to have the
+converse qemuInterfaceStopDevices() which will undo whatever was done
+during qemuInterfaceStartDevices().
+
+A function to "stop" a single device has also been added, and is
+called from the appropriate place in qemuDomainDetachNetDevice(),
+although this is currently unnecessary - the device is going to
+immediately be deleted anyway, so any extra "deactivation" will be for
+naught. The call is included for completeness, though, in anticipation
+that in the future there may be some required action that *isn't*
+nullified by deleting the device.
+
+(cherry picked from commit c5a54917d5ae97653d29dbfe4995f2efcf5717d6)
+
+Conflicts:
+  src/qemu/qemu_hotplug.c
+   - again context around chunk changed due to centralization of
+     bandwidth setting upstream.
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_hotplug.c   |  8 ++++++
+ src/qemu/qemu_interface.c | 70 ++++++++++++++++++++++++++++++++++++++++++++++-
+ src/qemu/qemu_interface.h |  2 ++
+ src/qemu/qemu_process.c   |  3 ++
+ 4 files changed, 82 insertions(+), 1 deletion(-)
+
+diff --git a/src/qemu/qemu_hotplug.c b/src/qemu/qemu_hotplug.c
+index aaa7e21..84d2218 100644
+--- a/src/qemu/qemu_hotplug.c
++++ b/src/qemu/qemu_hotplug.c
+@@ -3551,6 +3551,14 @@ qemuDomainDetachNetDevice(virQEMUDriverPtr driver,
+             goto cleanup;
+     }
+ 
++    /* deactivate the tap/macvtap device on the host (currently this
++     * isn't necessary, as everything done in
++     * qemuInterfaceStopDevice() is made meaningless when the device
++     * is deleted anyway, but in the future it may be important, and
++     * doesn't hurt anything for now)
++     */
++    ignore_value(qemuInterfaceStopDevice(detach));
++
+     qemuDomainMarkDeviceForRemoval(vm, &detach->info);
+ 
+     qemuDomainObjEnterMonitor(driver, vm);
+diff --git a/src/qemu/qemu_interface.c b/src/qemu/qemu_interface.c
+index b0f0c5d..2d33075 100644
+--- a/src/qemu/qemu_interface.c
++++ b/src/qemu/qemu_interface.c
+@@ -41,8 +41,9 @@ int
+ qemuInterfaceStartDevice(virDomainNetDefPtr net)
+ {
+     int ret = -1;
++    virDomainNetType actualType = virDomainNetGetActualType(net);
+ 
+-    switch (virDomainNetGetActualType(net)) {
++    switch (actualType) {
+     case VIR_DOMAIN_NET_TYPE_BRIDGE:
+     case VIR_DOMAIN_NET_TYPE_NETWORK:
+         break;
+@@ -98,3 +99,70 @@ qemuInterfaceStartDevices(virDomainDefPtr def)
+     }
+     return 0;
+ }
++
++
++/**
++ * qemuInterfaceStopDevice:
++ * @net: net device to stop
++ *
++ * Based upon the type of device provided, perform the appropriate
++ * work to deactivate the device so that packets aren't forwarded to
++ * it from the rest of the network.
++ */
++int
++qemuInterfaceStopDevice(virDomainNetDefPtr net)
++{
++    int ret = -1;
++    virDomainNetType actualType = virDomainNetGetActualType(net);
++
++    switch (actualType) {
++    case VIR_DOMAIN_NET_TYPE_BRIDGE:
++    case VIR_DOMAIN_NET_TYPE_NETWORK:
++        break;
++
++    case VIR_DOMAIN_NET_TYPE_DIRECT:
++        /* macvtap interfaces need to be marked !IFF_UP (ie "down") to
++         * prevent any host-generated traffic sent from this interface
++         * from putting bad info into the arp caches of other machines
++         * on this network.
++         */
++        if (virNetDevSetOnline(net->ifname, false) < 0)
++            goto cleanup;
++        break;
++
++    case VIR_DOMAIN_NET_TYPE_USER:
++    case VIR_DOMAIN_NET_TYPE_ETHERNET:
++    case VIR_DOMAIN_NET_TYPE_VHOSTUSER:
++    case VIR_DOMAIN_NET_TYPE_SERVER:
++    case VIR_DOMAIN_NET_TYPE_CLIENT:
++    case VIR_DOMAIN_NET_TYPE_MCAST:
++    case VIR_DOMAIN_NET_TYPE_INTERNAL:
++    case VIR_DOMAIN_NET_TYPE_HOSTDEV:
++    case VIR_DOMAIN_NET_TYPE_LAST:
++        /* these types all require no action */
++        break;
++    }
++
++    ret = 0;
++ cleanup:
++    return ret;
++}
++
++/**
++ * qemuInterfaceStopDevices:
++ * @def: domain definition
++ *
++ * Make all interfaces associated with this domain inaccessible from
++ * the rest of the network.
++ */
++int
++qemuInterfaceStopDevices(virDomainDefPtr def)
++{
++    size_t i;
++
++    for (i = 0; i < def->nnets; i++) {
++        if (qemuInterfaceStopDevice(def->nets[i]) < 0)
++            return -1;
++    }
++    return 0;
++}
+diff --git a/src/qemu/qemu_interface.h b/src/qemu/qemu_interface.h
+index d040f52..b4c1efc 100644
+--- a/src/qemu/qemu_interface.h
++++ b/src/qemu/qemu_interface.h
+@@ -28,5 +28,7 @@
+ 
+ int qemuInterfaceStartDevice(virDomainNetDefPtr net);
+ int qemuInterfaceStartDevices(virDomainDefPtr def);
++int qemuInterfaceStopDevice(virDomainNetDefPtr net);
++int qemuInterfaceStopDevices(virDomainDefPtr def);
+ 
+ #endif /* __QEMU_INTERFACE_H__ */
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index 627755d..d7b2688 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -3170,6 +3170,9 @@ int qemuProcessStopCPUs(virQEMUDriverPtr driver,
+     if (ret < 0)
+         goto cleanup;
+ 
++    /* de-activate netdevs after stopping CPUs */
++    ignore_value(qemuInterfaceStopDevices(vm->def));
++
+     if (priv->job.current)
+         ignore_value(virTimeMillisNow(&priv->job.current->stopped));
+ 
+-- 
+2.2.0
+

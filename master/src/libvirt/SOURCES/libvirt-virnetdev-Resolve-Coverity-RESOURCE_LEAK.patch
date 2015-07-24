@@ -1,0 +1,33 @@
+From 92d09f6688890d87498c7cea28605a89c150638e Mon Sep 17 00:00:00 2001
+Message-Id: <92d09f6688890d87498c7cea28605a89c150638e@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Mon, 3 Nov 2014 10:00:26 -0500
+Subject: [PATCH] virnetdev: Resolve Coverity RESOURCE_LEAK
+
+https://bugzilla.redhat.com/show_bug.cgi?id=848199
+
+virFileReadAll returns a chunk of memory that needs to be free'd when
+done
+
+(cherry picked from commit 9babbaa5fe38a433cef759a930e49d8291f040a8)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/util/virnetdev.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/util/virnetdev.c b/src/util/virnetdev.c
+index e3f6bd0..0382d00 100644
+--- a/src/util/virnetdev.c
++++ b/src/util/virnetdev.c
+@@ -2193,6 +2193,7 @@ static int virNetDevGetMcastList(const char *ifname,
+ 
+     ret = 0;
+  cleanup:
++    VIR_FREE(buf);
+     VIR_FREE(entry);
+ 
+     return ret;
+-- 
+2.1.3
+

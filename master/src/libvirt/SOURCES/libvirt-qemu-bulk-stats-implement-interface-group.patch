@@ -1,0 +1,174 @@
+From c491890f920ac0549ec62cc354aea84165714c23 Mon Sep 17 00:00:00 2001
+Message-Id: <c491890f920ac0549ec62cc354aea84165714c23@dist-git>
+From: Francesco Romani <fromani@redhat.com>
+Date: Wed, 1 Oct 2014 11:20:15 +0200
+Subject: [PATCH] qemu: bulk stats: implement interface group
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1113116
+
+This patch implements the VIR_DOMAIN_STATS_INTERFACE group of
+statistics.
+
+Signed-off-by: Francesco Romani <fromani@redhat.com>
+Signed-off-by: Peter Krempa <pkrempa@redhat.com>
+(cherry picked from commit c8e523722ecfced8e937f106b0a07be6c32febdb)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ include/libvirt/libvirt.h.in |  1 +
+ src/libvirt.c                | 14 +++++++
+ src/qemu/qemu_driver.c       | 95 ++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 110 insertions(+)
+
+diff --git a/include/libvirt/libvirt.h.in b/include/libvirt/libvirt.h.in
+index 8754e1b..72aa47d 100644
+--- a/include/libvirt/libvirt.h.in
++++ b/include/libvirt/libvirt.h.in
+@@ -2517,6 +2517,7 @@ typedef enum {
+     VIR_DOMAIN_STATS_CPU_TOTAL = (1 << 1), /* return domain CPU info */
+     VIR_DOMAIN_STATS_BALLOON = (1 << 2), /* return domain balloon info */
+     VIR_DOMAIN_STATS_VCPU = (1 << 3), /* return domain virtual CPU info */
++    VIR_DOMAIN_STATS_INTERFACE = (1 << 4), /* return domain interfaces info */
+ } virDomainStatsTypes;
+ 
+ typedef enum {
+diff --git a/src/libvirt.c b/src/libvirt.c
+index f2f6f43..46d3e22 100644
+--- a/src/libvirt.c
++++ b/src/libvirt.c
+@@ -21581,6 +21581,20 @@ virConnectGetDomainCapabilities(virConnectPtr conn,
+  * "vcpu.<num>.time" - virtual cpu time spent by virtual CPU <num>
+  *                     as unsigned long long.
+  *
++ * VIR_DOMAIN_STATS_INTERFACE: Return network interface statistics.
++ * The typed parameter keys are in this format:
++ * "net.count" - number of network interfaces on this domain
++ *               as unsigned int.
++ * "net.<num>.name" - name of the interface <num> as string.
++ * "net.<num>.rx.bytes" - bytes received as unsigned long long.
++ * "net.<num>.rx.pkts" - packets received as unsigned long long.
++ * "net.<num>.rx.errs" - receive errors as unsigned long long.
++ * "net.<num>.rx.drop" - receive packets dropped as unsigned long long.
++ * "net.<num>.tx.bytes" - bytes transmitted as unsigned long long.
++ * "net.<num>.tx.pkts" - packets transmitted as unsigned long long.
++ * "net.<num>.tx.errs" - transmission errors as unsigned long long.
++ * "net.<num>.tx.drop" - transmit packets dropped as unsigned long long.
++ *
+  * Using 0 for @stats returns all stats groups supported by the given
+  * hypervisor.
+  *
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index ef2e401..3a46c6d 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -17599,6 +17599,100 @@ qemuDomainGetStatsVcpu(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
+     return ret;
+ }
+ 
++#define QEMU_ADD_COUNT_PARAM(record, maxparams, type, count) \
++do { \
++    char param_name[VIR_TYPED_PARAM_FIELD_LENGTH]; \
++    snprintf(param_name, VIR_TYPED_PARAM_FIELD_LENGTH, "%s.count", type); \
++    if (virTypedParamsAddUInt(&(record)->params, \
++                              &(record)->nparams, \
++                              maxparams, \
++                              param_name, \
++                              count) < 0) \
++        return -1; \
++} while (0)
++
++#define QEMU_ADD_NAME_PARAM(record, maxparams, type, num, name) \
++do { \
++    char param_name[VIR_TYPED_PARAM_FIELD_LENGTH]; \
++    snprintf(param_name, VIR_TYPED_PARAM_FIELD_LENGTH, \
++             "%s.%zu.name", type, num); \
++    if (virTypedParamsAddString(&(record)->params, \
++                                &(record)->nparams, \
++                                maxparams, \
++                                param_name, \
++                                name) < 0) \
++        return -1; \
++} while (0)
++
++#define QEMU_ADD_NET_PARAM(record, maxparams, num, name, value) \
++do { \
++    char param_name[VIR_TYPED_PARAM_FIELD_LENGTH]; \
++    snprintf(param_name, VIR_TYPED_PARAM_FIELD_LENGTH, \
++             "net.%zu.%s", num, name); \
++    if (value >= 0 && virTypedParamsAddULLong(&(record)->params, \
++                                              &(record)->nparams, \
++                                              maxparams, \
++                                              param_name, \
++                                              value) < 0) \
++        return -1; \
++} while (0)
++
++static int
++qemuDomainGetStatsInterface(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
++                            virDomainObjPtr dom,
++                            virDomainStatsRecordPtr record,
++                            int *maxparams,
++                            unsigned int privflags ATTRIBUTE_UNUSED)
++{
++    size_t i;
++    struct _virDomainInterfaceStats tmp;
++
++    if (!virDomainObjIsActive(dom))
++        return 0;
++
++    QEMU_ADD_COUNT_PARAM(record, maxparams, "net", dom->def->nnets);
++
++    /* Check the path is one of the domain's network interfaces. */
++    for (i = 0; i < dom->def->nnets; i++) {
++        if (!dom->def->nets[i]->ifname)
++            continue;
++
++        memset(&tmp, 0, sizeof(tmp));
++
++        QEMU_ADD_NAME_PARAM(record, maxparams,
++                            "net", i, dom->def->nets[i]->ifname);
++
++        if (virNetInterfaceStats(dom->def->nets[i]->ifname, &tmp) < 0) {
++            virResetLastError();
++            continue;
++        }
++
++        QEMU_ADD_NET_PARAM(record, maxparams, i,
++                           "rx.bytes", tmp.rx_bytes);
++        QEMU_ADD_NET_PARAM(record, maxparams, i,
++                           "rx.pkts", tmp.rx_packets);
++        QEMU_ADD_NET_PARAM(record, maxparams, i,
++                           "rx.errs", tmp.rx_errs);
++        QEMU_ADD_NET_PARAM(record, maxparams, i,
++                           "rx.drop", tmp.rx_drop);
++        QEMU_ADD_NET_PARAM(record, maxparams, i,
++                           "tx.bytes", tmp.tx_bytes);
++        QEMU_ADD_NET_PARAM(record, maxparams, i,
++                           "tx.pkts", tmp.tx_packets);
++        QEMU_ADD_NET_PARAM(record, maxparams, i,
++                           "tx.errs", tmp.tx_errs);
++        QEMU_ADD_NET_PARAM(record, maxparams, i,
++                           "tx.drop", tmp.tx_drop);
++    }
++
++    return 0;
++}
++
++#undef QEMU_ADD_NET_PARAM
++
++#undef QEMU_ADD_NAME_PARAM
++
++#undef QEMU_ADD_COUNT_PARAM
+ 
+ typedef int
+ (*qemuDomainGetStatsFunc)(virQEMUDriverPtr driver,
+@@ -17618,6 +17712,7 @@ static struct qemuDomainGetStatsWorker qemuDomainGetStatsWorkers[] = {
+     { qemuDomainGetStatsCpu, VIR_DOMAIN_STATS_CPU_TOTAL, false },
+     { qemuDomainGetStatsBalloon, VIR_DOMAIN_STATS_BALLOON, true },
+     { qemuDomainGetStatsVcpu, VIR_DOMAIN_STATS_VCPU, false },
++    { qemuDomainGetStatsInterface, VIR_DOMAIN_STATS_INTERFACE, false },
+     { NULL, 0, false }
+ };
+ 
+-- 
+2.1.2
+

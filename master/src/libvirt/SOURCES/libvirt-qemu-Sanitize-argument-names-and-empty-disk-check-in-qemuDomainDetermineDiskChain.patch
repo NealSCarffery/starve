@@ -1,0 +1,64 @@
+From 44b0bb2f62a67823d30ec5ae2b3b77883fed5bdc Mon Sep 17 00:00:00 2001
+Message-Id: <44b0bb2f62a67823d30ec5ae2b3b77883fed5bdc@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Wed, 24 Sep 2014 11:01:28 +0200
+Subject: [PATCH] qemu: Sanitize argument names and empty disk check in
+ qemuDomainDetermineDiskChain
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1138231
+
+Reuse virStorageSourceIsEmpty and rename "force" argument to
+"force_probe".
+
+(cherry picked from commit 172ca0e748714799bc0abec1144d7896e681728b)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_domain.c | 8 +++-----
+ src/qemu/qemu_domain.h | 2 +-
+ 2 files changed, 4 insertions(+), 6 deletions(-)
+
+diff --git a/src/qemu/qemu_domain.c b/src/qemu/qemu_domain.c
+index e471af5..3766ceb 100644
+--- a/src/qemu/qemu_domain.c
++++ b/src/qemu/qemu_domain.c
+@@ -2711,20 +2711,18 @@ int
+ qemuDomainDetermineDiskChain(virQEMUDriverPtr driver,
+                              virDomainObjPtr vm,
+                              virDomainDiskDefPtr disk,
+-                             bool force)
++                             bool force_probe)
+ {
+     virQEMUDriverConfigPtr cfg = virQEMUDriverGetConfig(driver);
+     int ret = 0;
+     uid_t uid;
+     gid_t gid;
+-    int type = virStorageSourceGetActualType(disk->src);
+ 
+-    if (type != VIR_STORAGE_TYPE_NETWORK &&
+-        !disk->src->path)
++    if (virStorageSourceIsEmpty(disk->src))
+         goto cleanup;
+ 
+     if (disk->src->backingStore) {
+-        if (force)
++        if (force_probe)
+             virStorageSourceBackingStoreClear(disk->src);
+         else
+             goto cleanup;
+diff --git a/src/qemu/qemu_domain.h b/src/qemu/qemu_domain.h
+index d21acd7..c1d1edf 100644
+--- a/src/qemu/qemu_domain.h
++++ b/src/qemu/qemu_domain.h
+@@ -370,7 +370,7 @@ int qemuDomainCheckDiskPresence(virQEMUDriverPtr driver,
+ int qemuDomainDetermineDiskChain(virQEMUDriverPtr driver,
+                                  virDomainObjPtr vm,
+                                  virDomainDiskDefPtr disk,
+-                                 bool force);
++                                 bool force_probe);
+ 
+ int qemuDomainStorageFileInit(virQEMUDriverPtr driver,
+                               virDomainObjPtr vm,
+-- 
+2.1.1
+

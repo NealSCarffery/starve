@@ -1,0 +1,253 @@
+From bcdc18a163fe888c98eda477eb265541ed12357a Mon Sep 17 00:00:00 2001
+Message-Id: <bcdc18a163fe888c98eda477eb265541ed12357a@dist-git>
+From: Francesco Romani <fromani@redhat.com>
+Date: Wed, 1 Oct 2014 11:20:24 +0200
+Subject: [PATCH] qemu: bulk stats: add block allocation information
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1113116
+
+Management software wants to be able to allocate disk space on demand.
+To support this they need keep track of the space occupation of the
+block device.  This information is reported by qemu as part of block
+stats.
+
+This patch extend the block information in the bulk stats with the
+allocation information.
+
+To keep the same behaviour a helper is extracted from
+qemuMonitorJSONGetBlockExtent in order to get per-device allocation
+information.
+
+Signed-off-by: Francesco Romani <fromani@redhat.com>
+Signed-off-by: Peter Krempa <pkrempa@redhat.com>
+(cherry picked from commit 7557ddf8be79f9687bc8f69946aba71c4c29d7d5)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/libvirt.c                |  6 +++
+ src/qemu/qemu_driver.c       | 27 +++++++++++++
+ src/qemu/qemu_monitor.h      |  1 +
+ src/qemu/qemu_monitor_json.c | 91 ++++++++++++++++++++++++++++++++++----------
+ 4 files changed, 105 insertions(+), 20 deletions(-)
+
+diff --git a/src/libvirt.c b/src/libvirt.c
+index af89aa2..5c086c8 100644
+--- a/src/libvirt.c
++++ b/src/libvirt.c
+@@ -21615,6 +21615,12 @@ virConnectGetDomainCapabilities(virConnectPtr conn,
+  *                          unsigned long long.
+  * "block.<num>.errors" - Xen only: the 'oo_req' value as
+  *                        unsigned long long.
++ * "block.<num>.allocation" - offset of the highest written sector
++ *                            as unsigned long long.
++ * "block.<num>.capacity" - logical size in bytes of the block device backing
++ *                          image as unsigned long long.
++ * "block.<num>.physical" - physical size in bytes of the container of the
++ *                          backing image as unsigned long long.
+  *
+  * Note that entire stats groups or individual stat fields may be missing from
+  * the output in case they are not supported by the given hypervisor, are not
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 1a16da7..9586c43 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -17705,6 +17705,19 @@ do { \
+         goto cleanup; \
+ } while (0)
+ 
++#define QEMU_ADD_BLOCK_PARAM_ULL(record, maxparams, num, name, value) \
++do { \
++    char param_name[VIR_TYPED_PARAM_FIELD_LENGTH]; \
++    snprintf(param_name, VIR_TYPED_PARAM_FIELD_LENGTH, \
++             "block.%zu.%s", num, name); \
++    if (virTypedParamsAddULLong(&(record)->params, \
++                                &(record)->nparams, \
++                                maxparams, \
++                                param_name, \
++                                value) < 0) \
++        goto cleanup; \
++} while (0)
++
+ static int
+ qemuDomainGetStatsBlock(virQEMUDriverPtr driver,
+                         virDomainObjPtr dom,
+@@ -17723,6 +17736,7 @@ qemuDomainGetStatsBlock(virQEMUDriverPtr driver,
+ 
+     qemuDomainObjEnterMonitor(driver, dom);
+     rc = qemuMonitorGetAllBlockStatsInfo(priv->mon, &stats);
++    ignore_value(qemuMonitorBlockStatsUpdateCapacity(priv->mon, stats));
+     qemuDomainObjExitMonitor(driver, dom);
+ 
+     if (rc < 0) {
+@@ -17759,6 +17773,17 @@ qemuDomainGetStatsBlock(virQEMUDriverPtr driver,
+                                 "fl.reqs", entry->flush_req);
+         QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, i,
+                                 "fl.times", entry->flush_total_times);
++
++        QEMU_ADD_BLOCK_PARAM_ULL(record, maxparams, i,
++                                 "allocation", entry->wr_highest_offset);
++
++        if (entry->capacity)
++            QEMU_ADD_BLOCK_PARAM_ULL(record, maxparams, i,
++                                     "capacity", entry->capacity);
++        if (entry->physical)
++            QEMU_ADD_BLOCK_PARAM_ULL(record, maxparams, i,
++                                     "physical", entry->physical);
++
+     }
+ 
+     ret = 0;
+@@ -17770,6 +17795,8 @@ qemuDomainGetStatsBlock(virQEMUDriverPtr driver,
+ 
+ #undef QEMU_ADD_BLOCK_PARAM_LL
+ 
++#undef QEMU_ADD_BLOCK_PARAM_ULL
++
+ #undef QEMU_ADD_NAME_PARAM
+ 
+ #undef QEMU_ADD_COUNT_PARAM
+diff --git a/src/qemu/qemu_monitor.h b/src/qemu/qemu_monitor.h
+index 9c798cf..5bffca8 100644
+--- a/src/qemu/qemu_monitor.h
++++ b/src/qemu/qemu_monitor.h
+@@ -360,6 +360,7 @@ struct _qemuBlockStats {
+     long long flush_total_times;
+     unsigned long long capacity;
+     unsigned long long physical;
++    unsigned long long wr_highest_offset;
+ };
+ 
+ int qemuMonitorGetAllBlockStatsInfo(qemuMonitorPtr mon,
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index b0a9c99..afb713d 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -1756,6 +1756,40 @@ int qemuMonitorJSONGetBlockStatsInfo(qemuMonitorPtr mon,
+ }
+ 
+ 
++typedef enum {
++    QEMU_MONITOR_BLOCK_EXTENT_ERROR_OK,
++    QEMU_MONITOR_BLOCK_EXTENT_ERROR_NOPARENT,
++    QEMU_MONITOR_BLOCK_EXTENT_ERROR_NOSTATS,
++    QEMU_MONITOR_BLOCK_EXTENT_ERROR_NOOFFSET,
++} qemuMonitorBlockExtentError;
++
++
++static int
++qemuMonitorJSONDevGetBlockExtent(virJSONValuePtr dev,
++                                 unsigned long long *extent)
++{
++    virJSONValuePtr stats;
++    virJSONValuePtr parent;
++
++    if ((parent = virJSONValueObjectGet(dev, "parent")) == NULL ||
++        parent->type != VIR_JSON_TYPE_OBJECT) {
++        return QEMU_MONITOR_BLOCK_EXTENT_ERROR_NOPARENT;
++    }
++
++    if ((stats = virJSONValueObjectGet(parent, "stats")) == NULL ||
++        stats->type != VIR_JSON_TYPE_OBJECT) {
++        return QEMU_MONITOR_BLOCK_EXTENT_ERROR_NOSTATS;
++    }
++
++    if (virJSONValueObjectGetNumberUlong(stats, "wr_highest_offset",
++                                         extent) < 0) {
++        return QEMU_MONITOR_BLOCK_EXTENT_ERROR_NOOFFSET;
++    }
++
++    return QEMU_MONITOR_BLOCK_EXTENT_ERROR_OK;
++}
++
++
+ int qemuMonitorJSONGetAllBlockStatsInfo(qemuMonitorPtr mon,
+                                         virHashTablePtr *ret_stats)
+ {
+@@ -1881,6 +1915,9 @@ int qemuMonitorJSONGetAllBlockStatsInfo(qemuMonitorPtr mon,
+             goto cleanup;
+         }
+ 
++        /* it's ok to not have this information here. Just skip silently. */
++        qemuMonitorJSONDevGetBlockExtent(dev, &bstats->wr_highest_offset);
++
+         if (virHashAddEntry(hash, dev_name, bstats) < 0)
+             goto cleanup;
+         bstats = NULL;
+@@ -2050,6 +2087,36 @@ int qemuMonitorJSONGetBlockStatsParamsNumber(qemuMonitorPtr mon,
+     return ret;
+ }
+ 
++
++static int
++qemuMonitorJSONReportBlockExtentError(qemuMonitorBlockExtentError error)
++{
++    switch (error) {
++    case QEMU_MONITOR_BLOCK_EXTENT_ERROR_NOPARENT:
++        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                       _("blockstats parent entry was not in "
++                         "expected format"));
++        break;
++
++    case QEMU_MONITOR_BLOCK_EXTENT_ERROR_NOSTATS:
++        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                       _("blockstats stats entry was not in "
++                         "expected format"));
++
++    case QEMU_MONITOR_BLOCK_EXTENT_ERROR_NOOFFSET:
++        virReportError(VIR_ERR_INTERNAL_ERROR,
++                       _("cannot read %s statistic"),
++                         "wr_highest_offset");
++        break;
++
++    case QEMU_MONITOR_BLOCK_EXTENT_ERROR_OK:
++        return 0;
++    }
++
++    return -1;
++}
++
++
+ int qemuMonitorJSONGetBlockExtent(qemuMonitorPtr mon,
+                                   const char *dev_name,
+                                   unsigned long long *extent)
+@@ -2084,9 +2151,8 @@ int qemuMonitorJSONGetBlockExtent(qemuMonitorPtr mon,
+ 
+     for (i = 0; i < virJSONValueArraySize(devices); i++) {
+         virJSONValuePtr dev = virJSONValueArrayGet(devices, i);
+-        virJSONValuePtr stats;
+-        virJSONValuePtr parent;
+         const char *thisdev;
++        int err;
+         if (!dev || dev->type != VIR_JSON_TYPE_OBJECT) {
+             virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                            _("blockstats device entry was not in expected format"));
+@@ -2110,24 +2176,9 @@ int qemuMonitorJSONGetBlockExtent(qemuMonitorPtr mon,
+             continue;
+ 
+         found = true;
+-        if ((parent = virJSONValueObjectGet(dev, "parent")) == NULL ||
+-            parent->type != VIR_JSON_TYPE_OBJECT) {
+-            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+-                           _("blockstats parent entry was not in expected format"));
+-            goto cleanup;
+-        }
+-
+-        if ((stats = virJSONValueObjectGet(parent, "stats")) == NULL ||
+-            stats->type != VIR_JSON_TYPE_OBJECT) {
+-            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+-                           _("blockstats stats entry was not in expected format"));
+-            goto cleanup;
+-        }
+-
+-        if (virJSONValueObjectGetNumberUlong(stats, "wr_highest_offset", extent) < 0) {
+-            virReportError(VIR_ERR_INTERNAL_ERROR,
+-                           _("cannot read %s statistic"),
+-                           "wr_highest_offset");
++        if ((err = qemuMonitorJSONDevGetBlockExtent(dev, extent)) !=
++             QEMU_MONITOR_BLOCK_EXTENT_ERROR_OK) {
++            qemuMonitorJSONReportBlockExtentError(err);
+             goto cleanup;
+         }
+     }
+-- 
+2.1.2
+

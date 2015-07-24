@@ -1,0 +1,154 @@
+From 248157defba2872ca75f3055d518e956daa33697 Mon Sep 17 00:00:00 2001
+Message-Id: <248157defba2872ca75f3055d518e956daa33697@dist-git>
+From: Eric Blake <eblake@redhat.com>
+Date: Wed, 17 Dec 2014 03:09:08 -0700
+Subject: [PATCH] getstats: split block stats reporting for easier recursion
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1041569
+
+In order to report stats on backing chains, we need to separate
+the output of stats for one block from how we traverse blocks.
+
+* src/qemu/qemu_driver.c (qemuDomainGetStatsBlock): Split...
+(qemuDomainGetStatsOneBlock): ...into new helper.
+
+Signed-off-by: Eric Blake <eblake@redhat.com>
+(cherry picked from commit c2d380bff8f1bad8e6df047c34ab1a4f8f623e3e)
+
+Conflicts:
+	src/qemu/qemu_driver.c - no offline stats (commit 596a137)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c | 107 +++++++++++++++++++++++++++++++------------------
+ 1 file changed, 67 insertions(+), 40 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 6be180e..a2535f4 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -18007,6 +18007,69 @@ do { \
+         goto cleanup; \
+ } while (0)
+ 
++
++static int
++qemuDomainGetStatsOneBlock(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
++                           virQEMUDriverConfigPtr cfg ATTRIBUTE_UNUSED,
++                           virDomainObjPtr dom ATTRIBUTE_UNUSED,
++                           virDomainStatsRecordPtr record,
++                           int *maxparams,
++                           virDomainDiskDefPtr disk,
++                           virStorageSourcePtr src,
++                           size_t block_idx,
++                           bool abbreviated,
++                           virHashTablePtr stats)
++{
++    qemuBlockStats *entry;
++    int ret = -1;
++
++    QEMU_ADD_NAME_PARAM(record, maxparams, "block", "name", block_idx,
++                        disk->dst);
++    if (virStorageSourceIsLocalStorage(src) && src->path)
++        QEMU_ADD_NAME_PARAM(record, maxparams, "block", "path",
++                            block_idx, src->path);
++
++    if (abbreviated || !disk->info.alias ||
++        !(entry = virHashLookup(stats, disk->info.alias))) {
++        /* FIXME: we could still look up sizing by sharing code
++         * with qemuDomainGetBlockInfo */
++        ret = 0;
++        goto cleanup;
++    }
++
++    QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, block_idx,
++                            "rd.reqs", entry->rd_req);
++    QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, block_idx,
++                            "rd.bytes", entry->rd_bytes);
++    QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, block_idx,
++                            "rd.times", entry->rd_total_times);
++    QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, block_idx,
++                            "wr.reqs", entry->wr_req);
++    QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, block_idx,
++                            "wr.bytes", entry->wr_bytes);
++    QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, block_idx,
++                            "wr.times", entry->wr_total_times);
++    QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, block_idx,
++                            "fl.reqs", entry->flush_req);
++    QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, block_idx,
++                            "fl.times", entry->flush_total_times);
++
++    QEMU_ADD_BLOCK_PARAM_ULL(record, maxparams, block_idx,
++                             "allocation", entry->wr_highest_offset);
++
++    if (entry->capacity)
++        QEMU_ADD_BLOCK_PARAM_ULL(record, maxparams, block_idx,
++                                 "capacity", entry->capacity);
++    if (entry->physical)
++        QEMU_ADD_BLOCK_PARAM_ULL(record, maxparams, block_idx,
++                                 "physical", entry->physical);
++
++    ret = 0;
++ cleanup:
++    return ret;
++}
++
++
+ static int
+ qemuDomainGetStatsBlock(virQEMUDriverPtr driver,
+                         virDomainObjPtr dom,
+@@ -18044,48 +18107,12 @@ qemuDomainGetStatsBlock(virQEMUDriverPtr driver,
+     QEMU_ADD_COUNT_PARAM(record, maxparams, "block", 0);
+ 
+     for (i = 0; i < dom->def->ndisks; i++) {
+-        qemuBlockStats *entry;
+         virDomainDiskDefPtr disk = dom->def->disks[i];
+ 
+-        QEMU_ADD_NAME_PARAM(record, maxparams, "block", "name", i, disk->dst);
+-        if (virStorageSourceIsLocalStorage(disk->src) && disk->src->path)
+-            QEMU_ADD_NAME_PARAM(record, maxparams, "block", "path",
+-                                i, disk->src->path);
+-
+-        if (abbreviated || !disk->info.alias ||
+-            !(entry = virHashLookup(stats, disk->info.alias))) {
+-            /* FIXME: we could still look up sizing by sharing code
+-             * with qemuDomainGetBlockInfo */
+-            continue;
+-        }
+-
+-        QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, i,
+-                                "rd.reqs", entry->rd_req);
+-        QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, i,
+-                                "rd.bytes", entry->rd_bytes);
+-        QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, i,
+-                                "rd.times", entry->rd_total_times);
+-        QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, i,
+-                                "wr.reqs", entry->wr_req);
+-        QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, i,
+-                                "wr.bytes", entry->wr_bytes);
+-        QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, i,
+-                                "wr.times", entry->wr_total_times);
+-        QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, i,
+-                                "fl.reqs", entry->flush_req);
+-        QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, i,
+-                                "fl.times", entry->flush_total_times);
+-
+-        QEMU_ADD_BLOCK_PARAM_ULL(record, maxparams, i,
+-                                 "allocation", entry->wr_highest_offset);
+-
+-        if (entry->capacity)
+-            QEMU_ADD_BLOCK_PARAM_ULL(record, maxparams, i,
+-                                     "capacity", entry->capacity);
+-        if (entry->physical)
+-            QEMU_ADD_BLOCK_PARAM_ULL(record, maxparams, i,
+-                                     "physical", entry->physical);
+-
++        if (qemuDomainGetStatsOneBlock(driver, NULL, dom, record, maxparams,
++                                       disk, disk->src, i, abbreviated,
++                                       stats) < 0)
++            goto cleanup;
+     }
+ 
+     record->params[count_index].value.ui = i;
+-- 
+2.2.0
+

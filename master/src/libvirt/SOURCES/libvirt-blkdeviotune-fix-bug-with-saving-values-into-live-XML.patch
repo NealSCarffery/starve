@@ -1,0 +1,41 @@
+From 94419872a0976a5afff35fd9bce4117294a3c8c2 Mon Sep 17 00:00:00 2001
+Message-Id: <94419872a0976a5afff35fd9bce4117294a3c8c2@dist-git>
+From: Pavel Hrdina <phrdina@redhat.com>
+Date: Thu, 25 Sep 2014 13:25:37 +0200
+Subject: [PATCH] blkdeviotune: fix bug with saving values into live XML
+
+When you updated some blkdeviotune values for running domain the values
+were stored only internally, but not saved into the live XML so they
+won't survive restarting the libvirtd.
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+(cherry picked from commit 783fe9ca8c5d1a831d5626c4835a8d3284456d9c)
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1146511
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 8f655e5..808d35f 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -16107,6 +16107,13 @@ qemuDomainSetBlockIoTune(virDomainPtr dom,
+         if (ret < 0)
+             goto endjob;
+         vm->def->disks[idx]->blkdeviotune = info;
++
++        ret = virDomainSaveStatus(driver->xmlopt, cfg->stateDir, vm);
++        if (ret < 0) {
++            virReportError(VIR_ERR_OPERATION_FAILED, "%s",
++                           _("Saving live XML config failed"));
++            goto endjob;
++        }
+     }
+ 
+     if (flags & VIR_DOMAIN_AFFECT_CONFIG) {
+-- 
+2.1.1
+

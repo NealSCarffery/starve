@@ -1,0 +1,54 @@
+From 6890c1de31047886de4817e989fbfa7883818c5b Mon Sep 17 00:00:00 2001
+Message-Id: <6890c1de31047886de4817e989fbfa7883818c5b@dist-git>
+From: Michal Privoznik <mprivozn@redhat.com>
+Date: Mon, 12 Jan 2015 16:08:41 +0100
+Subject: [PATCH] qemuxml2argvtest: Fix test after change of qxl vgamem_mb
+ default
+
+Well, apparently it's possible for a patch to sneak in through
+review process and break 'make check'. It happened just lately
+with 0e502466acb84a which changed the default of vgamem_mb for
+qxl device. However, there were left some domain XMLs within our
+test suite relying on the old default. These should be updated to
+match the change.
+
+Signed-off-by: Michal Privoznik <mprivozn@redhat.com>
+(cherry picked from commit d776e995e38ebf7be11778f29e23acd3c8f16506)
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1181052
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ tests/qemuxml2argvdata/qemuxml2argv-video-qxl-device-vgamem.args     | 2 +-
+ tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-device-vgamem.args | 4 ++--
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-device-vgamem.args b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-device-vgamem.args
+index 5398ffe..92e343f 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-device-vgamem.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-device-vgamem.args
+@@ -2,5 +2,5 @@ LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=none \
+ /usr/bin/qemu -S -M pc -m 1024 -smp 1 -nographic -nodefaults \
+ -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -usb \
+ -hda /var/lib/libvirt/images/QEMUGuest1 \
+--device qxl-vga,id=video0,ram_size=67108864,vram_size=67108864,vgamem_mb=8\
++-device qxl-vga,id=video0,ram_size=67108864,vram_size=67108864,vgamem_mb=16\
+ ,bus=pci.0,addr=0x2 -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-device-vgamem.args b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-device-vgamem.args
+index 82aa0a9..51fc524 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-device-vgamem.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-device-vgamem.args
+@@ -2,7 +2,7 @@ LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=none \
+ /usr/bin/qemu -S -M pc -m 1024 -smp 1 -nographic -nodefaults \
+ -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -usb \
+ -hda /var/lib/libvirt/images/QEMUGuest1 \
+--device qxl-vga,id=video0,ram_size=67108864,vram_size=67108864,vgamem_mb=8\
++-device qxl-vga,id=video0,ram_size=67108864,vram_size=67108864,vgamem_mb=16\
+ ,bus=pci.0,addr=0x2 -device qxl,id=video1,ram_size=67108864,vram_size=67108864\
+-,vgamem_mb=8,bus=pci.0,addr=0x4 \
++,vgamem_mb=16,bus=pci.0,addr=0x4 \
+ -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+-- 
+2.2.1
+

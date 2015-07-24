@@ -1,0 +1,42 @@
+From 41f6c2fa241ddd68564f537ae58af8016d75bf4e Mon Sep 17 00:00:00 2001
+Message-Id: <41f6c2fa241ddd68564f537ae58af8016d75bf4e@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Tue, 28 Oct 2014 22:28:42 -0400
+Subject: [PATCH] qemu: Remove possible NULL deref in debug output
+
+Check for !dev->info.alias was done after a VIR_DEBUG() statement
+that already tried to print - just flip sequence
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1141621
+
+(cherry picked from commit b7890a8c28f79e958e5146c85e366f1c69ca1304)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_hotplug.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/qemu/qemu_hotplug.c b/src/qemu/qemu_hotplug.c
+index 14acac0..e5e5180 100644
+--- a/src/qemu/qemu_hotplug.c
++++ b/src/qemu/qemu_hotplug.c
+@@ -1886,14 +1886,14 @@ int qemuDomainChangeNetLinkState(virQEMUDriverPtr driver,
+     int ret = -1;
+     qemuDomainObjPrivatePtr priv = vm->privateData;
+ 
+-    VIR_DEBUG("dev: %s, state: %d", dev->info.alias, linkstate);
+-
+     if (!dev->info.alias) {
+         virReportError(VIR_ERR_OPERATION_FAILED, "%s",
+                        _("can't change link state: device alias not found"));
+         return -1;
+     }
+ 
++    VIR_DEBUG("dev: %s, state: %d", dev->info.alias, linkstate);
++
+     qemuDomainObjEnterMonitor(driver, vm);
+ 
+     ret = qemuMonitorSetLink(priv->mon, dev->info.alias, linkstate);
+-- 
+2.1.3
+

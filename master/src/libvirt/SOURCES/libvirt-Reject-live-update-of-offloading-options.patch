@@ -1,0 +1,41 @@
+From 5cda3789ba0d61bc34fa44b50b5ce729966d1da7 Mon Sep 17 00:00:00 2001
+Message-Id: <5cda3789ba0d61bc34fa44b50b5ce729966d1da7@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Thu, 30 Oct 2014 17:30:48 +0100
+Subject: [PATCH] Reject live update of offloading options
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1155441
+(cherry picked from commit 4abcf04e7c01ddc1b0a92a4a25d829c51ceadac9)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_hotplug.c | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/src/qemu/qemu_hotplug.c b/src/qemu/qemu_hotplug.c
+index bbfd3de..14acac0 100644
+--- a/src/qemu/qemu_hotplug.c
++++ b/src/qemu/qemu_hotplug.c
+@@ -1980,7 +1980,18 @@ qemuDomainChangeNet(virQEMUDriverPtr driver,
+          olddev->driver.virtio.txmode != newdev->driver.virtio.txmode ||
+          olddev->driver.virtio.ioeventfd != newdev->driver.virtio.ioeventfd ||
+          olddev->driver.virtio.event_idx != newdev->driver.virtio.event_idx ||
+-         olddev->driver.virtio.queues != newdev->driver.virtio.queues)) {
++         olddev->driver.virtio.queues != newdev->driver.virtio.queues ||
++         olddev->driver.virtio.host.csum != newdev->driver.virtio.host.csum ||
++         olddev->driver.virtio.host.gso != newdev->driver.virtio.host.gso ||
++         olddev->driver.virtio.host.tso4 != newdev->driver.virtio.host.tso4 ||
++         olddev->driver.virtio.host.tso6 != newdev->driver.virtio.host.tso6 ||
++         olddev->driver.virtio.host.ecn != newdev->driver.virtio.host.ecn ||
++         olddev->driver.virtio.host.ufo != newdev->driver.virtio.host.ufo ||
++         olddev->driver.virtio.guest.csum != newdev->driver.virtio.guest.csum ||
++         olddev->driver.virtio.guest.tso4 != newdev->driver.virtio.guest.tso4 ||
++         olddev->driver.virtio.guest.tso6 != newdev->driver.virtio.guest.tso6 ||
++         olddev->driver.virtio.guest.ecn != newdev->driver.virtio.guest.ecn ||
++         olddev->driver.virtio.guest.ufo != newdev->driver.virtio.guest.ufo)) {
+         virReportError(VIR_ERR_OPERATION_UNSUPPORTED, "%s",
+                        _("cannot modify virtio network device driver attributes"));
+         goto cleanup;
+-- 
+2.1.3
+

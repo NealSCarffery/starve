@@ -1,0 +1,69 @@
+From 9cdd161539582fb5262a98d2e8d0ce3645b308f9 Mon Sep 17 00:00:00 2001
+Message-Id: <9cdd161539582fb5262a98d2e8d0ce3645b308f9@dist-git>
+From: Zhou yimin <zhouyimin@huawei.com>
+Date: Thu, 4 Dec 2014 14:28:26 +0100
+Subject: [PATCH] qemu: move setting emulatorpin ahead of monitor showing up
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1170484
+
+If VM is configured with many devices(including passthrough devices)
+and large memory, libvirtd will take seconds(in the worst case) to
+wait for monitor. In this period the qemu process may run on any
+PCPU though I intend to pin emulator to the specified PCPU in xml
+configuration.
+
+Actually qemu process takes high cpu usage during vm startup.
+So this is not the strict CPU isolation in this case.
+
+Signed-off-by: Zhou yimin <zhouyimin@huawei.com>
+(cherry picked from commit 411cea638f6ec8503b7142a31e58b1cd85dbeaba)
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_process.c | 16 ++++++++--------
+ 1 file changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index 904af95..3d275a3 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -4681,6 +4681,14 @@ int qemuProcessStart(virConnectPtr conn,
+     if (ret == -1) /* The VM failed to start */
+         goto cleanup;
+ 
++    VIR_DEBUG("Setting cgroup for emulator (if required)");
++    if (qemuSetupCgroupForEmulator(driver, vm, nodemask) < 0)
++        goto cleanup;
++
++    VIR_DEBUG("Setting affinity of emulator threads");
++    if (qemuProcessSetEmulatorAffinity(vm) < 0)
++        goto cleanup;
++
+     VIR_DEBUG("Waiting for monitor to show up");
+     if (qemuProcessWaitForMonitor(driver, vm, asyncJob, priv->qemuCaps, pos) < 0)
+         goto cleanup;
+@@ -4716,10 +4724,6 @@ int qemuProcessStart(virConnectPtr conn,
+     if (qemuSetupCgroupForVcpu(vm) < 0)
+         goto cleanup;
+ 
+-    VIR_DEBUG("Setting cgroup for emulator (if required)");
+-    if (qemuSetupCgroupForEmulator(driver, vm, nodemask) < 0)
+-        goto cleanup;
+-
+     VIR_DEBUG("Setting cgroup for each IOThread (if required)");
+     if (qemuSetupCgroupForIOThreads(vm) < 0)
+         goto cleanup;
+@@ -4728,10 +4732,6 @@ int qemuProcessStart(virConnectPtr conn,
+     if (qemuProcessSetVcpuAffinities(vm) < 0)
+         goto cleanup;
+ 
+-    VIR_DEBUG("Setting affinity of emulator threads");
+-    if (qemuProcessSetEmulatorAffinity(vm) < 0)
+-        goto cleanup;
+-
+     VIR_DEBUG("Setting affinity of IOThread threads");
+     if (qemuProcessSetIOThreadsAffinity(vm) < 0)
+         goto cleanup;
+-- 
+2.2.0
+

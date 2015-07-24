@@ -1,0 +1,105 @@
+From 24725c889ba8a2a8e445dfa7f3d3aa1a9cbbe03c Mon Sep 17 00:00:00 2001
+Message-Id: <24725c889ba8a2a8e445dfa7f3d3aa1a9cbbe03c@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Mon, 24 Nov 2014 17:51:20 +0100
+Subject: [PATCH] qemu: Emit the guest agent lifecycle event
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1146944
+
+Add code to emit the event on change of the channel state and reconnect
+to the qemu process.
+
+(cherry picked from commit b29f2436ac80030f77428dcac746ccfa4e95f6cb)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c  |  6 ++++++
+ src/qemu/qemu_process.c | 22 ++++++++++++++++++----
+ 2 files changed, 24 insertions(+), 4 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index fe498b9..e096cee 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -4347,6 +4347,7 @@ processSerialChangedEvent(virQEMUDriverPtr driver,
+ {
+     virQEMUDriverConfigPtr cfg = virQEMUDriverGetConfig(driver);
+     virDomainChrDeviceState newstate;
++    virObjectEventPtr event = NULL;
+     virDomainDeviceDef dev;
+ 
+     if (connected)
+@@ -4374,6 +4375,11 @@ processSerialChangedEvent(virQEMUDriverPtr driver,
+         dev.data.chr->targetType != VIR_DOMAIN_CHR_CHANNEL_TARGET_TYPE_VIRTIO)
+         goto endjob;
+ 
++    if (STREQ_NULLABLE(dev.data.chr->target.name, "org.qemu.guest_agent.0") &&
++        (event = virDomainEventAgentLifecycleNewFromObj(vm, newstate,
++                                                        VIR_CONNECT_DOMAIN_EVENT_AGENT_LIFECYCLE_REASON_CHANNEL)))
++        qemuDomainEventQueue(driver, event);
++
+     dev.data.chr->state = newstate;
+ 
+     if (virDomainSaveStatus(driver->xmlopt, cfg->stateDir, vm) < 0)
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index e68d9c6..f384b33 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -2065,13 +2065,20 @@ qemuProcessFindCharDevicePTYs(virDomainObjPtr vm,
+ 
+ 
+ static int
+-qemuProcessRefreshChannelVirtioState(virDomainObjPtr vm,
+-                                     virHashTablePtr info)
++qemuProcessRefreshChannelVirtioState(virQEMUDriverPtr driver,
++                                     virDomainObjPtr vm,
++                                     virHashTablePtr info,
++                                     int booted)
+ {
+     size_t i;
++    int agentReason = VIR_CONNECT_DOMAIN_EVENT_AGENT_LIFECYCLE_REASON_CHANNEL;
+     qemuMonitorChardevInfoPtr entry;
++    virObjectEventPtr event = NULL;
+     char id[32];
+ 
++    if (booted)
++        agentReason = VIR_CONNECT_DOMAIN_EVENT_AGENT_LIFECYCLE_REASON_DOMAIN_STARTED;
++
+     for (i = 0; i < vm->def->nchannels; i++) {
+         virDomainChrDefPtr chr = vm->def->channels[i];
+         if (chr->targetType == VIR_DOMAIN_CHR_CHANNEL_TARGET_TYPE_VIRTIO) {
+@@ -2088,6 +2095,12 @@ qemuProcessRefreshChannelVirtioState(virDomainObjPtr vm,
+                 !entry->state)
+                 continue;
+ 
++            if (entry->state != VIR_DOMAIN_CHR_DEVICE_STATE_DEFAULT &&
++                STREQ_NULLABLE(chr->target.name, "org.qemu.guest_agent.0") &&
++                (event = virDomainEventAgentLifecycleNewFromObj(vm, entry->state,
++                                                                agentReason)))
++                qemuDomainEventQueue(driver, event);
++
+             chr->state = entry->state;
+         }
+     }
+@@ -2111,7 +2124,7 @@ qemuProcessReconnectRefreshChannelVirtioState(virQEMUDriverPtr driver,
+     if (ret < 0)
+         goto cleanup;
+ 
+-    ret = qemuProcessRefreshChannelVirtioState(vm, info);
++    ret = qemuProcessRefreshChannelVirtioState(driver, vm, info, false);
+ 
+  cleanup:
+     virHashFree(info);
+@@ -2167,7 +2180,8 @@ qemuProcessWaitForMonitor(virQEMUDriverPtr driver,
+                                                         info)) < 0)
+             goto cleanup;
+ 
+-        if ((ret = qemuProcessRefreshChannelVirtioState(vm, info)) < 0)
++        if ((ret = qemuProcessRefreshChannelVirtioState(driver, vm, info,
++                                                        true)) < 0)
+             goto cleanup;
+     }
+ 
+-- 
+2.1.3
+

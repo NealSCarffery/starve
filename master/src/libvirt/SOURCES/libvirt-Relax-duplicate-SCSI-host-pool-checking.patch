@@ -1,0 +1,49 @@
+From afd72a7855f7d9e8411d7b876d18d8dda5864d96 Mon Sep 17 00:00:00 2001
+Message-Id: <afd72a7855f7d9e8411d7b876d18d8dda5864d96@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Sat, 1 Nov 2014 17:57:22 -0400
+Subject: [PATCH] Relax duplicate SCSI host pool checking
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1146837
+
+Since commit 3f99d64 no new scsi_host pools can be defined
+if one of the already defined scsi_host pools does not refer
+to an accessible scsi_host adapter.
+
+Relax the check by skipping over these inaccessible pools
+when checking for duplicates.
+
+(cherry picked from commit 593892314a194df22ea54e5b9606e2a188932439)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/conf/storage_conf.c | 6 +-----
+ 1 file changed, 1 insertion(+), 5 deletions(-)
+
+diff --git a/src/conf/storage_conf.c b/src/conf/storage_conf.c
+index d614b2d..67b44b9 100644
+--- a/src/conf/storage_conf.c
++++ b/src/conf/storage_conf.c
+@@ -2174,7 +2174,7 @@ virStoragePoolSourceFindDuplicate(virStoragePoolObjListPtr pools,
+                 if (getSCSIHostNumber(pool->def->source.adapter,
+                                       &pool_hostnum) < 0 ||
+                     getSCSIHostNumber(def->source.adapter, &def_hostnum) < 0)
+-                    goto error;
++                    break;
+                 if (pool_hostnum == def_hostnum)
+                     matchpool = pool;
+             }
+@@ -2216,10 +2216,6 @@ virStoragePoolSourceFindDuplicate(virStoragePoolObjListPtr pools,
+         ret = -1;
+     }
+     return ret;
+-
+- error:
+-    virStoragePoolObjUnlock(pool);
+-    return -1;
+ }
+ 
+ void
+-- 
+2.1.3
+

@@ -1,0 +1,35 @@
+From a9f728e94fbed7434c8286fc60dfcd1f980e3c6e Mon Sep 17 00:00:00 2001
+Message-Id: <a9f728e94fbed7434c8286fc60dfcd1f980e3c6e@dist-git>
+From: Michal Privoznik <mprivozn@redhat.com>
+Date: Tue, 23 Sep 2014 11:54:35 +0200
+Subject: [PATCH] nodeinfo: Prefer MIN in nodeGetFreePages
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1145050
+
+It's better to use a macro instead of if-else construct.
+
+Signed-off-by: Michal Privoznik <mprivozn@redhat.com>
+(cherry picked from commit f8857c8f88ece3bb0790436e42751c2a09ae4453)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/nodeinfo.c | 4 +---
+ 1 file changed, 1 insertion(+), 3 deletions(-)
+
+diff --git a/src/nodeinfo.c b/src/nodeinfo.c
+index 134fee7..80c723e 100644
+--- a/src/nodeinfo.c
++++ b/src/nodeinfo.c
+@@ -2045,9 +2045,7 @@ nodeGetFreePages(unsigned int npages,
+         goto cleanup;
+     }
+ 
+-    lastCell = startCell + cellCount;
+-    if (startCell + cellCount < lastCell)
+-        lastCell = startCell + cellCount;
++    lastCell = MIN(lastCell, startCell + cellCount);
+ 
+     for (cell = startCell; cell < lastCell; cell++) {
+         for (i = 0; i < npages; i++) {
+-- 
+2.1.1
+

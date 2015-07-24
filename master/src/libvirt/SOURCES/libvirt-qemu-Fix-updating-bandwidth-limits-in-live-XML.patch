@@ -1,0 +1,48 @@
+From 2f2e177f52d83f004de1be7a91f1e6ad66db9237 Mon Sep 17 00:00:00 2001
+Message-Id: <2f2e177f52d83f004de1be7a91f1e6ad66db9237@dist-git>
+From: Erik Skultety <eskultet@redhat.com>
+Date: Wed, 22 Oct 2014 09:54:35 +0200
+Subject: [PATCH] qemu: Fix updating bandwidth limits in live XML
+
+When trying to update bandwidth limits on a running domain, limits get
+updated in our internal structures, however XML parser reads
+bandwidth limits from network 'actual' definition. Committing this patch
+it is now available to update bandwidth 'actual' definition as well,
+thus updating domain runtime XML.
+
+(cherry picked from commit f4ba3385ba6b6e9ce6468a48d1cd4637b36696b7)
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1146511
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 039b987..36b394e 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -10222,7 +10222,18 @@ qemuDomainSetInterfaceParameters(virDomainPtr dom,
+         } else {
+             net->bandwidth = NULL;
+         }
++
++        if (net->type == VIR_DOMAIN_NET_TYPE_NETWORK) {
++            virNetDevBandwidthFree(net->data.network.actual->bandwidth);
++            if (virNetDevBandwidthCopy(&net->data.network.actual->bandwidth,
++                                       net->bandwidth) < 0)
++                goto cleanup;
++        }
++
++        if (virDomainSaveStatus(driver->xmlopt, cfg->stateDir, vm) < 0)
++            goto cleanup;
+     }
++
+     if (flags & VIR_DOMAIN_AFFECT_CONFIG) {
+         if (!persistentNet->bandwidth) {
+             persistentNet->bandwidth = bandwidth;
+-- 
+2.1.3
+

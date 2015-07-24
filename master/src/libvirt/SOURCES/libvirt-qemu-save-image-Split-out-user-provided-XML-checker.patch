@@ -1,0 +1,144 @@
+From 0c43436d94324c3d4e0ff26c78b549be29f05ddb Mon Sep 17 00:00:00 2001
+Message-Id: <0c43436d94324c3d4e0ff26c78b549be29f05ddb@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Mon, 22 Sep 2014 17:52:36 +0200
+Subject: [PATCH] qemu: save image: Split out user provided XML checker
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1142693
+
+Extract code used to check save image XMLs provided by users to separate
+use.
+
+(cherry picked from commit 92e1df2529f2c18b18c4025795e19e729f60e62e)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c | 100 ++++++++++++++++++++++++++++++++-----------------
+ 1 file changed, 66 insertions(+), 34 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 98b214a..73aad99 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -5318,6 +5318,68 @@ static int qemuNodeGetSecurityModel(virConnectPtr conn,
+     return ret;
+ }
+ 
++
++/**
++ * qemuDomainSaveImageUpdateDef:
++ * @driver: qemu driver data
++ * @def: def of the domain from the save image
++ * @newxml: user provided replacement XML
++ *
++ * Returns the new domain definition in case @newxml is ABI compatible with the
++ * guest.
++ */
++static virDomainDefPtr
++qemuDomainSaveImageUpdateDef(virQEMUDriverPtr driver,
++                             virDomainDefPtr def,
++                             const char *newxml)
++{
++    virDomainDefPtr ret = NULL;
++    virDomainDefPtr newdef_migr = NULL;
++    virDomainDefPtr newdef = NULL;
++    virCapsPtr caps = NULL;
++
++    if (!(caps = virQEMUDriverGetCapabilities(driver, false)))
++        goto cleanup;
++
++    if (!(newdef = virDomainDefParseString(newxml, caps, driver->xmlopt,
++                                           QEMU_EXPECTED_VIRT_TYPES,
++                                           VIR_DOMAIN_XML_INACTIVE)))
++        goto cleanup;
++
++    if (!(newdef_migr = qemuDomainDefCopy(driver,
++                                          newdef,
++                                          VIR_DOMAIN_XML_MIGRATABLE)))
++        goto cleanup;
++
++    if (!virDomainDefCheckABIStability(def, newdef_migr)) {
++        virResetLastError();
++
++        /* Due to a bug in older version of external snapshot creation
++         * code, the XML saved in the save image was not a migratable
++         * XML. To ensure backwards compatibility with the change of the
++         * saved XML type, we need to check the ABI compatibility against
++         * the user provided XML if the check against the migratable XML
++         * fails. Snapshots created prior to v1.1.3 have this issue. */
++        if (!virDomainDefCheckABIStability(def, newdef))
++            goto cleanup;
++
++        /* use the user provided XML */
++        ret = newdef;
++        newdef = NULL;
++    } else {
++        ret = newdef_migr;
++        newdef_migr = NULL;
++    }
++
++ cleanup:
++    virObjectUnref(caps);
++    virDomainDefFree(newdef);
++    virDomainDefFree(newdef_migr);
++
++    return ret;
++}
++
++
+ /* Return -1 on most failures after raising error, -2 if edit was specified
+  * but xmlin and state (-1 for no change, 0 for paused, 1 for running) do
+  * not represent any changes (no error raised), -3 if corrupt image was
+@@ -5438,45 +5500,15 @@ qemuDomainSaveImageOpen(virQEMUDriverPtr driver,
+                                         QEMU_EXPECTED_VIRT_TYPES,
+                                         VIR_DOMAIN_XML_INACTIVE)))
+         goto error;
++
+     if (xmlin) {
+-        virDomainDefPtr def2 = NULL;
+-        virDomainDefPtr newdef = NULL;
++        virDomainDefPtr tmp;
+ 
+-        if (!(def2 = virDomainDefParseString(xmlin, caps, driver->xmlopt,
+-                                             QEMU_EXPECTED_VIRT_TYPES,
+-                                             VIR_DOMAIN_XML_INACTIVE)))
++        if (!(tmp = qemuDomainSaveImageUpdateDef(driver, def, xmlin)))
+             goto error;
+ 
+-        newdef = qemuDomainDefCopy(driver, def2, VIR_DOMAIN_XML_MIGRATABLE);
+-        if (!newdef) {
+-            virDomainDefFree(def2);
+-            goto error;
+-        }
+-
+-        if (!virDomainDefCheckABIStability(def, newdef)) {
+-            virDomainDefFree(newdef);
+-            virResetLastError();
+-
+-            /* Due to a bug in older version of external snapshot creation
+-             * code, the XML saved in the save image was not a migratable
+-             * XML. To ensure backwards compatibility with the change of the
+-             * saved XML type, we need to check the ABI compatibility against
+-             * the user provided XML if the check against the migratable XML
+-             * fails. Snapshots created prior to v1.1.3 have this issue. */
+-            if (!virDomainDefCheckABIStability(def, def2)) {
+-                virDomainDefFree(def2);
+-                goto error;
+-            }
+-
+-            /* use the user provided XML */
+-            newdef = def2;
+-            def2 = NULL;
+-        } else {
+-            virDomainDefFree(def2);
+-        }
+-
+         virDomainDefFree(def);
+-        def = newdef;
++        def = tmp;
+     }
+ 
+     VIR_FREE(xml);
+-- 
+2.1.1
+

@@ -1,0 +1,39 @@
+From fc6343d89ff8c0a14d07ccfa538e11c82ae266bd Mon Sep 17 00:00:00 2001
+Message-Id: <fc6343d89ff8c0a14d07ccfa538e11c82ae266bd@dist-git>
+From: Erik Skultety <eskultet@redhat.com>
+Date: Thu, 27 Nov 2014 13:29:42 +0100
+Subject: [PATCH] qemu: fix block{commit,copy} abort handling
+
+When a block{commit,copy} job was aborted on a domain, block job handler
+did not process it correctly, leaving a phantom job in the background.
+Any further calls to any blockjob causes "block <jobtype> still active"
+error. This patch fixes the blockjob handler so that it checks not only
+for VIR_DOMAIN_BLOCK_JOB_FAILED status, but VIR_DOMAIN_BLOCK_JOB_CANCELED
+status as well, followed by our existing cleanup routine.
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1135169
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+(cherry picked from commit 8e23e0e977fbcc4a7880e187a63c509d6e6879c6)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_process.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index 1125f4c..904af95 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -1103,7 +1103,8 @@ qemuProcessHandleBlockJob(qemuMonitorPtr mon ATTRIBUTE_UNUSED,
+             if (status == VIR_DOMAIN_BLOCK_JOB_READY) {
+                 disk->mirrorState = VIR_DOMAIN_DISK_MIRROR_STATE_READY;
+                 save = true;
+-            } else if (status == VIR_DOMAIN_BLOCK_JOB_FAILED) {
++            } else if (status == VIR_DOMAIN_BLOCK_JOB_FAILED ||
++                       status == VIR_DOMAIN_BLOCK_JOB_CANCELED) {
+                 virStorageSourceFree(disk->mirror);
+                 disk->mirror = NULL;
+                 disk->mirrorState = VIR_DOMAIN_DISK_MIRROR_STATE_NONE;
+-- 
+2.1.3
+

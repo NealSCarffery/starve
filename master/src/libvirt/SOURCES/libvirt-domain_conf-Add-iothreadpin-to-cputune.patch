@@ -1,0 +1,372 @@
+From e342a8e4885d43c7c598dc5d3a1146b5d8d0051b Mon Sep 17 00:00:00 2001
+Message-Id: <e342a8e4885d43c7c598dc5d3a1146b5d8d0051b@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Thu, 18 Sep 2014 09:29:55 -0400
+Subject: [PATCH] domain_conf: Add iothreadpin to cputune
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1101574
+
+Add an option 'iothreadpin' to the <cpuset> to allow for setting the
+CPU affinity for each IOThread.
+
+The iothreadspin will mimic the vcpupin with respect to being able to
+assign each iothread to a specific CPU, although iothreads ids start
+at 1 while vcpu ids start at 0. This matches the iothread naming scheme.
+
+(cherry picked from commit 938fb12fad6d15c9fdb73f998c4e0ec1e278721f)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ docs/formatdomain.html.in                          |  18 +++
+ docs/schemas/domaincommon.rng                      |  10 ++
+ src/conf/domain_conf.c                             | 124 +++++++++++++++++++--
+ src/conf/domain_conf.h                             |   2 +
+ .../qemuxml2argv-cputune-iothreads.xml             |  38 +++++++
+ tests/qemuxml2xmltest.c                            |   1 +
+ 6 files changed, 182 insertions(+), 11 deletions(-)
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-cputune-iothreads.xml
+
+diff --git a/docs/formatdomain.html.in b/docs/formatdomain.html.in
+index b947848..8c03ebb 100644
+--- a/docs/formatdomain.html.in
++++ b/docs/formatdomain.html.in
+@@ -526,6 +526,8 @@
+     &lt;vcpupin vcpu="2" cpuset="2,3"/&gt;
+     &lt;vcpupin vcpu="3" cpuset="0,4"/&gt;
+     &lt;emulatorpin cpuset="1-3"/&gt;
++    &lt;iothreadpin iothread="1" cpuset="5,6"/&gt;
++    &lt;iothreadpin iothread="2" cpuset="7,8"/&gt;
+     &lt;shares&gt;2048&lt;/shares&gt;
+     &lt;period&gt;1000000&lt;/period&gt;
+     &lt;quota&gt;-1&lt;/quota&gt;
+@@ -567,6 +569,22 @@
+          attribute <code>placement</code> of element <code>vcpu</code> is
+          "auto".
+        </dd>
++       <dt><code>iothreadpin</code></dt>
++       <dd>
++         The optional <code>iothreadpin</code> element specifies which of host
++         physical CPUs the IOThreads will be pinned to. If this is omitted
++         and attribute <code>cpuset</code> of element <code>vcpu</code> is
++         not specified, the IOThreads are pinned to all the physical CPUs
++         by default. There are two required attributes, the attribute
++         <code>iothread</code> specifies the IOThread id and the attribute
++         <code>cpuset</code> specifying which physical CPUs to pin to. The
++         <code>iothread</code> value begins at "1" through the number of
++          <a href="#elementsIOThreadsAllocation"><code>iothreads</code></a>
++         allocated to the domain. A value of "0" is not permitted.
++         NB, <code>iothreadpin</code> is not allowed if attribute
++         <code>placement</code> of element <code>vcpu</code> is "auto".
++        <span class="since">Since 1.2.9</span>
++       </dd>
+       <dt><code>shares</code></dt>
+       <dd>
+         The optional <code>shares</code> element specifies the proportional
+diff --git a/docs/schemas/domaincommon.rng b/docs/schemas/domaincommon.rng
+index 31974ac..d61d3ad 100644
+--- a/docs/schemas/domaincommon.rng
++++ b/docs/schemas/domaincommon.rng
+@@ -810,6 +810,16 @@
+           </attribute>
+         </element>
+       </optional>
++      <zeroOrMore>
++        <element name="iothreadpin">
++          <attribute name="iothread">
++            <ref name="unsignedInt"/>
++          </attribute>
++          <attribute name="cpuset">
++            <ref name="cpuset"/>
++          </attribute>
++        </element>
++      </zeroOrMore>
+     </element>
+   </define>
+ 
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 7d78b0b..c03affe 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -2169,6 +2169,9 @@ void virDomainDefFree(virDomainDefPtr def)
+ 
+     virDomainVcpuPinDefFree(def->cputune.emulatorpin);
+ 
++    virDomainVcpuPinDefArrayFree(def->cputune.iothreadspin,
++                                 def->cputune.niothreadspin);
++
+     virDomainNumatuneFree(def->numatune);
+ 
+     virSysinfoDefFree(def->sysinfo);
+@@ -11415,6 +11418,9 @@ virDomainPanicDefParseXML(xmlNodePtr node)
+  * and emulatorpin has the form of
+  *   <emulatorpin cpuset='0'/>
+  *
++ * and an iothreadspin has the form
++ *   <iothreadpin iothread='1' cpuset='2'/>
++ *
+  * A vcpuid of -1 is valid and only valid for emulatorpin. So callers
+  * have to check the returned cpuid for validity.
+  */
+@@ -11422,11 +11428,13 @@ static virDomainVcpuPinDefPtr
+ virDomainVcpuPinDefParseXML(xmlNodePtr node,
+                             xmlXPathContextPtr ctxt,
+                             int maxvcpus,
+-                            bool emulator)
++                            bool emulator,
++                            bool iothreads)
+ {
+     virDomainVcpuPinDefPtr def;
+     xmlNodePtr oldnode = ctxt->node;
+     int vcpuid = -1;
++    unsigned int iothreadid;
+     char *tmp = NULL;
+     int ret;
+ 
+@@ -11435,7 +11443,7 @@ virDomainVcpuPinDefParseXML(xmlNodePtr node,
+ 
+     ctxt->node = node;
+ 
+-    if (!emulator) {
++    if (!emulator && !iothreads) {
+         ret = virXPathInt("string(./@vcpu)", ctxt, &vcpuid);
+         if ((ret == -2) || (vcpuid < -1)) {
+             virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+@@ -11456,10 +11464,41 @@ virDomainVcpuPinDefParseXML(xmlNodePtr node,
+         def->vcpuid = vcpuid;
+     }
+ 
++    if (iothreads && (tmp = virXPathString("string(./@iothread)", ctxt))) {
++        if (virStrToLong_uip(tmp, NULL, 10, &iothreadid) < 0) {
++            virReportError(VIR_ERR_XML_ERROR,
++                           _("invalid setting for iothread '%s'"), tmp);
++            goto error;
++        }
++        VIR_FREE(tmp);
++
++        if (iothreadid == 0) {
++            virReportError(VIR_ERR_XML_ERROR, "%s",
++                           _("zero is an invalid iothread id value"));
++            goto error;
++        }
++
++        /* NB: maxvcpus is actually def->iothreads
++         * IOThreads are numbered "iothread1...iothread<n>", where
++         * "n" is the iothreads value
++         */
++        if (iothreadid > maxvcpus) {
++            virReportError(VIR_ERR_XML_ERROR, "%s",
++                           _("iothread id must not exceed iothreads"));
++            goto error;
++        }
++
++        /* Rather than creating our own structure we are reusing the vCPU */
++        def->vcpuid = iothreadid;
++    }
++
+     if (!(tmp = virXMLPropString(node, "cpuset"))) {
+         if (emulator)
+             virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                            _("missing cpuset for emulatorpin"));
++        else if (iothreads)
++            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                           _("missing cpuset for iothreadpin"));
+         else
+             virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                            _("missing cpuset for vcpupin"));
+@@ -12138,7 +12177,7 @@ virDomainDefParseXML(xmlDocPtr xml,
+     for (i = 0; i < n; i++) {
+         virDomainVcpuPinDefPtr vcpupin = NULL;
+         vcpupin = virDomainVcpuPinDefParseXML(nodes[i], ctxt,
+-                                              def->maxvcpus, false);
++                                              def->maxvcpus, false, false);
+ 
+         if (!vcpupin)
+             goto error;
+@@ -12213,8 +12252,9 @@ virDomainDefParseXML(xmlDocPtr xml,
+                 goto error;
+             }
+ 
+-            def->cputune.emulatorpin = virDomainVcpuPinDefParseXML(nodes[0], ctxt,
+-                                                                   0, true);
++            def->cputune.emulatorpin = virDomainVcpuPinDefParseXML(nodes[0],
++                                                                   ctxt, 0,
++                                                                   true, false);
+ 
+             if (!def->cputune.emulatorpin)
+                 goto error;
+@@ -12224,6 +12264,49 @@ virDomainDefParseXML(xmlDocPtr xml,
+     }
+     VIR_FREE(nodes);
+ 
++
++    if ((n = virXPathNodeSet("./cputune/iothreadpin", ctxt, &nodes)) < 0) {
++        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                       _("cannot extract iothreadpin nodes"));
++        goto error;
++    }
++
++    /* Ignore iothreadpin if <vcpu> placement is "auto", they
++     * conflict with each other, and <vcpu> placement can't be
++     * simply ignored, as <numatune>'s placement defaults to it.
++     */
++    if (n) {
++        if (def->placement_mode != VIR_DOMAIN_CPU_PLACEMENT_MODE_AUTO) {
++            if (VIR_ALLOC_N(def->cputune.iothreadspin, n) < 0)
++                goto error;
++
++            for (i = 0; i < n; i++) {
++                virDomainVcpuPinDefPtr iothreadpin = NULL;
++                iothreadpin = virDomainVcpuPinDefParseXML(nodes[i], ctxt,
++                                                          def->iothreads,
++                                                          false, true);
++                if (!iothreadpin)
++                    goto error;
++
++                if (virDomainVcpuPinIsDuplicate(def->cputune.iothreadspin,
++                                                def->cputune.niothreadspin,
++                                                iothreadpin->vcpuid)) {
++                    virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                                   _("duplicate iothreadpin for same iothread"));
++                    virDomainVcpuPinDefFree(iothreadpin);
++                    goto error;
++                }
++
++                def->cputune.iothreadspin[def->cputune.niothreadspin++] =
++                    iothreadpin;
++            }
++        } else {
++            VIR_WARN("Ignore iothreadpin for <vcpu> placement is 'auto'");
++        }
++    }
++    VIR_FREE(nodes);
++
++
+     /* analysis of cpu handling */
+     if ((node = virXPathNode("./cpu[1]", ctxt)) != NULL) {
+         xmlNodePtr oldnode = ctxt->node;
+@@ -17917,6 +18000,7 @@ virDomainDefFormatInternal(virDomainDefPtr def,
+     int n;
+     size_t i;
+     bool blkio = false;
++    bool cputune = false;
+ 
+     virCheckFlags(DUMPXML_FLAGS |
+                   VIR_DOMAIN_XML_INTERNAL_STATUS |
+@@ -18108,8 +18192,11 @@ virDomainDefFormatInternal(virDomainDefPtr def,
+         (def->cputune.nvcpupin && !virDomainIsAllVcpupinInherited(def)) ||
+         def->cputune.period || def->cputune.quota ||
+         def->cputune.emulatorpin ||
+-        def->cputune.emulator_period || def->cputune.emulator_quota)
++        def->cputune.emulator_period || def->cputune.emulator_quota ||
++        def->cputune.niothreadspin) {
+         virBufferAddLit(buf, "<cputune>\n");
++        cputune = true;
++    }
+ 
+     virBufferAdjustIndent(buf, 2);
+     if (def->cputune.sharesSpecified)
+@@ -18160,12 +18247,27 @@ virDomainDefFormatInternal(virDomainDefPtr def,
+         virBufferAsprintf(buf, "cpuset='%s'/>\n", cpumask);
+         VIR_FREE(cpumask);
+     }
++
++    for (i = 0; i < def->cputune.niothreadspin; i++) {
++        char *cpumask;
++        /* Ignore the iothreadpin which inherit from "cpuset of "<vcpu>." */
++        if (def->cpumask &&
++            virBitmapEqual(def->cpumask,
++                           def->cputune.iothreadspin[i]->cpumask))
++            continue;
++
++        virBufferAsprintf(buf, "<iothreadpin iothread='%u' ",
++                          def->cputune.iothreadspin[i]->vcpuid);
++
++        if (!(cpumask = virBitmapFormat(def->cputune.iothreadspin[i]->cpumask)))
++            goto error;
++
++        virBufferAsprintf(buf, "cpuset='%s'/>\n", cpumask);
++        VIR_FREE(cpumask);
++    }
++
+     virBufferAdjustIndent(buf, -2);
+-    if (def->cputune.sharesSpecified ||
+-        (def->cputune.nvcpupin && !virDomainIsAllVcpupinInherited(def)) ||
+-        def->cputune.period || def->cputune.quota ||
+-        def->cputune.emulatorpin ||
+-        def->cputune.emulator_period || def->cputune.emulator_quota)
++    if (cputune)
+         virBufferAddLit(buf, "</cputune>\n");
+ 
+     if (virDomainNumatuneFormatXML(buf, def->numatune) < 0)
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index c93b73c..decd4be 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -1953,6 +1953,8 @@ struct _virDomainDef {
+         size_t nvcpupin;
+         virDomainVcpuPinDefPtr *vcpupin;
+         virDomainVcpuPinDefPtr emulatorpin;
++        size_t niothreadspin;
++        virDomainVcpuPinDefPtr *iothreadspin;
+     } cputune;
+ 
+     virDomainNumatunePtr numatune;
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-cputune-iothreads.xml b/tests/qemuxml2argvdata/qemuxml2argv-cputune-iothreads.xml
+new file mode 100644
+index 0000000..435d0ae
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-cputune-iothreads.xml
+@@ -0,0 +1,38 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory unit='KiB'>219136</memory>
++  <currentMemory unit='KiB'>219136</currentMemory>
++  <vcpu placement='static'>2</vcpu>
++  <iothreads>2</iothreads>
++  <cputune>
++    <shares>2048</shares>
++    <period>1000000</period>
++    <quota>-1</quota>
++    <vcpupin vcpu='0' cpuset='0'/>
++    <vcpupin vcpu='1' cpuset='1'/>
++    <emulatorpin cpuset='1'/>
++    <iothreadpin iothread='1' cpuset='2'/>
++    <iothreadpin iothread='2' cpuset='3'/>
++  </cputune>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='block' device='disk'>
++      <source dev='/dev/HostVG/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' target='0' unit='0'/>
++    </disk>
++    <controller type='usb' index='0'/>
++    <controller type='ide' index='0'/>
++    <controller type='pci' index='0' model='pci-root'/>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2xmltest.c b/tests/qemuxml2xmltest.c
+index 1e06f38..843e66d 100644
+--- a/tests/qemuxml2xmltest.c
++++ b/tests/qemuxml2xmltest.c
+@@ -303,6 +303,7 @@ mymain(void)
+ 
+     DO_TEST("smp");
+     DO_TEST("iothreads");
++    DO_TEST("cputune-iothreads");
+     DO_TEST("iothreads-disk");
+     DO_TEST("lease");
+     DO_TEST("event_idx");
+-- 
+2.1.0
+

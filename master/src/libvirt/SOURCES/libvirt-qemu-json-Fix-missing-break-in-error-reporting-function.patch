@@ -1,0 +1,34 @@
+From ee92f1ba8fda2eaff8e94d315a33c9a9746b5650 Mon Sep 17 00:00:00 2001
+Message-Id: <ee92f1ba8fda2eaff8e94d315a33c9a9746b5650@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Wed, 1 Oct 2014 15:23:05 +0200
+Subject: [PATCH] qemu: json: Fix missing break in error reporting function
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1113116
+
+Otherwise we'd report a different error.
+
+Reported by John Ferlan's coverity run.
+
+(cherry picked from commit 58699b77eee9e45cbf8c9f08291fc298aae37eea)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_monitor_json.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index afb713d..2227744 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -2102,6 +2102,7 @@ qemuMonitorJSONReportBlockExtentError(qemuMonitorBlockExtentError error)
+         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                        _("blockstats stats entry was not in "
+                          "expected format"));
++        break;
+ 
+     case QEMU_MONITOR_BLOCK_EXTENT_ERROR_NOOFFSET:
+         virReportError(VIR_ERR_INTERNAL_ERROR,
+-- 
+2.1.2
+

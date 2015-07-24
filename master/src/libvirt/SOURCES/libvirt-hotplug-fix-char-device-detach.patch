@@ -1,0 +1,53 @@
+From 4289ddc2407cd074f68d29fd4620fd84f2d6b10d Mon Sep 17 00:00:00 2001
+Message-Id: <4289ddc2407cd074f68d29fd4620fd84f2d6b10d@dist-git>
+From: Pavel Hrdina <phrdina@redhat.com>
+Date: Mon, 3 Nov 2014 09:29:13 -0500
+Subject: [PATCH] hotplug: fix char device detach
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1141621
+
+Hotplugging and hotunplugging char devices is only supported through
+'-device' and the check for device capability should be independently.
+
+Coverity also complains about 'tmpChr->info.alias' could be NULL and we
+are dereferencing it but it somehow only in this case don't recognize
+that the value is set by 'qemuAssignDeviceChrAlias' so it's clearly
+false positive. Add sa_assert to make coverity happy.
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+(cherry picked from commit e7e05801e5e81bd80ea7dd9f0e0ae37f43ec49ad)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_hotplug.c | 13 +++++++++----
+ 1 file changed, 9 insertions(+), 4 deletions(-)
+
+diff --git a/src/qemu/qemu_hotplug.c b/src/qemu/qemu_hotplug.c
+index fd4a8f2..54febb3 100644
+--- a/src/qemu/qemu_hotplug.c
++++ b/src/qemu/qemu_hotplug.c
+@@ -3712,12 +3712,17 @@ int qemuDomainDetachChrDevice(virQEMUDriverPtr driver,
+         return ret;
+     }
+ 
+-    if (virQEMUCapsGet(priv->qemuCaps, QEMU_CAPS_DEVICE) &&
+-        !tmpChr->info.alias) {
+-        if (qemuAssignDeviceChrAlias(vmdef, tmpChr, -1) < 0)
+-            return ret;
++    if (!virQEMUCapsGet(priv->qemuCaps, QEMU_CAPS_DEVICE)) {
++        virReportError(VIR_ERR_OPERATION_INVALID, "%s",
++                       _("qemu does not support -device"));
++        return ret;
+     }
+ 
++    if (!tmpChr->info.alias && qemuAssignDeviceChrAlias(vmdef, tmpChr, -1) < 0)
++        return ret;
++
++    sa_assert(tmpChr->info.alias);
++
+     if (qemuBuildChrDeviceStr(&devstr, vm->def, chr, priv->qemuCaps) < 0)
+         return ret;
+ 
+-- 
+2.1.3
+

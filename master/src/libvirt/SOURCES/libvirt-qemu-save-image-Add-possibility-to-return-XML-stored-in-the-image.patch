@@ -1,0 +1,87 @@
+From 92e5050e1616027fe779250891e380deb0191a6d Mon Sep 17 00:00:00 2001
+Message-Id: <92e5050e1616027fe779250891e380deb0191a6d@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Mon, 22 Sep 2014 17:52:37 +0200
+Subject: [PATCH] qemu: save image: Add possibility to return XML stored in the
+ image
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1142693
+
+Add a new parameter that will allow to return the XML stored in the save
+image for further manipulation and adjust the callers. This option will
+be used in later patches.
+
+(cherry picked from commit eb9595b7250880a7a49a4944ad01a8beb7c52be3)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c | 18 +++++++++++-------
+ 1 file changed, 11 insertions(+), 7 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 73aad99..530caef 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -5389,6 +5389,7 @@ qemuDomainSaveImageOpen(virQEMUDriverPtr driver,
+                         const char *path,
+                         virDomainDefPtr *ret_def,
+                         virQEMUSaveHeaderPtr ret_header,
++                        char **xmlout,
+                         bool bypass_cache,
+                         virFileWrapperFdPtr *wrapperFd,
+                         const char *xmlin, int state, bool edit,
+@@ -5511,7 +5512,10 @@ qemuDomainSaveImageOpen(virQEMUDriverPtr driver,
+         def = tmp;
+     }
+ 
+-    VIR_FREE(xml);
++    if (xmlout)
++        *xmlout = xml;
++    else
++        VIR_FREE(xml);
+ 
+     *ret_def = def;
+     *ret_header = header;
+@@ -5667,7 +5671,7 @@ qemuDomainRestoreFlags(virConnectPtr conn,
+     else if (flags & VIR_DOMAIN_SAVE_PAUSED)
+         state = 0;
+ 
+-    fd = qemuDomainSaveImageOpen(driver, path, &def, &header,
++    fd = qemuDomainSaveImageOpen(driver, path, &def, &header, NULL,
+                                  (flags & VIR_DOMAIN_SAVE_BYPASS_CACHE) != 0,
+                                  &wrapperFd, dxml, state, false, false);
+     if (fd < 0)
+@@ -5728,8 +5732,8 @@ qemuDomainSaveImageGetXMLDesc(virConnectPtr conn, const char *path,
+     /* We only take subset of virDomainDefFormat flags.  */
+     virCheckFlags(VIR_DOMAIN_XML_SECURE, NULL);
+ 
+-    fd = qemuDomainSaveImageOpen(driver, path, &def, &header, false, NULL,
+-                                 NULL, -1, false, false);
++    fd = qemuDomainSaveImageOpen(driver, path, &def, &header, NULL,
++                                 false, NULL, NULL, -1, false, false);
+ 
+     if (fd < 0)
+         goto cleanup;
+@@ -5766,8 +5770,8 @@ qemuDomainSaveImageDefineXML(virConnectPtr conn, const char *path,
+     else if (flags & VIR_DOMAIN_SAVE_PAUSED)
+         state = 0;
+ 
+-    fd = qemuDomainSaveImageOpen(driver, path, &def, &header, false, NULL,
+-                                 dxml, state, true, false);
++    fd = qemuDomainSaveImageOpen(driver, path, &def, &header, NULL,
++                                 false, NULL, dxml, state, true, false);
+ 
+     if (fd < 0) {
+         /* Check for special case of no change needed.  */
+@@ -5831,7 +5835,7 @@ qemuDomainObjRestore(virConnectPtr conn,
+     virQEMUSaveHeader header;
+     virFileWrapperFdPtr wrapperFd = NULL;
+ 
+-    fd = qemuDomainSaveImageOpen(driver, path, &def, &header,
++    fd = qemuDomainSaveImageOpen(driver, path, &def, &header, NULL,
+                                  bypass_cache, &wrapperFd, NULL, -1, false,
+                                  true);
+     if (fd < 0) {
+-- 
+2.1.1
+

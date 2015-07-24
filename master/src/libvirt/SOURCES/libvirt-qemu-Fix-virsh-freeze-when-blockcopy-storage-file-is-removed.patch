@@ -1,0 +1,40 @@
+From a42824549d45c014773f7f83a177d4d4f173a9a0 Mon Sep 17 00:00:00 2001
+Message-Id: <a42824549d45c014773f7f83a177d4d4f173a9a0@dist-git>
+From: Erik Skultety <eskultet@redhat.com>
+Date: Thu, 4 Dec 2014 09:53:16 +0100
+Subject: [PATCH] qemu: Fix virsh freeze when blockcopy storage file is removed
+
+If someone removes blockcopy storage file when still in mirroring phase
+and then requesting blockjob abort using pivot, virsh cmd freezes. This
+is not an issue with older qemu versions which did not support
+asynchronous jobs (which we prefer by default).
+As we have reached the mirroring phase successfully, polling monitor for
+blockjob info always returns 1 and the loop never ends.
+This fix introduces a check for qemuDomainBlockPivot return code, possibly
+skipping the asynchronous waiting completely, if an error occurred and
+asynchronous waiting was the preferred method.
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1139567
+(cherry picked from commit fe3691f66348d55e88c9811fd79ff9314e053977)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index a9a7d30..fe5fe88 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -15527,6 +15527,8 @@ qemuDomainBlockJobImpl(virDomainObjPtr vm,
+ 
+         if (disk->mirror && (flags & VIR_DOMAIN_BLOCK_JOB_ABORT_PIVOT)) {
+             ret = qemuDomainBlockPivot(conn, driver, vm, device, disk);
++            if (ret < 0 && async)
++                goto endjob;
+             goto waitjob;
+         }
+         if (disk->mirror) {
+-- 
+2.2.0
+

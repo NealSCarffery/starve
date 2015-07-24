@@ -1,0 +1,39 @@
+From bc849e9b9d3b7bf3d8240a2a5da4d3ad6282d9f3 Mon Sep 17 00:00:00 2001
+Message-Id: <bc849e9b9d3b7bf3d8240a2a5da4d3ad6282d9f3@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Mon, 15 Sep 2014 15:13:57 -0400
+Subject: [PATCH] domain_conf: Resolve Coverity COPY_PASTE_ERROR
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1141209
+
+Seems when commit id 'ea130e3b' added the checks to ensure each of
+the hard_limit, soft_limit, and swap_hard_limit wasn't set at
+VIR_DOMAIN_MEMORY_PARAM_UNLIMITED - a copy/paste error of using
+the 'hard_limit' for each comparison was done. Adjust the code.
+
+(cherry picked from commit 96aa6052a14379eca23e0ba428355e5c1dab7e04)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/conf/domain_conf.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 84f5f1d..ea727a1 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -18036,9 +18036,9 @@ virDomainDefFormatInternal(virDomainDefPtr def,
+     if ((def->mem.hard_limit &&
+          def->mem.hard_limit != VIR_DOMAIN_MEMORY_PARAM_UNLIMITED) ||
+         (def->mem.soft_limit &&
+-         def->mem.hard_limit != VIR_DOMAIN_MEMORY_PARAM_UNLIMITED) ||
++         def->mem.soft_limit != VIR_DOMAIN_MEMORY_PARAM_UNLIMITED) ||
+         (def->mem.swap_hard_limit &&
+-         def->mem.hard_limit != VIR_DOMAIN_MEMORY_PARAM_UNLIMITED) ||
++         def->mem.swap_hard_limit != VIR_DOMAIN_MEMORY_PARAM_UNLIMITED) ||
+         def->mem.min_guarantee) {
+         virBufferAddLit(buf, "<memtune>\n");
+         virBufferAdjustIndent(buf, 2);
+-- 
+2.1.0
+

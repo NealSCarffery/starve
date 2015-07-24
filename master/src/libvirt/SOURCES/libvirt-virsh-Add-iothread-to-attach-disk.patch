@@ -1,0 +1,98 @@
+From c3c7acfac6cdb9707675b7c64ad21e0cb926ebf1 Mon Sep 17 00:00:00 2001
+Message-Id: <c3c7acfac6cdb9707675b7c64ad21e0cb926ebf1@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Thu, 18 Sep 2014 09:29:49 -0400
+Subject: [PATCH] virsh: Add iothread to 'attach-disk'
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1101574
+
+Add an iothread parameter to allow attaching to an IOThread, such as:
+
+virsh attach-disk $dom $source $target --live --config --iothread 2 \
+     --targetbus virtio --driver qemu --subdriver raw  --type disk
+
+(cherry picked from commit bc5a8090afa84095634ccee1e1a6ca9a2a9b177a)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ tools/virsh-domain.c | 13 ++++++++++---
+ tools/virsh.pod      |  5 ++++-
+ 2 files changed, 14 insertions(+), 4 deletions(-)
+
+diff --git a/tools/virsh-domain.c b/tools/virsh-domain.c
+index 64a0f3d..f964856 100644
+--- a/tools/virsh-domain.c
++++ b/tools/virsh-domain.c
+@@ -311,6 +311,10 @@ static const vshCmdOptDef opts_attach_disk[] = {
+      .type = VSH_OT_STRING,
+      .help = N_("subdriver of disk device")
+     },
++    {.name = "iothread",
++     .type = VSH_OT_STRING,
++     .help = N_("IOThread to be used by supported device")
++    },
+     {.name = "cache",
+      .type = VSH_OT_STRING,
+      .help = N_("cache mode of disk device")
+@@ -527,8 +531,8 @@ cmdAttachDisk(vshControl *ctl, const vshCmd *cmd)
+     virDomainPtr dom = NULL;
+     const char *source = NULL, *target = NULL, *driver = NULL,
+                 *subdriver = NULL, *type = NULL, *mode = NULL,
+-                *cache = NULL, *serial = NULL, *straddr = NULL,
+-                *wwn = NULL, *targetbus = NULL;
++                *iothread = NULL, *cache = NULL, *serial = NULL,
++                *straddr = NULL, *wwn = NULL, *targetbus = NULL;
+     struct DiskAddress diskAddr;
+     bool isFile = false, functionReturn = false;
+     int ret;
+@@ -558,6 +562,7 @@ cmdAttachDisk(vshControl *ctl, const vshCmd *cmd)
+         vshCommandOptStringReq(ctl, cmd, "subdriver", &subdriver) < 0 ||
+         vshCommandOptStringReq(ctl, cmd, "type", &type) < 0 ||
+         vshCommandOptStringReq(ctl, cmd, "mode", &mode) < 0 ||
++        vshCommandOptStringReq(ctl, cmd, "iothread", &iothread) < 0 ||
+         vshCommandOptStringReq(ctl, cmd, "cache", &cache) < 0 ||
+         vshCommandOptStringReq(ctl, cmd, "serial", &serial) < 0 ||
+         vshCommandOptStringReq(ctl, cmd, "wwn", &wwn) < 0 ||
+@@ -601,13 +606,15 @@ cmdAttachDisk(vshControl *ctl, const vshCmd *cmd)
+     virBufferAddLit(&buf, ">\n");
+     virBufferAdjustIndent(&buf, 2);
+ 
+-    if (driver || subdriver || cache) {
++    if (driver || subdriver || iothread || cache) {
+         virBufferAddLit(&buf, "<driver");
+ 
+         if (driver)
+             virBufferAsprintf(&buf, " name='%s'", driver);
+         if (subdriver)
+             virBufferAsprintf(&buf, " type='%s'", subdriver);
++        if (iothread)
++            virBufferAsprintf(&buf, " iothread='%s'", iothread);
+         if (cache)
+             virBufferAsprintf(&buf, " cache='%s'", cache);
+ 
+diff --git a/tools/virsh.pod b/tools/virsh.pod
+index 5bdd264..0f5523f 100644
+--- a/tools/virsh.pod
++++ b/tools/virsh.pod
+@@ -2221,7 +2221,8 @@ expected.
+ 
+ =item B<attach-disk> I<domain> I<source> I<target> [[[I<--live>] [I<--config>]
+ | [I<--current>]] | [I<--persistent>]] [I<--targetbus bus>] [I<--driver
+-driver>] [I<--subdriver subdriver>] [I<--cache cache>] [I<--type type>]
++driver>] [I<--subdriver subdriver>] [I<--iothread iothread>]
++[I<--cache cache>] [I<--type type>]
+ [I<--mode mode>] [I<--sourcetype sourcetype>] [I<--serial serial>] [I<--wwn
+ wwn>] [I<--rawio>] [I<--address address>] [I<--multifunction>] [I<--print-xml>]
+ 
+@@ -2248,6 +2249,8 @@ I<mode> can specify the two specific mode I<readonly> or I<shareable>.
+ I<sourcetype> can indicate the type of source (block|file)
+ I<cache> can be one of "default", "none", "writethrough", "writeback",
+ "directsync" or "unsafe".
++I<iothread> is the number within the range of domain IOThreads to which
++this disk may be attached (QEMU only).
+ I<serial> is the serial of disk device. I<wwn> is the wwn of disk device.
+ I<rawio> indicates the disk needs rawio capability.
+ I<address> is the address of disk device in the form of pci:domain.bus.slot.function,
+-- 
+2.1.0
+

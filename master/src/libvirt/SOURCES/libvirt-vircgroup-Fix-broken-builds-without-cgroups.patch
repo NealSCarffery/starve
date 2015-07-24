@@ -1,0 +1,45 @@
+From 67c7c9443dee23d8dfff5e015da4f81afaab95fd Mon Sep 17 00:00:00 2001
+Message-Id: <67c7c9443dee23d8dfff5e015da4f81afaab95fd@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Thu, 18 Sep 2014 09:29:56 -0400
+Subject: [PATCH] vircgroup: Fix broken builds without cgroups
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1101574
+
+I missed adding virCgroupNewIOThread to the !VIR_CGROUP_SUPPORTED
+
+Pushing as build breaker
+
+(cherry picked from commit e45f0d057ec82cac819ea5a600a5362f368ec68e)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/util/vircgroup.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/src/util/vircgroup.c b/src/util/vircgroup.c
+index 2842831..152ef96 100644
+--- a/src/util/vircgroup.c
++++ b/src/util/vircgroup.c
+@@ -3983,6 +3983,18 @@ virCgroupNewEmulator(virCgroupPtr domain ATTRIBUTE_UNUSED,
+ 
+ 
+ int
++virCgroupNewIOThread(virCgroupPtr domain ATTRIBUTE_UNUSED,
++                     int iothreadid ATTRIBUTE_UNUSED,
++                     bool create ATTRIBUTE_UNUSED,
++                     virCgroupPtr *group ATTRIBUTE_UNUSED)
++{
++    virReportSystemError(ENXIO, "%s",
++                         _("Control groups not supported on this platform"));
++    return -1;
++}
++
++
++int
+ virCgroupNewDetect(pid_t pid ATTRIBUTE_UNUSED,
+                    int controllers ATTRIBUTE_UNUSED,
+                    virCgroupPtr *group ATTRIBUTE_UNUSED)
+-- 
+2.1.0
+

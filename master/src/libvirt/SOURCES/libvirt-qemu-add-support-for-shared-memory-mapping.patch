@@ -1,0 +1,121 @@
+From 18f90b67fa48a0af423c76ffd414dc0f471e6e3b Mon Sep 17 00:00:00 2001
+Message-Id: <18f90b67fa48a0af423c76ffd414dc0f471e6e3b@dist-git>
+From: Martin Kletzander <mkletzan@redhat.com>
+Date: Wed, 17 Sep 2014 16:17:57 +0200
+Subject: [PATCH] qemu: add support for shared memory mapping
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1133144
+
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+(cherry picked from commit c7abf2c856fab318adef0f89e8387200dd95daa3)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_command.c                            | 29 ++++++++++++++++++++++
+ .../qemuxml2argv-hugepages-shared.args             | 16 ++++++++++++
+ tests/qemuxml2argvtest.c                           |  5 ++++
+ 3 files changed, 50 insertions(+)
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-hugepages-shared.args
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 718533b..ce5daae 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -6544,6 +6544,7 @@ qemuBuildNumaArgStr(virQEMUDriverConfigPtr cfg,
+     for (i = 0; i < def->cpu->ncells; i++) {
+         int cellmem = VIR_DIV_UP(def->cpu->cells[i].mem, 1024);
+         def->cpu->cells[i].mem = cellmem * 1024;
++        virTristateSwitch memAccess = def->cpu->cells[i].memAccess;
+ 
+         VIR_FREE(cpumask);
+         VIR_FREE(nodemask);
+@@ -6622,7 +6623,28 @@ qemuBuildNumaArgStr(virQEMUDriverConfigPtr cfg,
+                 virBufferAsprintf(&buf,
+                                   "memory-backend-file,prealloc=yes,mem-path=%s",
+                                   mem_path);
++
++                switch (memAccess) {
++                case VIR_MEM_ACCESS_SHARED:
++                    virBufferAddLit(&buf, ",share=on");
++                    break;
++
++                case VIR_MEM_ACCESS_PRIVATE:
++                    virBufferAddLit(&buf, ",share=off");
++                    break;
++
++                case VIR_MEM_ACCESS_DEFAULT:
++                case VIR_MEM_ACCESS_LAST:
++                    break;
++                }
++
+             } else {
++                if (memAccess) {
++                    virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
++                                   _("Shared memory mapping is supported "
++                                     "only with hugepages"));
++                    goto cleanup;
++                }
+                 virBufferAddLit(&buf, "memory-backend-ram");
+             }
+ 
+@@ -6653,6 +6675,13 @@ qemuBuildNumaArgStr(virQEMUDriverConfigPtr cfg,
+ 
+             virCommandAddArg(cmd, "-object");
+             virCommandAddArgBuffer(cmd, &buf);
++        } else {
++            if (memAccess) {
++                virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
++                               _("Shared memory mapping is not supported "
++                                 "with this QEMU"));
++                goto cleanup;
++            }
+         }
+ 
+         virCommandAddArg(cmd, "-numa");
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-hugepages-shared.args b/tests/qemuxml2argvdata/qemuxml2argv-hugepages-shared.args
+new file mode 100644
+index 0000000..a7c7d92
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-hugepages-shared.args
+@@ -0,0 +1,16 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=none \
++/usr/bin/qemu -S -M pc -m 4096 -smp 4 \
++-object memory-backend-file,prealloc=yes,mem-path=/dev/hugepages1G/libvirt/qemu,\
++size=1024M,id=ram-node0,host-nodes=0-3,policy=bind \
++-numa node,nodeid=0,cpus=0,memdev=ram-node0 \
++-object memory-backend-file,prealloc=yes,mem-path=/dev/hugepages2M/libvirt/qemu,\
++share=on,size=1024M,id=ram-node1,host-nodes=0-3,policy=bind \
++-numa node,nodeid=1,cpus=1,memdev=ram-node1 \
++-object memory-backend-file,prealloc=yes,mem-path=/dev/hugepages1G/libvirt/qemu,\
++share=off,size=1024M,id=ram-node2,host-nodes=0-3,policy=bind \
++-numa node,nodeid=2,cpus=2,memdev=ram-node2 \
++-object memory-backend-file,prealloc=yes,mem-path=/dev/hugepages1G/libvirt/qemu,\
++size=1024M,id=ram-node3,host-nodes=3,policy=bind \
++-numa node,nodeid=3,cpus=3,memdev=ram-node3 \
++-nographic -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -usb \
++-hda /dev/HostVG/QEMUGuest1 -net none -serial none -parallel none
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index 5c28253..515058e 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -684,6 +684,8 @@ mymain(void)
+             QEMU_CAPS_OBJECT_MEMORY_FILE);
+     DO_TEST("hugepages-pages3", QEMU_CAPS_MEM_PATH, QEMU_CAPS_OBJECT_MEMORY_RAM,
+             QEMU_CAPS_OBJECT_MEMORY_FILE);
++    DO_TEST("hugepages-shared", QEMU_CAPS_MEM_PATH, QEMU_CAPS_OBJECT_MEMORY_RAM,
++            QEMU_CAPS_OBJECT_MEMORY_FILE);
+     DO_TEST("nosharepages", QEMU_CAPS_MACHINE_OPT, QEMU_CAPS_MEM_MERGE);
+     DO_TEST("disk-cdrom", NONE);
+     DO_TEST("disk-cdrom-network-http", QEMU_CAPS_KVM, QEMU_CAPS_DEVICE,
+@@ -1207,6 +1209,9 @@ mymain(void)
+     DO_TEST_PARSE_ERROR("cpu-numa3", NONE);
+     DO_TEST_FAILURE("cpu-numa-disjoint", NONE);
+     DO_TEST("cpu-numa-disjoint", QEMU_CAPS_NUMA);
++    DO_TEST_FAILURE("cpu-numa-memshared", QEMU_CAPS_SMP_TOPOLOGY,
++                    QEMU_CAPS_OBJECT_MEMORY_RAM);
++    DO_TEST_FAILURE("cpu-numa-memshared", QEMU_CAPS_SMP_TOPOLOGY);
+     DO_TEST("cpu-host-model", NONE);
+     skipLegacyCPUs = true;
+     DO_TEST("cpu-host-model-fallback", NONE);
+-- 
+2.1.0
+

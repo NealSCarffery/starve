@@ -1,0 +1,121 @@
+From d4b88a0c0def14366ef18bd6ab18689f0bbd18f7 Mon Sep 17 00:00:00 2001
+Message-Id: <d4b88a0c0def14366ef18bd6ab18689f0bbd18f7@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Fri, 21 Nov 2014 09:53:04 +0100
+Subject: [PATCH] storage: qemu: Fix security labelling of new image chain
+ elements
+
+When creating a disk image snapshot the libvirt code would blindly copy
+the parents label to the newly created image. This runs into problems
+when you start a VM from an image hosted on NFS (or other storage system
+that doesn't support selinux labels) and the snapshot destination is on
+a storage system that does support selinux labels. Libvirt's code in
+that case generates a different security label for the image hosted on
+NFS. This label is valid only for NFS images and doesn't allow access in
+case of a locally stored image.
+
+To fix this issue libvirt needs to refrain from copying security
+information in cases where the default domain seclabel is a better
+choice.
+
+This patch repurposes the now unused @force argument of
+virStorageSourceInitChainElement to denote whether a copy of the
+security labelling stuff should be attempted or not. This allows to
+fine-control the copy operation for cases where we need to keep the
+label of the old disk vs. the cases where we need to keep the label
+unset to use the default domain imagelabel.
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1151718
+(cherry picked from commit 7e130e8b3505ce0f821081dffde8c13a7ff921b3)
+
+Conflicts:
+	src/qemu/qemu_driver.c - functional: new block copy api not
+                                             backported
+	src/util/virstoragefile.c - context: single line block cleanup
+                                             not backported
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c    |  2 +-
+ src/qemu/qemu_process.c   |  2 +-
+ src/util/virstoragefile.c | 17 +++++++----------
+ 3 files changed, 9 insertions(+), 12 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 8e6ef1e..5d2a335 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -16064,7 +16064,7 @@ qemuDomainBlockCommit(virDomainPtr dom,
+             goto endjob;
+         if (virStorageSourceInitChainElement(mirror,
+                                              disk->src,
+-                                             false) < 0)
++                                             true) < 0)
+             goto endjob;
+     }
+ 
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index d6e10e3..fa8b7f8 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -1063,7 +1063,7 @@ qemuProcessHandleBlockJob(qemuMonitorPtr mon ATTRIBUTE_UNUSED,
+                         copy = virStorageSourceCopy(disk->mirror, false);
+                         if (virStorageSourceInitChainElement(copy,
+                                                              persistDisk->src,
+-                                                             false) < 0) {
++                                                             true) < 0) {
+                             VIR_WARN("Unable to update persistent definition "
+                                      "on vm %s after block job",
+                                      vm->def->name);
+diff --git a/src/util/virstoragefile.c b/src/util/virstoragefile.c
+index 6e6ee08..d58f9ed 100644
+--- a/src/util/virstoragefile.c
++++ b/src/util/virstoragefile.c
+@@ -1894,29 +1894,26 @@ virStorageSourceCopy(const virStorageSource *src,
+  * virStorageSourceInitChainElement:
+  * @newelem: New backing chain element disk source
+  * @old: Existing top level disk source
+- * @force: Force-copy the information
++ * @transferLabels: Transfer security lables.
+  *
+  * Transfers relevant information from the existing disk source to the new
+  * backing chain element if they weren't supplied so that labelling info
+  * and possibly other stuff is correct.
+  *
+- * If @force is true, user-supplied information for the new backing store
+- * element is overwritten from @old instead of keeping it.
++ * If @transferLabels is true, security labels from the existing disk are copied
++ * to the new disk. Otherwise the default domain imagelabel label will be used.
+  *
+  * Returns 0 on success, -1 on error.
+  */
+ int
+ virStorageSourceInitChainElement(virStorageSourcePtr newelem,
+                                  virStorageSourcePtr old,
+-                                 bool force)
++                                 bool transferLabels)
+ {
+     int ret = -1;
+ 
+-    if (force) {
+-        virStorageSourceSeclabelsClear(newelem);
+-    }
+-
+-    if (!newelem->seclabels &&
++    if (transferLabels &&
++        !newelem->seclabels &&
+         virStorageSourceSeclabelsCopy(newelem, old) < 0)
+         goto cleanup;
+ 
+@@ -2347,7 +2344,7 @@ virStorageSourceNewFromBacking(virStorageSourcePtr parent)
+         }
+ 
+         /* copy parent's labelling and other top level stuff */
+-        if (virStorageSourceInitChainElement(ret, parent, false) < 0)
++        if (virStorageSourceInitChainElement(ret, parent, true) < 0)
+             goto error;
+     }
+ 
+-- 
+2.1.3
+

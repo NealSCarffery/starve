@@ -1,0 +1,268 @@
+From d2f4b2476f4e1fa8a65d9c7e74a5b909cc38e848 Mon Sep 17 00:00:00 2001
+Message-Id: <d2f4b2476f4e1fa8a65d9c7e74a5b909cc38e848@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Thu, 20 Nov 2014 10:42:53 -0500
+Subject: [PATCH] storage: Add thread to refresh for createVport
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1152382
+
+When libvirt create's the vport (VPORT_CREATE) for the vHBA, there isn't
+enough "time" between the creation and the running of the following
+backend->refreshPool after a backend->startPool in order to find the LU's.
+Population of LU's happens asynchronously when udevEventHandleCallback
+discovers the "new" vHBA port.  Creation of the infrastructure by udev
+is an iterative process creating and discovering actual storage devices and
+adjusting the environment.
+
+Because of the time it takes to discover and set things up, the backend
+refreshPool call done after the startPool call will generally fail to
+find any devices. This leaves the newly started pool appear empty when
+querying via 'vol-list' after startup. The "workaround" has always been
+to run pool-refresh after startup (or any time thereafter) in order to
+find the LU's. Depending on how quickly run after startup, this too may
+not find any LUs in the pool. Eventually though given enough time and
+retries it will find something if LU's exist for the vHBA.
+
+This patch adds a thread to be executed after the VPORT_CREATE which will
+attempt to find the LU's without requiring the external run of refresh-pool.
+It does this by waiting for 5 seconds and searching for the LU's. If any
+are found, then the thread completes; otherwise, it will retry once more
+in another 5 seconds.  If none are found in that second pass, the thread
+gives up.
+
+Things learned while investigating this... No need to try and fill the
+pool too quickly or too many times. Over the course of creation, the udev
+code may 'add', 'change', and 'delete' the same device. So if the refresh
+code runs and finds something, it may display it only to have a subsequent
+refresh appear to "lose" the device. The udev processing doesn't seem to
+have a way to indicate that it's all done with the creation processing of a
+newly found vHBA. Only the Lone Ranger has silver bullets to fix everything.
+
+(cherry picked from commit 512b8747d82c682d002f21249a934927da193e78)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/storage/storage_backend_scsi.c | 131 +++++++++++++++++++++++++++++++++----
+ 1 file changed, 120 insertions(+), 11 deletions(-)
+
+diff --git a/src/storage/storage_backend_scsi.c b/src/storage/storage_backend_scsi.c
+index 367216a..7bc67e4 100644
+--- a/src/storage/storage_backend_scsi.c
++++ b/src/storage/storage_backend_scsi.c
+@@ -41,6 +41,13 @@
+ 
+ VIR_LOG_INIT("storage.storage_backend_scsi");
+ 
++typedef struct _virStoragePoolFCRefreshInfo virStoragePoolFCRefreshInfo;
++typedef virStoragePoolFCRefreshInfo *virStoragePoolFCRefreshInfoPtr;
++struct _virStoragePoolFCRefreshInfo {
++    char *name;
++    virStoragePoolObjPtr pool;
++};
++
+ /* Function to check if the type file in the given sysfs_path is a
+  * Direct-Access device (i.e. type 0).  Return -1 on failure, type of
+  * the device otherwise.
+@@ -420,9 +427,10 @@ processLU(virStoragePoolObjPtr pool,
+ }
+ 
+ 
+-int
+-virStorageBackendSCSIFindLUs(virStoragePoolObjPtr pool,
+-                             uint32_t scanhost)
++static int
++virStorageBackendSCSIFindLUsInternal(virStoragePoolObjPtr pool,
++                                     uint32_t scanhost,
++                                     bool *found)
+ {
+     int retval = 0;
+     uint32_t bus, target, lun;
+@@ -430,7 +438,6 @@ virStorageBackendSCSIFindLUs(virStoragePoolObjPtr pool,
+     DIR *devicedir = NULL;
+     struct dirent *lun_dirent = NULL;
+     char devicepattern[64];
+-    bool found = false;
+ 
+     VIR_DEBUG("Discovering LUs on host %u", scanhost);
+ 
+@@ -446,6 +453,7 @@ virStorageBackendSCSIFindLUs(virStoragePoolObjPtr pool,
+ 
+     snprintf(devicepattern, sizeof(devicepattern), "%u:%%u:%%u:%%u\n", scanhost);
+ 
++    *found = false;
+     while ((retval = virDirRead(devicedir, &lun_dirent, device_path)) > 0) {
+         if (sscanf(lun_dirent->d_name, devicepattern,
+                    &bus, &target, &lun) != 3) {
+@@ -455,10 +463,10 @@ virStorageBackendSCSIFindLUs(virStoragePoolObjPtr pool,
+         VIR_DEBUG("Found possible LU '%s'", lun_dirent->d_name);
+ 
+         if (processLU(pool, scanhost, bus, target, lun) == 0)
+-            found = true;
++            *found = true;
+     }
+ 
+-    if (!found)
++    if (!*found)
+         VIR_DEBUG("No LU found for pool %s", pool->def->name);
+ 
+     closedir(devicedir);
+@@ -466,6 +474,14 @@ virStorageBackendSCSIFindLUs(virStoragePoolObjPtr pool,
+     return retval;
+ }
+ 
++int
++virStorageBackendSCSIFindLUs(virStoragePoolObjPtr pool,
++                             uint32_t scanhost)
++{
++    bool found;  /* This path doesn't care whether found or not */
++    return virStorageBackendSCSIFindLUsInternal(pool, scanhost, &found);
++}
++
+ static int
+ virStorageBackendSCSITriggerRescan(uint32_t host)
+ {
+@@ -511,6 +527,74 @@ virStorageBackendSCSITriggerRescan(uint32_t host)
+     return retval;
+ }
+ 
++/**
++ * Frees opaque data
++ *
++ * @opaque Data to be freed
++ */
++static void
++virStoragePoolFCRefreshDataFree(void *opaque)
++{
++    virStoragePoolFCRefreshInfoPtr cbdata = opaque;
++
++    VIR_FREE(cbdata->name);
++    VIR_FREE(cbdata);
++}
++
++/**
++ * Thread to handle the pool refresh after a VPORT_CREATE is done. In this
++ * case the 'udevEventHandleCallback' will be executed asynchronously as a
++ * result of the node device driver callback routine to handle when udev
++ * notices some sort of device change (such as adding a new device). It takes
++ * some amount of time (usually a few seconds) for udev to go through the
++ * process of setting up the new device.  Unfortunately, there is nothing
++ * that says "when" it's done. The immediate virStorageBackendSCSIRefreshPool
++ * done after virStorageBackendSCSIStartPool (and createVport) occurs too
++ * quickly to find any devices.
++ *
++ * So this thread is designed to wait a few seconds (5), then make the query
++ * to find the LUs for the pool.  If none yet exist, we'll try once more
++ * to find the LUs before giving up.
++ *
++ * Attempting to find devices prior to allowing udev to settle down may result
++ * in finding devices that then get deleted.
++ *
++ * @opaque Pool's Refresh Info containing name and pool object pointer
++ */
++static void
++virStoragePoolFCRefreshThread(void *opaque)
++{
++    virStoragePoolFCRefreshInfoPtr cbdata = opaque;
++    const char *name = cbdata->name;
++    virStoragePoolObjPtr pool = cbdata->pool;
++    unsigned int host;
++    bool found = false;
++    int tries = 2;
++
++    do {
++        sleep(5); /* Give it time */
++
++        /* Lock the pool, if active, we can get the host number, successfully
++         * rescan, and find LUN's, then we are happy
++         */
++        VIR_DEBUG("Attempt FC Refresh for pool='%s' name='%s' tries='%d'",
++                  pool->def->name, name, tries);
++        virStoragePoolObjLock(pool);
++        if (virStoragePoolObjIsActive(pool) &&
++            virGetSCSIHostNumber(name, &host) == 0 &&
++            virStorageBackendSCSITriggerRescan(host) == 0) {
++            virStoragePoolObjClearVols(pool);
++            virStorageBackendSCSIFindLUsInternal(pool, host, &found);
++        }
++        virStoragePoolObjUnlock(pool);
++    } while (!found && --tries);
++
++    if (!found)
++        VIR_DEBUG("FC Refresh Thread failed to find LU's");
++
++    virStoragePoolFCRefreshDataFree(cbdata);
++}
++
+ static char *
+ getAdapterName(virStoragePoolSourceAdapter adapter)
+ {
+@@ -646,13 +730,15 @@ checkVhbaSCSIHostParent(virConnectPtr conn,
+ 
+ static int
+ createVport(virConnectPtr conn,
+-            const char *configFile,
+-            virStoragePoolDefPtr def)
++            virStoragePoolObjPtr pool)
+ {
+-    virStoragePoolSourceAdapterPtr adapter = &def->source.adapter;
++    const char *configFile = pool->configFile;
++    virStoragePoolSourceAdapterPtr adapter = &pool->def->source.adapter;
+     unsigned int parent_host;
+     char *name = NULL;
+     char *parent_hoststr = NULL;
++    virStoragePoolFCRefreshInfoPtr cbdata = NULL;
++    virThread thread;
+ 
+     if (adapter->type != VIR_STORAGE_POOL_SOURCE_ADAPTER_TYPE_FC_HOST)
+         return 0;
+@@ -726,7 +812,7 @@ createVport(virConnectPtr conn,
+     if (adapter->data.fchost.managed != VIR_TRISTATE_BOOL_YES) {
+         adapter->data.fchost.managed = VIR_TRISTATE_BOOL_YES;
+         if (configFile) {
+-            if (virStoragePoolSaveConfig(configFile, def) < 0)
++            if (virStoragePoolSaveConfig(configFile, pool->def) < 0)
+                 return -1;
+         }
+     }
+@@ -736,6 +822,29 @@ createVport(virConnectPtr conn,
+         return -1;
+ 
+     virFileWaitForDevices();
++
++    /* Creating our own VPORT didn't leave enough time to find any LUN's,
++     * so, let's create a thread whose job it is to call the FindLU's with
++     * retry logic set to true. If the thread isn't created, then no big
++     * deal since it's still possible to refresh the pool later.
++     */
++    if ((name = virGetFCHostNameByWWN(NULL, adapter->data.fchost.wwnn,
++                                      adapter->data.fchost.wwpn))) {
++        if (VIR_ALLOC(cbdata) == 0) {
++            cbdata->pool = pool;
++            cbdata->name = name;
++            name = NULL;
++
++            if (virThreadCreate(&thread, false, virStoragePoolFCRefreshThread,
++                                cbdata) < 0) {
++                /* Oh well - at least someone can still refresh afterwards */
++                VIR_DEBUG("Failed to create FC Pool Refresh Thread");
++                virStoragePoolFCRefreshDataFree(cbdata);
++            }
++        }
++        VIR_FREE(name);
++    }
++
+     return 0;
+ }
+ 
+@@ -872,7 +981,7 @@ static int
+ virStorageBackendSCSIStartPool(virConnectPtr conn,
+                                virStoragePoolObjPtr pool)
+ {
+-    return createVport(conn, pool->configFile, pool->def);
++    return createVport(conn, pool);
+ }
+ 
+ static int
+-- 
+2.1.3
+

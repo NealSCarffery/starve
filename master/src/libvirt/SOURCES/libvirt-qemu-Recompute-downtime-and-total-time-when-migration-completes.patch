@@ -1,0 +1,221 @@
+From b03082de96085cbca052d979ce1679ca65ab1ede Mon Sep 17 00:00:00 2001
+Message-Id: <b03082de96085cbca052d979ce1679ca65ab1ede@dist-git>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Thu, 28 Aug 2014 16:37:38 +0200
+Subject: [PATCH] qemu: Recompute downtime and total time when migration
+ completes
+
+Total time of a migration and total downtime transfered from a source to
+a destination host do not count with the transfer time to the
+destination host and with the time elapsed before guest CPUs are
+resumed. Thus, source libvirtd remembers when migration started and when
+guest CPUs were paused. Both timestamps are transferred to destination
+libvirtd which uses them to compute total migration time and total
+downtime. Obviously, this requires the time to be synchronized between
+the two hosts. The reported times are useless otherwise but they would
+be equally useless if we didn't do this recomputation so don't lose
+anything by doing it.
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+(cherry picked from commit eaee338ae67e29fd93276563238633eae1097c82)
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1063724
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/libvirt.c             |  5 ++++-
+ src/qemu/qemu_domain.c    | 28 ++++++++++++++++++++++++++++
+ src/qemu/qemu_domain.h    |  3 +++
+ src/qemu/qemu_migration.c | 15 ++++++++++++++-
+ src/qemu/qemu_process.c   |  9 ++++++++-
+ tools/virsh.pod           |  5 ++++-
+ 6 files changed, 61 insertions(+), 4 deletions(-)
+
+diff --git a/src/libvirt.c b/src/libvirt.c
+index 6fa0a6b..61d0543 100644
+--- a/src/libvirt.c
++++ b/src/libvirt.c
+@@ -17581,7 +17581,10 @@ virDomainGetJobInfo(virDomainPtr domain, virDomainJobInfoPtr info)
+  * return statistics about a recently completed job. Specifically, this
+  * flag may be used to query statistics of a completed incoming migration.
+  * Statistics of a completed job are automatically destroyed once read or
+- * when libvirtd is restarted.
++ * when libvirtd is restarted. Note that time information returned for
++ * completed migrations may be completely irrelevant unless both source and
++ * destination hosts have synchronized time (i.e., NTP daemon is running on
++ * both of them).
+  *
+  * Returns 0 in case of success and -1 in case of failure.
+  */
+diff --git a/src/qemu/qemu_domain.c b/src/qemu/qemu_domain.c
+index 78d6e8c..c0306d7 100644
+--- a/src/qemu/qemu_domain.c
++++ b/src/qemu/qemu_domain.c
+@@ -222,11 +222,39 @@ qemuDomainJobInfoUpdateTime(qemuDomainJobInfoPtr jobInfo)
+     if (virTimeMillisNow(&now) < 0)
+         return -1;
+ 
++    if (now < jobInfo->started) {
++        VIR_WARN("Async job starts in the future");
++        jobInfo->started = 0;
++        return 0;
++    }
++
+     jobInfo->timeElapsed = now - jobInfo->started;
+     return 0;
+ }
+ 
+ int
++qemuDomainJobInfoUpdateDowntime(qemuDomainJobInfoPtr jobInfo)
++{
++    unsigned long long now;
++
++    if (!jobInfo->stopped)
++        return 0;
++
++    if (virTimeMillisNow(&now) < 0)
++        return -1;
++
++    if (now < jobInfo->stopped) {
++        VIR_WARN("Guest's CPUs stopped in the future");
++        jobInfo->stopped = 0;
++        return 0;
++    }
++
++    jobInfo->status.downtime = now - jobInfo->stopped;
++    jobInfo->status.downtime_set = true;
++    return 0;
++}
++
++int
+ qemuDomainJobInfoToInfo(qemuDomainJobInfoPtr jobInfo,
+                         virDomainJobInfoPtr info)
+ {
+diff --git a/src/qemu/qemu_domain.h b/src/qemu/qemu_domain.h
+index 2e16cde..479b51f 100644
+--- a/src/qemu/qemu_domain.h
++++ b/src/qemu/qemu_domain.h
+@@ -105,6 +105,7 @@ typedef qemuDomainJobInfo *qemuDomainJobInfoPtr;
+ struct _qemuDomainJobInfo {
+     virDomainJobType type;
+     unsigned long long started; /* When the async job started */
++    unsigned long long stopped; /* When the domain's CPUs were stopped */
+     /* Computed values */
+     unsigned long long timeElapsed;
+     unsigned long long timeRemaining;
+@@ -391,6 +392,8 @@ bool qemuDomainAgentAvailable(qemuDomainObjPrivatePtr priv,
+ 
+ int qemuDomainJobInfoUpdateTime(qemuDomainJobInfoPtr jobInfo)
+     ATTRIBUTE_NONNULL(1);
++int qemuDomainJobInfoUpdateDowntime(qemuDomainJobInfoPtr jobInfo)
++    ATTRIBUTE_NONNULL(1);
+ int qemuDomainJobInfoToInfo(qemuDomainJobInfoPtr jobInfo,
+                             virDomainJobInfoPtr info)
+     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2);
+diff --git a/src/qemu/qemu_migration.c b/src/qemu/qemu_migration.c
+index 9b1e94b..c7a41b1 100644
+--- a/src/qemu/qemu_migration.c
++++ b/src/qemu/qemu_migration.c
+@@ -623,6 +623,9 @@ qemuMigrationCookieStatisticsXMLFormat(virBufferPtr buf,
+     virBufferAddLit(buf, "<statistics>\n");
+     virBufferAdjustIndent(buf, 2);
+ 
++    virBufferAsprintf(buf, "<started>%llu</started>\n", jobInfo->started);
++    virBufferAsprintf(buf, "<stopped>%llu</stopped>\n", jobInfo->stopped);
++
+     virBufferAsprintf(buf, "<%1$s>%2$llu</%1$s>\n",
+                       VIR_DOMAIN_JOB_TIME_ELAPSED,
+                       jobInfo->timeElapsed);
+@@ -891,6 +894,9 @@ qemuMigrationCookieStatisticsXMLParse(xmlXPathContextPtr ctxt)
+     status = &jobInfo->status;
+     jobInfo->type = VIR_DOMAIN_JOB_COMPLETED;
+ 
++    virXPathULongLong("string(./started[1])", ctxt, &jobInfo->started);
++    virXPathULongLong("string(./stopped[1])", ctxt, &jobInfo->stopped);
++
+     virXPathULongLong("string(./" VIR_DOMAIN_JOB_TIME_ELAPSED "[1])",
+                       ctxt, &jobInfo->timeElapsed);
+     virXPathULongLong("string(./" VIR_DOMAIN_JOB_TIME_REMAINING "[1])",
+@@ -2015,6 +2021,7 @@ qemuMigrationWaitForCompletion(virQEMUDriverPtr driver,
+     }
+ 
+     if (jobInfo->type == VIR_DOMAIN_JOB_COMPLETED) {
++        qemuDomainJobInfoUpdateDowntime(jobInfo);
+         VIR_FREE(priv->job.completed);
+         if (VIR_ALLOC(priv->job.completed) == 0)
+             *priv->job.completed = *jobInfo;
+@@ -3597,8 +3604,10 @@ qemuMigrationRun(virQEMUDriverPtr driver,
+         VIR_FORCE_CLOSE(fd);
+     }
+ 
+-    if (priv->job.completed)
++    if (priv->job.completed) {
+         qemuDomainJobInfoUpdateTime(priv->job.completed);
++        qemuDomainJobInfoUpdateDowntime(priv->job.completed);
++    }
+ 
+     cookieFlags |= QEMU_MIGRATION_COOKIE_NETWORK |
+                    QEMU_MIGRATION_COOKIE_STATS;
+@@ -4811,6 +4820,10 @@ qemuMigrationFinish(virQEMUDriverPtr driver,
+                 }
+                 goto endjob;
+             }
++            if (priv->job.completed) {
++                qemuDomainJobInfoUpdateTime(priv->job.completed);
++                qemuDomainJobInfoUpdateDowntime(priv->job.completed);
++            }
+         }
+ 
+         dom = virGetDomain(dconn, vm->def->name, vm->def->uuid);
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index 9395af1..0f269b9 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -754,6 +754,9 @@ qemuProcessHandleStop(qemuMonitorPtr mon ATTRIBUTE_UNUSED,
+         VIR_DEBUG("Transitioned guest %s to paused state",
+                   vm->def->name);
+ 
++        if (priv->job.current)
++            ignore_value(virTimeMillisNow(&priv->job.current->stopped));
++
+         virDomainObjSetState(vm, VIR_DOMAIN_PAUSED, VIR_DOMAIN_PAUSED_UNKNOWN);
+         event = virDomainEventLifecycleNewFromObj(vm,
+                                          VIR_DOMAIN_EVENT_SUSPENDED,
+@@ -2888,7 +2891,8 @@ qemuProcessStartCPUs(virQEMUDriverPtr driver, virDomainObjPtr vm,
+ }
+ 
+ 
+-int qemuProcessStopCPUs(virQEMUDriverPtr driver, virDomainObjPtr vm,
++int qemuProcessStopCPUs(virQEMUDriverPtr driver,
++                        virDomainObjPtr vm,
+                         virDomainPausedReason reason,
+                         qemuDomainAsyncJob asyncJob)
+ {
+@@ -2906,6 +2910,9 @@ int qemuProcessStopCPUs(virQEMUDriverPtr driver, virDomainObjPtr vm,
+     if (ret < 0)
+         goto cleanup;
+ 
++    if (priv->job.current)
++        ignore_value(virTimeMillisNow(&priv->job.current->stopped));
++
+     virDomainObjSetState(vm, VIR_DOMAIN_PAUSED, reason);
+     if (virDomainLockProcessPause(driver->lockManager, vm, &priv->lockState) < 0)
+         VIR_WARN("Unable to release lease on %s", vm->def->name);
+diff --git a/tools/virsh.pod b/tools/virsh.pod
+index aad40d5..b28677f 100644
+--- a/tools/virsh.pod
++++ b/tools/virsh.pod
+@@ -1117,7 +1117,10 @@ Abort the currently running domain job.
+ Returns information about jobs running on a domain. I<--completed> tells
+ virsh to return information about a recently finished job. Statistics of
+ a completed job are automatically destroyed once read or when libvirtd
+-is restarted.
++is restarted. Note that time information returned for completed
++migrations may be completely irrelevant unless both source and
++destination hosts have synchronized time (i.e., NTP daemon is running
++on both of them).
+ 
+ =item B<domname> I<domain-id-or-uuid>
+ 
+-- 
+2.1.0
+

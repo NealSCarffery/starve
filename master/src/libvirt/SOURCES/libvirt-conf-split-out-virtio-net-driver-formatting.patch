@@ -1,0 +1,108 @@
+From dfe7fcd67e7c3cb13f6c2080ff5ce4829da5b4e5 Mon Sep 17 00:00:00 2001
+Message-Id: <dfe7fcd67e7c3cb13f6c2080ff5ce4829da5b4e5@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Wed, 24 Sep 2014 16:55:42 +0200
+Subject: [PATCH] conf: split out virtio net driver formatting
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1139364
+
+Instead of checking upfront if the <driver> element will be needed
+in a big condition, just format all the attributes into a string
+and output the <driver> element if the string is not empty.
+
+(cherry picked from commit fb78d1cee7ff6bafff80a58be3ff7710488d55ad)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/conf/domain_conf.c | 68 ++++++++++++++++++++++++++++++++------------------
+ 1 file changed, 44 insertions(+), 24 deletions(-)
+
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index a5f3c1d..306843b 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -16446,6 +16446,41 @@ virDomainActualNetDefFormat(virBufferPtr buf,
+     return 0;
+ }
+ 
++
++static int
++virDomainVirtioNetDriverFormat(char **outstr,
++                               virDomainNetDefPtr def)
++{
++    virBuffer buf = VIR_BUFFER_INITIALIZER;
++    if (def->driver.virtio.name) {
++        virBufferAsprintf(&buf, "name='%s' ",
++                          virDomainNetBackendTypeToString(def->driver.virtio.name));
++    }
++    if (def->driver.virtio.txmode) {
++        virBufferAsprintf(&buf, "txmode='%s' ",
++                          virDomainNetVirtioTxModeTypeToString(def->driver.virtio.txmode));
++    }
++    if (def->driver.virtio.ioeventfd) {
++        virBufferAsprintf(&buf, "ioeventfd='%s' ",
++                          virTristateSwitchTypeToString(def->driver.virtio.ioeventfd));
++    }
++    if (def->driver.virtio.event_idx) {
++        virBufferAsprintf(&buf, "event_idx='%s' ",
++                          virTristateSwitchTypeToString(def->driver.virtio.event_idx));
++    }
++    if (def->driver.virtio.queues)
++        virBufferAsprintf(&buf, "queues='%u' ", def->driver.virtio.queues);
++
++    virBufferTrim(&buf, " ", -1);
++
++    if (virBufferCheckError(&buf) < 0)
++        return -1;
++
++    *outstr = virBufferContentAndReset(&buf);
++    return 0;
++}
++
++
+ int
+ virDomainNetDefFormat(virBufferPtr buf,
+                       virDomainNetDefPtr def,
+@@ -16621,30 +16656,15 @@ virDomainNetDefFormat(virBufferPtr buf,
+     if (def->model) {
+         virBufferEscapeString(buf, "<model type='%s'/>\n",
+                               def->model);
+-        if (STREQ(def->model, "virtio") &&
+-            (def->driver.virtio.name || def->driver.virtio.txmode ||
+-             def->driver.virtio.ioeventfd || def->driver.virtio.event_idx ||
+-             def->driver.virtio.queues)) {
+-            virBufferAddLit(buf, "<driver");
+-            if (def->driver.virtio.name) {
+-                virBufferAsprintf(buf, " name='%s'",
+-                                  virDomainNetBackendTypeToString(def->driver.virtio.name));
+-            }
+-            if (def->driver.virtio.txmode) {
+-                virBufferAsprintf(buf, " txmode='%s'",
+-                                  virDomainNetVirtioTxModeTypeToString(def->driver.virtio.txmode));
+-            }
+-            if (def->driver.virtio.ioeventfd) {
+-                virBufferAsprintf(buf, " ioeventfd='%s'",
+-                                  virTristateSwitchTypeToString(def->driver.virtio.ioeventfd));
+-            }
+-            if (def->driver.virtio.event_idx) {
+-                virBufferAsprintf(buf, " event_idx='%s'",
+-                                  virTristateSwitchTypeToString(def->driver.virtio.event_idx));
+-            }
+-            if (def->driver.virtio.queues)
+-                virBufferAsprintf(buf, " queues='%u'", def->driver.virtio.queues);
+-            virBufferAddLit(buf, "/>\n");
++        if (STREQ(def->model, "virtio")) {
++            char *str;
++
++            if (virDomainVirtioNetDriverFormat(&str, def) < 0)
++                return -1;
++
++            if (str)
++                virBufferAsprintf(buf, "<driver %s/>\n", str);
++            VIR_FREE(str);
+         }
+     }
+     if (def->backend.tap || def->backend.vhost) {
+-- 
+2.1.1
+

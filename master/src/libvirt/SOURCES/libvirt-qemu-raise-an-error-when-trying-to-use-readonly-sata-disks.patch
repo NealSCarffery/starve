@@ -1,0 +1,50 @@
+From 434be9a2661b53b45d592611d45d81fda8dc4510 Mon Sep 17 00:00:00 2001
+Message-Id: <434be9a2661b53b45d592611d45d81fda8dc4510@dist-git>
+From: Giuseppe Scrivano <gscrivan@redhat.com>
+Date: Mon, 22 Sep 2014 17:33:45 +0200
+Subject: [PATCH] qemu: raise an error when trying to use readonly sata disks
+
+commit 72f919f558902968bd0cf9f99f25ac62cbfe3ac6 introduced an user
+friendly error message when trying to use IDE disks as readonly.
+
+Do the same thing for the SATA bus.
+
+Closes: https://bugzilla.redhat.com/show_bug.cgi?id=1112939
+
+Signed-off-by: Giuseppe Scrivano <gscrivan@redhat.com>
+(cherry picked from commit 75d6f42f427506a97be086e986d00778f46671d1)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_command.c | 16 +++++++++++-----
+ 1 file changed, 11 insertions(+), 5 deletions(-)
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 82ee58b..05f328a 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -3507,11 +3507,17 @@ qemuBuildDriveStr(virConnectPtr conn,
+         virBufferAddLit(&opt, ",boot=on");
+     if (disk->src->readonly &&
+         virQEMUCapsGet(qemuCaps, QEMU_CAPS_DRIVE_READONLY)) {
+-        if (disk->bus == VIR_DOMAIN_DISK_BUS_IDE &&
+-            disk->device == VIR_DOMAIN_DISK_DEVICE_DISK) {
+-            virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+-                           _("readonly ide disks are not supported"));
+-            goto error;
++        if (disk->device == VIR_DOMAIN_DISK_DEVICE_DISK) {
++            if (disk->bus == VIR_DOMAIN_DISK_BUS_IDE) {
++                virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
++                               _("readonly ide disks are not supported"));
++                goto error;
++            }
++            if (disk->bus == VIR_DOMAIN_DISK_BUS_SATA) {
++                virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
++                               _("readonly sata disks are not supported"));
++                goto error;
++            }
+         }
+         virBufferAddLit(&opt, ",readonly=on");
+     }
+-- 
+2.1.1
+

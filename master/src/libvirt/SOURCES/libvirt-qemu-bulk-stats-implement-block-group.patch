@@ -1,0 +1,493 @@
+From 59a6145c0f1fe4e7ef35970578b8eb9837145bc0 Mon Sep 17 00:00:00 2001
+Message-Id: <59a6145c0f1fe4e7ef35970578b8eb9837145bc0@dist-git>
+From: Francesco Romani <fromani@redhat.com>
+Date: Wed, 1 Oct 2014 11:20:16 +0200
+Subject: [PATCH] qemu: bulk stats: implement block group
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1113116
+
+This patch implements the VIR_DOMAIN_STATS_BLOCK group of statistics.
+
+To do so, a helper function to get the block stats of all the disks of
+a domain is added.
+
+Signed-off-by: Francesco Romani <fromani@redhat.com>
+Signed-off-by: Peter Krempa <pkrempa@redhat.com>
+(cherry picked from commit 290e3c6b07a273444f681de198d2416ccd2d4702)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ include/libvirt/libvirt.h.in |   1 +
+ src/libvirt.c                |  21 +++++++
+ src/qemu/qemu_driver.c       |  81 ++++++++++++++++++++++++++
+ src/qemu/qemu_monitor.c      |  26 +++++++++
+ src/qemu/qemu_monitor.h      |  20 +++++++
+ src/qemu/qemu_monitor_json.c | 136 +++++++++++++++++++++++++++++--------------
+ src/qemu/qemu_monitor_json.h |   4 ++
+ 7 files changed, 246 insertions(+), 43 deletions(-)
+
+diff --git a/include/libvirt/libvirt.h.in b/include/libvirt/libvirt.h.in
+index 72aa47d..60b3e0b 100644
+--- a/include/libvirt/libvirt.h.in
++++ b/include/libvirt/libvirt.h.in
+@@ -2518,6 +2518,7 @@ typedef enum {
+     VIR_DOMAIN_STATS_BALLOON = (1 << 2), /* return domain balloon info */
+     VIR_DOMAIN_STATS_VCPU = (1 << 3), /* return domain virtual CPU info */
+     VIR_DOMAIN_STATS_INTERFACE = (1 << 4), /* return domain interfaces info */
++    VIR_DOMAIN_STATS_BLOCK = (1 << 5), /* return domain block info */
+ } virDomainStatsTypes;
+ 
+ typedef enum {
+diff --git a/src/libvirt.c b/src/libvirt.c
+index 46d3e22..f62ecf7 100644
+--- a/src/libvirt.c
++++ b/src/libvirt.c
+@@ -21595,6 +21595,27 @@ virConnectGetDomainCapabilities(virConnectPtr conn,
+  * "net.<num>.tx.errs" - transmission errors as unsigned long long.
+  * "net.<num>.tx.drop" - transmit packets dropped as unsigned long long.
+  *
++ * VIR_DOMAIN_STATS_BLOCK: Return block devices statistics.
++ * The typed parameter keys are in this format:
++ * "block.count" - number of block devices on this domain
++ *                 as unsigned int.
++ * "block.<num>.name" - name of the block device <num> as string.
++ *                      matches the target name (vda/sda/hda) of the
++ *                      block device.
++ * "block.<num>.rd.reqs" - number of read requests as unsigned long long.
++ * "block.<num>.rd.bytes" - number of read bytes as unsigned long long.
++ * "block.<num>.rd.times" - total time (ns) spent on reads as
++ *                          unsigned long long.
++ * "block.<num>.wr.reqs" - number of write requests as unsigned long long.
++ * "block.<num>.wr.bytes" - number of written bytes as unsigned long long.
++ * "block.<num>.wr.times" - total time (ns) spent on writes as
++ *                          unsigned long long.
++ * "block.<num>.fl.reqs" - total flush requests as unsigned long long.
++ * "block.<num>.fl.times" - total time (ns) spent on cache flushing as
++ *                          unsigned long long.
++ * "block.<num>.errors" - Xen only: the 'oo_req' value as
++ *                        unsigned long long.
++ *
+  * Using 0 for @stats returns all stats groups supported by the given
+  * hypervisor.
+  *
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 3a46c6d..8e90cc6 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -9866,6 +9866,7 @@ qemuDomainBlockStats(virDomainPtr dom,
+     return ret;
+ }
+ 
++
+ static int
+ qemuDomainBlockStatsFlags(virDomainPtr dom,
+                           const char *path,
+@@ -17690,6 +17691,85 @@ qemuDomainGetStatsInterface(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
+ 
+ #undef QEMU_ADD_NET_PARAM
+ 
++/* expects a LL, but typed parameter must be ULL */
++#define QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, num, name, value) \
++do { \
++    char param_name[VIR_TYPED_PARAM_FIELD_LENGTH]; \
++    snprintf(param_name, VIR_TYPED_PARAM_FIELD_LENGTH, \
++             "block.%zu.%s", num, name); \
++    if (value >= 0 && virTypedParamsAddULLong(&(record)->params, \
++                                              &(record)->nparams, \
++                                              maxparams, \
++                                              param_name, \
++                                              value) < 0) \
++        goto cleanup; \
++} while (0)
++
++static int
++qemuDomainGetStatsBlock(virQEMUDriverPtr driver,
++                        virDomainObjPtr dom,
++                        virDomainStatsRecordPtr record,
++                        int *maxparams,
++                        unsigned int privflags)
++{
++    size_t i;
++    int ret = -1;
++    int nstats = dom->def->ndisks;
++    qemuBlockStatsPtr stats = NULL;
++    qemuDomainObjPrivatePtr priv = dom->privateData;
++
++    if (!HAVE_JOB(privflags) || !virDomainObjIsActive(dom))
++        return 0; /* it's ok, just go ahead silently */
++
++    if (VIR_ALLOC_N(stats, nstats) < 0)
++        return -1;
++
++    qemuDomainObjEnterMonitor(driver, dom);
++
++    nstats = qemuMonitorGetAllBlockStatsInfo(priv->mon, NULL,
++                                             stats, nstats);
++
++    qemuDomainObjExitMonitor(driver, dom);
++
++    if (nstats < 0) {
++        virResetLastError();
++        ret = 0; /* still ok, again go ahead silently */
++        goto cleanup;
++    }
++
++    QEMU_ADD_COUNT_PARAM(record, maxparams, "block", dom->def->ndisks);
++
++    for (i = 0; i < nstats; i++) {
++        QEMU_ADD_NAME_PARAM(record, maxparams,
++                            "block", i, dom->def->disks[i]->dst);
++
++        QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, i,
++                                "rd.reqs", stats[i].rd_req);
++        QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, i,
++                                "rd.bytes", stats[i].rd_bytes);
++        QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, i,
++                                "rd.times", stats[i].rd_total_times);
++        QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, i,
++                                "wr.reqs", stats[i].wr_req);
++        QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, i,
++                                "wr.bytes", stats[i].wr_bytes);
++        QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, i,
++                                "wr.times", stats[i].wr_total_times);
++        QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, i,
++                                "fl.reqs", stats[i].flush_req);
++        QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, i,
++                                "fl.times", stats[i].flush_total_times);
++    }
++
++    ret = 0;
++
++ cleanup:
++    VIR_FREE(stats);
++    return ret;
++}
++
++#undef QEMU_ADD_BLOCK_PARAM_LL
++
+ #undef QEMU_ADD_NAME_PARAM
+ 
+ #undef QEMU_ADD_COUNT_PARAM
+@@ -17713,6 +17793,7 @@ static struct qemuDomainGetStatsWorker qemuDomainGetStatsWorkers[] = {
+     { qemuDomainGetStatsBalloon, VIR_DOMAIN_STATS_BALLOON, true },
+     { qemuDomainGetStatsVcpu, VIR_DOMAIN_STATS_VCPU, false },
+     { qemuDomainGetStatsInterface, VIR_DOMAIN_STATS_INTERFACE, false },
++    { qemuDomainGetStatsBlock, VIR_DOMAIN_STATS_BLOCK, true },
+     { NULL, 0, false }
+ };
+ 
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index fea551d..afe7959 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -1760,6 +1760,32 @@ int qemuMonitorGetBlockStatsInfo(qemuMonitorPtr mon,
+     return ret;
+ }
+ 
++/* Fills the first 'nstats' block stats. 'stats' must be an array.
++ * Returns <0 on error, otherwise the number of block stats retrieved.
++ * if 'dev_name' is != NULL, look for this device only and skip
++ * any other. In that case return value cannot be greater than 1.
++ */
++int
++qemuMonitorGetAllBlockStatsInfo(qemuMonitorPtr mon,
++                                const char *dev_name,
++                                qemuBlockStatsPtr stats,
++                                int nstats)
++{
++    int ret;
++    VIR_DEBUG("mon=%p dev=%s", mon, dev_name);
++
++    if (mon->json) {
++        ret = qemuMonitorJSONGetAllBlockStatsInfo(mon, dev_name,
++                                                  stats, nstats);
++    } else {
++        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                       _("unable to query all block stats with this QEMU"));
++        return -1;
++    }
++
++    return ret;
++}
++
+ /* Return 0 and update @nparams with the number of block stats
+  * QEMU supports if success. Return -1 if failure.
+  */
+diff --git a/src/qemu/qemu_monitor.h b/src/qemu/qemu_monitor.h
+index 62c9f2e..b7f9fd1 100644
+--- a/src/qemu/qemu_monitor.h
++++ b/src/qemu/qemu_monitor.h
+@@ -346,6 +346,26 @@ int qemuMonitorGetBlockStatsInfo(qemuMonitorPtr mon,
+                                  long long *flush_req,
+                                  long long *flush_total_times,
+                                  long long *errs);
++
++typedef struct _qemuBlockStats qemuBlockStats;
++typedef qemuBlockStats *qemuBlockStatsPtr;
++struct _qemuBlockStats {
++    long long rd_req;
++    long long rd_bytes;
++    long long wr_req;
++    long long wr_bytes;
++    long long rd_total_times;
++    long long wr_total_times;
++    long long flush_req;
++    long long flush_total_times;
++};
++
++int qemuMonitorGetAllBlockStatsInfo(qemuMonitorPtr mon,
++                                    const char *dev_name,
++                                    qemuBlockStatsPtr stats,
++                                    int nstats)
++    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(3);
++
+ int qemuMonitorGetBlockStatsParamsNumber(qemuMonitorPtr mon,
+                                          int *nparams);
+ 
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index 17b082c..c013d49 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -1708,13 +1708,8 @@ int qemuMonitorJSONGetBlockStatsInfo(qemuMonitorPtr mon,
+                                      long long *flush_total_times,
+                                      long long *errs)
+ {
+-    int ret;
+-    size_t i;
+-    bool found = false;
+-    virJSONValuePtr cmd = qemuMonitorJSONMakeCommand("query-blockstats",
+-                                                     NULL);
+-    virJSONValuePtr reply = NULL;
+-    virJSONValuePtr devices;
++    qemuBlockStats stats;
++    int ret = -1;
+ 
+     *rd_req = *rd_bytes = -1;
+     *wr_req = *wr_bytes = *errs = -1;
+@@ -1728,9 +1723,49 @@ int qemuMonitorJSONGetBlockStatsInfo(qemuMonitorPtr mon,
+     if (flush_total_times)
+         *flush_total_times = -1;
+ 
++    if (qemuMonitorJSONGetAllBlockStatsInfo(mon, dev_name, &stats, 1) != 1)
++        goto cleanup;
++
++    *rd_req = stats.rd_req;
++    *rd_bytes = stats.rd_bytes;
++    *wr_req = stats.wr_req;
++    *wr_bytes = stats.wr_bytes;
++    *errs = -1; /* QEMU does not have this */
++
++    if (rd_total_times)
++        *rd_total_times = stats.rd_total_times;
++    if (wr_total_times)
++        *wr_total_times = stats.wr_total_times;
++    if (flush_req)
++        *flush_req = stats.flush_req;
++    if (flush_total_times)
++        *flush_total_times = stats.flush_total_times;
++
++    ret = 0;
++
++ cleanup:
++    return ret;
++}
++
++
++int qemuMonitorJSONGetAllBlockStatsInfo(qemuMonitorPtr mon,
++                                        const char *dev_name,
++                                        qemuBlockStatsPtr bstats,
++                                        int nstats)
++{
++    int ret, count;
++    size_t i;
++    virJSONValuePtr cmd = qemuMonitorJSONMakeCommand("query-blockstats",
++                                                     NULL);
++    virJSONValuePtr reply = NULL;
++    virJSONValuePtr devices;
++
+     if (!cmd)
+         return -1;
+ 
++    if (!bstats || nstats <= 0)
++        return -1;
++
+     ret = qemuMonitorJSONCommand(mon, cmd, &reply);
+ 
+     if (ret == 0)
+@@ -1746,108 +1781,123 @@ int qemuMonitorJSONGetBlockStatsInfo(qemuMonitorPtr mon,
+         goto cleanup;
+     }
+ 
+-    for (i = 0; i < virJSONValueArraySize(devices); i++) {
++    count = 0;
++    for (i = 0; i < virJSONValueArraySize(devices) && count < nstats; i++) {
+         virJSONValuePtr dev = virJSONValueArrayGet(devices, i);
+         virJSONValuePtr stats;
+-        const char *thisdev;
+         if (!dev || dev->type != VIR_JSON_TYPE_OBJECT) {
+             virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+-                           _("blockstats device entry was not in expected format"));
++                           _("blockstats device entry was not "
++                             "in expected format"));
+             goto cleanup;
+         }
+ 
+-        if ((thisdev = virJSONValueObjectGetString(dev, "device")) == NULL) {
+-            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+-                           _("blockstats device entry was not in expected format"));
+-            goto cleanup;
+-        }
+-
+-        /* New QEMU has separate names for host & guest side of the disk
+-         * and libvirt gives the host side a 'drive-' prefix. The passed
+-         * in dev_name is the guest side though
++        /* If dev_name is specified, we are looking for a specific device,
++         * so we must be stricter.
+          */
+-        if (STRPREFIX(thisdev, QEMU_DRIVE_HOST_PREFIX))
+-            thisdev += strlen(QEMU_DRIVE_HOST_PREFIX);
++        if (dev_name) {
++            const char *thisdev = virJSONValueObjectGetString(dev, "device");
++            if (!thisdev) {
++                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                               _("blockstats device entry was not "
++                                 "in expected format"));
++                goto cleanup;
++            }
+ 
+-        if (STRNEQ(thisdev, dev_name))
+-            continue;
++            /* New QEMU has separate names for host & guest side of the disk
++             * and libvirt gives the host side a 'drive-' prefix. The passed
++             * in dev_name is the guest side though
++             */
++            if (STRPREFIX(thisdev, QEMU_DRIVE_HOST_PREFIX))
++                thisdev += strlen(QEMU_DRIVE_HOST_PREFIX);
++
++            if (STRNEQ(thisdev, dev_name))
++                continue;
++        }
+ 
+-        found = true;
+         if ((stats = virJSONValueObjectGet(dev, "stats")) == NULL ||
+             stats->type != VIR_JSON_TYPE_OBJECT) {
+             virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+-                           _("blockstats stats entry was not in expected format"));
++                           _("blockstats stats entry was not "
++                             "in expected format"));
+             goto cleanup;
+         }
+ 
+-        if (virJSONValueObjectGetNumberLong(stats, "rd_bytes", rd_bytes) < 0) {
++        if (virJSONValueObjectGetNumberLong(stats, "rd_bytes",
++                                            &bstats->rd_bytes) < 0) {
+             virReportError(VIR_ERR_INTERNAL_ERROR,
+                            _("cannot read %s statistic"),
+                            "rd_bytes");
+             goto cleanup;
+         }
+-        if (virJSONValueObjectGetNumberLong(stats, "rd_operations", rd_req) < 0) {
++        if (virJSONValueObjectGetNumberLong(stats, "rd_operations",
++                                            &bstats->rd_req) < 0) {
+             virReportError(VIR_ERR_INTERNAL_ERROR,
+                            _("cannot read %s statistic"),
+                             "rd_operations");
+             goto cleanup;
+         }
+-        if (rd_total_times &&
+-            virJSONValueObjectHasKey(stats, "rd_total_time_ns") &&
++        if (virJSONValueObjectHasKey(stats, "rd_total_time_ns") &&
+             (virJSONValueObjectGetNumberLong(stats, "rd_total_time_ns",
+-                                             rd_total_times) < 0)) {
++                                             &bstats->rd_total_times) < 0)) {
+             virReportError(VIR_ERR_INTERNAL_ERROR,
+                            _("cannot read %s statistic"),
+                            "rd_total_time_ns");
+             goto cleanup;
+         }
+-        if (virJSONValueObjectGetNumberLong(stats, "wr_bytes", wr_bytes) < 0) {
++        if (virJSONValueObjectGetNumberLong(stats, "wr_bytes",
++                                            &bstats->wr_bytes) < 0) {
+             virReportError(VIR_ERR_INTERNAL_ERROR,
+                            _("cannot read %s statistic"),
+                            "wr_bytes");
+             goto cleanup;
+         }
+-        if (virJSONValueObjectGetNumberLong(stats, "wr_operations", wr_req) < 0) {
++        if (virJSONValueObjectGetNumberLong(stats, "wr_operations",
++                                            &bstats->wr_req) < 0) {
+             virReportError(VIR_ERR_INTERNAL_ERROR,
+                            _("cannot read %s statistic"),
+                            "wr_operations");
+             goto cleanup;
+         }
+-        if (wr_total_times &&
+-            virJSONValueObjectHasKey(stats, "wr_total_time_ns") &&
++        if (virJSONValueObjectHasKey(stats, "wr_total_time_ns") &&
+             (virJSONValueObjectGetNumberLong(stats, "wr_total_time_ns",
+-                                             wr_total_times) < 0)) {
++                                             &bstats->wr_total_times) < 0)) {
+             virReportError(VIR_ERR_INTERNAL_ERROR,
+                            _("cannot read %s statistic"),
+                            "wr_total_time_ns");
+             goto cleanup;
+         }
+-        if (flush_req &&
+-            virJSONValueObjectHasKey(stats, "flush_operations") &&
++        if (virJSONValueObjectHasKey(stats, "flush_operations") &&
+             (virJSONValueObjectGetNumberLong(stats, "flush_operations",
+-                                            flush_req) < 0)) {
++                                             &bstats->flush_req) < 0)) {
+             virReportError(VIR_ERR_INTERNAL_ERROR,
+                            _("cannot read %s statistic"),
+                            "flush_operations");
+             goto cleanup;
+         }
+-        if (flush_total_times &&
+-            virJSONValueObjectHasKey(stats, "flush_total_time_ns") &&
++        if (virJSONValueObjectHasKey(stats, "flush_total_time_ns") &&
+             (virJSONValueObjectGetNumberLong(stats, "flush_total_time_ns",
+-                                            flush_total_times) < 0)) {
++                                             &bstats->flush_total_times) < 0)) {
+             virReportError(VIR_ERR_INTERNAL_ERROR,
+                            _("cannot read %s statistic"),
+                            "flush_total_time_ns");
+             goto cleanup;
+         }
++
++        count++;
++        bstats++;
++
++        if (dev_name && count)
++            break;
+     }
+ 
+-    if (!found) {
++    if (dev_name && !count) {
+         virReportError(VIR_ERR_INTERNAL_ERROR,
+                        _("cannot find statistics for device '%s'"), dev_name);
+         goto cleanup;
+     }
+-    ret = 0;
++
++    ret = count;
+ 
+  cleanup:
+     virJSONValueFree(cmd);
+diff --git a/src/qemu/qemu_monitor_json.h b/src/qemu/qemu_monitor_json.h
+index c4e795c..2402b5a 100644
+--- a/src/qemu/qemu_monitor_json.h
++++ b/src/qemu/qemu_monitor_json.h
+@@ -79,6 +79,10 @@ int qemuMonitorJSONGetBlockStatsInfo(qemuMonitorPtr mon,
+                                      long long *flush_req,
+                                      long long *flush_total_times,
+                                      long long *errs);
++int qemuMonitorJSONGetAllBlockStatsInfo(qemuMonitorPtr mon,
++                                        const char *dev_name,
++                                        qemuBlockStatsPtr stats,
++                                        int nstats);
+ int qemuMonitorJSONGetBlockStatsParamsNumber(qemuMonitorPtr mon,
+                                              int *nparams);
+ int qemuMonitorJSONGetBlockExtent(qemuMonitorPtr mon,
+-- 
+2.1.2
+

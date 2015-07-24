@@ -1,0 +1,127 @@
+From d8140487d0af54c4017e1d06a7ee5c676fad0a83 Mon Sep 17 00:00:00 2001
+Message-Id: <d8140487d0af54c4017e1d06a7ee5c676fad0a83@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Thu, 20 Nov 2014 10:42:52 -0500
+Subject: [PATCH] storage: Fix issue finding LU's when block doesn't exist
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1152382
+
+Fix a problem in the getBlockDevice and processLU where retval initialized
+to zero causing some failures to erroneously continue through to the
+virStorageBackendSCSINewLun with an attempt to find a path for "/dev/(null)".
+This would fail approximately 10 seconds later with debug message:
+
+virStorageBackendSCSINewLun:203 :
+     No stable path found for '/dev/(null)' in '/dev/disk/by-path'
+
+The root cause of the issue is for many /sys/bus/scsi/devices/<lun path>
+there is no "block*" device found for the vHBA's, where "<lun path>" are
+the various paths created for the vHBA, such as "17:0:0:0", "17:0:1:0",
+"17:0:2:0", "17:0:3:0", etc.  If the block device isn't found, then the
+directory should just be ignored rather than attempting to process it.
+
+The bug was that in getBlockDevice the assumption was "block" would exist
+and either getNewStyleBlockDevice or getOldStyleBlockDevice would fill in
+@block_device. However, if 'block*' doesn't exist, then the code returned
+NULL for block_device *and* a good (zero) retval value.  This caused the
+processLU code to attempt the virStorageBackendSCSINewLun which failed
+"at some point in time" in the future.
+
+After this change - on test system the refresh-pool didn't have a noticable
+pause of about 20 seconds - it completed within a second since no longer
+was there an attempt/need to find "/dev/(null)".
+
+Additionally, the virStorageBackendSCSIFindLU's shouldn't be declaring
+found unless the processLU actually returns success. This will be
+important in the followup patch which relies on whether a LU was found.
+
+(cherry picked from commit 20870417322f7090d32e31cde864a2f916f55181)
+
+Conflicts:
+	src/storage/storage_backend_scsi.c
+
+   Downstream doesn't have mkletzan's curly brace check, so there was
+   one place in the module where they were removed, but this code adds
+   them back in because it's doing a VIR_DEBUG on getBlockDevice failure
+   (see upstream e7a1da8aeb945e4d54693dd7a580caf94fec8a11)
+
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/storage/storage_backend_scsi.c | 15 +++++++--------
+ 1 file changed, 7 insertions(+), 8 deletions(-)
+
+diff --git a/src/storage/storage_backend_scsi.c b/src/storage/storage_backend_scsi.c
+index 3f61610..367216a 100644
+--- a/src/storage/storage_backend_scsi.c
++++ b/src/storage/storage_backend_scsi.c
+@@ -322,7 +322,7 @@ getBlockDevice(uint32_t host,
+     char *lun_path = NULL;
+     DIR *lun_dir = NULL;
+     struct dirent *lun_dirent = NULL;
+-    int retval = 0;
++    int retval = -1;
+     int direrr;
+ 
+     if (virAsprintf(&lun_path, "/sys/bus/scsi/devices/%u:%u:%u:%u",
+@@ -334,7 +334,6 @@ getBlockDevice(uint32_t host,
+         virReportSystemError(errno,
+                              _("Failed to opendir sysfs path '%s'"),
+                              lun_path);
+-        retval = -1;
+         goto out;
+     }
+ 
+@@ -369,7 +368,7 @@ processLU(virStoragePoolObjPtr pool,
+           uint32_t lun)
+ {
+     char *type_path = NULL;
+-    int retval = 0;
++    int retval = -1;
+     int device_type;
+     char *block_device = NULL;
+ 
+@@ -380,7 +379,6 @@ processLU(virStoragePoolObjPtr pool,
+         virReportError(VIR_ERR_INTERNAL_ERROR,
+                        _("Failed to determine if %u:%u:%u:%u is a Direct-Access LUN"),
+                        host, bus, target, lun);
+-        retval = -1;
+         goto out;
+     }
+ 
+@@ -398,6 +396,7 @@ processLU(virStoragePoolObjPtr pool,
+               host, bus, target, lun);
+ 
+     if (getBlockDevice(host, bus, target, lun, &block_device) < 0) {
++        VIR_DEBUG("Failed to find block device for this LUN");
+         goto out;
+     }
+ 
+@@ -406,9 +405,9 @@ processLU(virStoragePoolObjPtr pool,
+                                     block_device) < 0) {
+         VIR_DEBUG("Failed to create new storage volume for %u:%u:%u:%u",
+                   host, bus, target, lun);
+-        retval = -1;
+         goto out;
+     }
++    retval = 0;
+ 
+     VIR_DEBUG("Created new storage volume for %u:%u:%u:%u successfully",
+               host, bus, target, lun);
+@@ -453,10 +452,10 @@ virStorageBackendSCSIFindLUs(virStoragePoolObjPtr pool,
+             continue;
+         }
+ 
+-        found = true;
+-        VIR_DEBUG("Found LU '%s'", lun_dirent->d_name);
++        VIR_DEBUG("Found possible LU '%s'", lun_dirent->d_name);
+ 
+-        processLU(pool, scanhost, bus, target, lun);
++        if (processLU(pool, scanhost, bus, target, lun) == 0)
++            found = true;
+     }
+ 
+     if (!found)
+-- 
+2.1.3
+

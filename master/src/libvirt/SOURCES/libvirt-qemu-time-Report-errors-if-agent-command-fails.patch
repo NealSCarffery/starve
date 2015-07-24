@@ -1,0 +1,38 @@
+From 30540f7d14552466cf514704cfc91420b0cf81ca Mon Sep 17 00:00:00 2001
+Message-Id: <30540f7d14552466cf514704cfc91420b0cf81ca@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Tue, 16 Sep 2014 17:59:38 +0200
+Subject: [PATCH] qemu: time: Report errors if agent command fails
+
+Commit b606bbb4 broke reporting of errors when setting of guest time
+fails via the guest agent as the return value is not checked and later
+overwritten by the return value qemuMonitorRTCResetReinjection();
+
+Fix this by checking the return value before resetting the RTC
+reinjection.
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1142294
+(cherry picked from commit 98fd3b7f0b1af179336e55ddee6163580a927d93)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index a2b9901..48bf612 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -16895,6 +16895,9 @@ qemuDomainSetTime(virDomainPtr dom,
+     rv = qemuAgentSetTime(priv->agent, seconds, nseconds, rtcSync);
+     qemuDomainObjExitAgent(vm);
+ 
++    if (rv < 0)
++        goto endjob;
++
+     if (!virDomainObjIsActive(vm)) {
+         virReportError(VIR_ERR_OPERATION_INVALID,
+                        "%s", _("domain is not running"));
+-- 
+2.1.0
+

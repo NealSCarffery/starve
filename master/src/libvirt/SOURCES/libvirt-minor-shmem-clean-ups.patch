@@ -1,0 +1,79 @@
+From 2236118c82469a2a65df37194a0fbc681d7bb366 Mon Sep 17 00:00:00 2001
+Message-Id: <2236118c82469a2a65df37194a0fbc681d7bb366@dist-git>
+From: Martin Kletzander <mkletzan@redhat.com>
+Date: Sat, 4 Oct 2014 10:53:20 +0200
+Subject: [PATCH] minor shmem clean-ups
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1126991
+
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+(cherry picked from commit 34f514778ba55a0031ea21d6b3006317c1f607b5)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ docs/formatdomain.html.in | 2 +-
+ src/conf/domain_conf.c    | 5 ++---
+ src/qemu/qemu_command.c   | 5 ++---
+ 3 files changed, 5 insertions(+), 7 deletions(-)
+
+diff --git a/docs/formatdomain.html.in b/docs/formatdomain.html.in
+index dac81ab..e00fe47 100644
+--- a/docs/formatdomain.html.in
++++ b/docs/formatdomain.html.in
+@@ -5587,7 +5587,7 @@ qemu-kvm -net nic,model=? /dev/null
+     <p>
+       A shared memory device allows to share a memory region between
+       different virtual machines and the host.
+-      <span class="since">Since 1.2.9, QEMU and KVM only</span>
++      <span class="since">Since 1.2.10, QEMU and KVM only</span>
+     </p>
+ 
+ <pre>
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index d61358b..b109330 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -17552,7 +17552,7 @@ virDomainShmemDefFormat(virBufferPtr buf,
+                         virDomainShmemDefPtr def,
+                         unsigned int flags)
+ {
+-    virBufferAsprintf(buf, "<shmem name='%s'", def->name);
++    virBufferEscapeString(buf, "<shmem name='%s'", def->name);
+ 
+     if (!def->size &&
+         !def->server.enabled &&
+@@ -17567,8 +17567,7 @@ virDomainShmemDefFormat(virBufferPtr buf,
+     virBufferAdjustIndent(buf, 2);
+ 
+     if (def->size)
+-        virBufferAsprintf(buf, "<size unit='M'>%llu</size>\n",
+-                          VIR_DIV_UP(def->size, 1024 * 1024));
++        virBufferAsprintf(buf, "<size unit='M'>%llu</size>\n", def->size >> 20);
+ 
+     if (def->server.enabled) {
+         virBufferAddLit(buf, "<server");
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 3adf19e..e4962ee 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -7518,7 +7518,7 @@ qemuBuildShmemDevCmd(virCommandPtr cmd,
+         /*
+          * Thanks to our parsing code, we have a guarantee that the
+          * size is power of two and is at least a mebibyte in size.
+-         * But because it may change inthe future, the checks are
++         * But because it may change in the future, the checks are
+          * doubled in here.
+          */
+         if (shmem->size & (shmem->size - 1)) {
+@@ -7531,8 +7531,7 @@ qemuBuildShmemDevCmd(virCommandPtr cmd,
+                            _("shmem size must be at least 1 MiB"));
+             goto error;
+         }
+-        virBufferAsprintf(&buf, ",size=%llum",
+-                          VIR_DIV_UP(shmem->size, 1024 * 1024));
++        virBufferAsprintf(&buf, ",size=%llum", shmem->size >> 20);
+     }
+ 
+     if (!shmem->server.enabled) {
+-- 
+2.1.2
+

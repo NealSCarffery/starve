@@ -1,0 +1,42 @@
+From 3ef826f1134ed311956c9b3d75e844565aea6578 Mon Sep 17 00:00:00 2001
+Message-Id: <3ef826f1134ed311956c9b3d75e844565aea6578@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Sat, 13 Dec 2014 10:10:00 +0100
+Subject: [PATCH] qemu: Resolve Coverity REVERSE_INULL
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1172570
+
+Coverity complains that checking for !domlist after setting doms = domlist
+and making a deref of doms just above
+
+It seems the call in question was intended to me made in the case that
+'doms' was passed in and not when the virDomainObjListExport() call
+allocated domlist and already called virConnectGetAllDomainStatsCheckACL().
+
+Thus rather than check for !domlist - check that "doms != domlist" in
+order to avoid the Coverity message.
+
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+(cherry picked from commit 9f845b1115f0b5be1554893f1b9ca2d5a3b8c7cd)
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index fe5fe88..adf158a 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -18256,7 +18256,7 @@ qemuConnectGetAllDomainStats(virConnectPtr conn,
+         if (!(dom = qemuDomObjFromDomain(doms[i])))
+             continue;
+ 
+-        if (!domlist &&
++        if (doms != domlist &&
+             !virConnectGetAllDomainStatsCheckACL(conn, dom->def))
+             continue;
+ 
+-- 
+2.2.0
+

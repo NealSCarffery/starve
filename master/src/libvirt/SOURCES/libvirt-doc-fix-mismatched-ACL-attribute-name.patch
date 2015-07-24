@@ -1,0 +1,34 @@
+From e2c22f81649827150a3d2238a742bf0da6dc28fd Mon Sep 17 00:00:00 2001
+Message-Id: <e2c22f81649827150a3d2238a742bf0da6dc28fd@dist-git>
+From: Luyao Huang <lhuang@redhat.com>
+Date: Mon, 24 Nov 2014 13:46:34 +0100
+Subject: [PATCH] doc: fix mismatched ACL attribute name
+
+As documented in https://bugzilla.redhat.com/show_bug.cgi?id=1161358,
+the ACL attribute should be named: interface_macaddr
+
+Signed-off-by: Luyao Huang <lhuang@redhat.com>
+Signed-off-by: Eric Blake <eblake@redhat.com>
+(cherry picked from commit d53d52d4c0299f5161bdeeccc925169d68ac990f)
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ docs/aclpolkit.html.in | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/docs/aclpolkit.html.in b/docs/aclpolkit.html.in
+index 91b5296..e5a9b16 100644
+--- a/docs/aclpolkit.html.in
++++ b/docs/aclpolkit.html.in
+@@ -121,7 +121,7 @@
+           <td>Name of the network interface, unique to the local host</td>
+         </tr>
+         <tr>
+-          <td>interface_mac</td>
++          <td>interface_macaddr</td>
+           <td>MAC address of the network interface, not unique</td>
+         </tr>
+       </tbody>
+-- 
+2.1.3
+

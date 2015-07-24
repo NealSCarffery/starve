@@ -1,0 +1,111 @@
+From d53999b3390985bb623c568206f50c85a63cdc25 Mon Sep 17 00:00:00 2001
+Message-Id: <d53999b3390985bb623c568206f50c85a63cdc25@dist-git>
+From: Martin Kletzander <mkletzan@redhat.com>
+Date: Tue, 4 Nov 2014 11:00:51 +0100
+Subject: [PATCH] qemu: improve error message for invalid blkiotune settings
+
+Before:
+  $ virsh blkiotune dummy --device-read-bytes-sec /dev/sda,-1
+  error: Unable to change blkio parameters
+  error: invalid argument: unable to parse blkio device
+  'device_read_bytes_sec' '/dev/sda,-1'
+
+After:
+  $ virsh blkiotune dummy --device-read-bytes-sec /dev/sda,-1
+  error: Unable to change blkio parameters
+  error: invalid argument: invalid value '-1' for parameter
+  'device_read_bytes_sec' of device '/dev/sda'
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1131306
+
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+(cherry picked from commit 278bf0acbfe9d468dceafde580ecce97ba9cc4e5)
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c | 29 +++++++++++++++++++----------
+ 1 file changed, 19 insertions(+), 10 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 3812615..0f68abc 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -7997,7 +7997,7 @@ qemuDomainParseBlkioDeviceStr(char *blkioDeviceStr, const char *type,
+     /* A valid string must have even number of fields, hence an odd
+      * number of commas.  */
+     if (!(nsep & 1))
+-        goto error;
++        goto parse_error;
+ 
+     ndevices = (nsep + 1) / 2;
+ 
+@@ -8012,7 +8012,7 @@ qemuDomainParseBlkioDeviceStr(char *blkioDeviceStr, const char *type,
+         /* device path */
+         p = strchr(p, ',');
+         if (!p)
+-            goto error;
++            goto parse_error;
+ 
+         if (VIR_STRNDUP(result[i].path, temp, p - temp) < 0)
+             goto cleanup;
+@@ -8022,21 +8022,23 @@ qemuDomainParseBlkioDeviceStr(char *blkioDeviceStr, const char *type,
+ 
+         if (STREQ(type, VIR_DOMAIN_BLKIO_DEVICE_WEIGHT)) {
+             if (virStrToLong_uip(temp, &p, 10, &result[i].weight) < 0)
+-                goto error;
++                goto number_error;
+         } else if (STREQ(type, VIR_DOMAIN_BLKIO_DEVICE_READ_IOPS)) {
+             if (virStrToLong_uip(temp, &p, 10, &result[i].riops) < 0)
+-                goto error;
++                goto number_error;
+         } else if (STREQ(type, VIR_DOMAIN_BLKIO_DEVICE_WRITE_IOPS)) {
+             if (virStrToLong_uip(temp, &p, 10, &result[i].wiops) < 0)
+-                goto error;
++                goto number_error;
+         } else if (STREQ(type, VIR_DOMAIN_BLKIO_DEVICE_READ_BPS)) {
+             if (virStrToLong_ullp(temp, &p, 10, &result[i].rbps) < 0)
+-                goto error;
++                goto number_error;
+         } else if (STREQ(type, VIR_DOMAIN_BLKIO_DEVICE_WRITE_BPS)) {
+             if (virStrToLong_ullp(temp, &p, 10, &result[i].wbps) < 0)
+-                goto error;
++                goto number_error;
+         } else {
+-            goto error;
++            virReportError(VIR_ERR_INVALID_ARG,
++                           _("unknown parameter '%s'"), type);
++            goto cleanup;
+         }
+ 
+         i++;
+@@ -8044,7 +8046,7 @@ qemuDomainParseBlkioDeviceStr(char *blkioDeviceStr, const char *type,
+         if (*p == '\0')
+             break;
+         else if (*p != ',')
+-            goto error;
++            goto parse_error;
+         temp = p + 1;
+     }
+ 
+@@ -8056,10 +8058,17 @@ qemuDomainParseBlkioDeviceStr(char *blkioDeviceStr, const char *type,
+ 
+     return 0;
+ 
+- error:
++ parse_error:
+     virReportError(VIR_ERR_INVALID_ARG,
+                    _("unable to parse blkio device '%s' '%s'"),
+                    type, blkioDeviceStr);
++    goto cleanup;
++
++ number_error:
++    virReportError(VIR_ERR_INVALID_ARG,
++                   _("invalid value '%s' for parameter '%s' of device '%s'"),
++                   temp, type, result[i].path);
++
+  cleanup:
+     if (result) {
+         virBlkioDeviceArrayClear(result, ndevices);
+-- 
+2.1.3
+

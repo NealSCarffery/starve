@@ -1,0 +1,238 @@
+From 321333e5be4da74a158e9607d310605a8b44679b Mon Sep 17 00:00:00 2001
+Message-Id: <321333e5be4da74a158e9607d310605a8b44679b@dist-git>
+From: Eric Blake <eblake@redhat.com>
+Date: Thu, 18 Sep 2014 09:29:57 -0400
+Subject: [PATCH] cputune: allow interleaved xml
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1101574
+
+I noticed this with the recent iothread pinning code, but the
+problem existed longer than that. The XML validation required
+users to supply <cputune> children in a strict order, even though
+there was no conceptual reason why they can't occur in any order.
+
+docs/ changes best viewed with -w
+
+* docs/schemas/domaincommon.rng (cputune): Add interleave.
+* tests/qemuxml2argvdata/qemuxml2argv-cputune-iothreads.xml: Swap
+up order, copying canonical form...
+* tests/qemuxml2xmloutdata/qemuxml2xmlout-cputune-iothreads.xml:
+...here.
+* tests/qemuxml2xmltest.c (mymain): Mark the difference.
+
+Signed-off-by: Eric Blake <eblake@redhat.com>
+(cherry picked from commit 7e8feed4a74b623eca0580a3db140eab2b5fa2b9)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ docs/schemas/domaincommon.rng                      | 106 +++++++++++----------
+ .../qemuxml2argv-cputune-iothreads.xml             |  15 +--
+ .../qemuxml2xmlout-cputune-iothreads.xml           |  38 ++++++++
+ tests/qemuxml2xmltest.c                            |   2 +-
+ 4 files changed, 101 insertions(+), 60 deletions(-)
+ create mode 100644 tests/qemuxml2xmloutdata/qemuxml2xmlout-cputune-iothreads.xml
+
+diff --git a/docs/schemas/domaincommon.rng b/docs/schemas/domaincommon.rng
+index d61d3ad..badc17b 100644
+--- a/docs/schemas/domaincommon.rng
++++ b/docs/schemas/domaincommon.rng
+@@ -768,58 +768,60 @@
+   <!-- All the cpu related tunables would go in the cputune -->
+   <define name="cputune">
+     <element name="cputune">
+-      <optional>
+-        <element name="shares">
+-          <ref name="cpushares"/>
+-        </element>
+-      </optional>
+-      <optional>
+-        <element name="period">
+-          <ref name="cpuperiod"/>
+-        </element>
+-      </optional>
+-      <optional>
+-        <element name="quota">
+-          <ref name="cpuquota"/>
+-        </element>
+-      </optional>
+-      <optional>
+-        <element name="emulator_period">
+-          <ref name="cpuperiod"/>
+-        </element>
+-      </optional>
+-      <optional>
+-        <element name="emulator_quota">
+-          <ref name="cpuquota"/>
+-        </element>
+-      </optional>
+-      <zeroOrMore>
+-        <element name="vcpupin">
+-          <attribute name="vcpu">
+-            <ref name="vcpuid"/>
+-          </attribute>
+-          <attribute name="cpuset">
+-            <ref name="cpuset"/>
+-          </attribute>
+-        </element>
+-      </zeroOrMore>
+-      <optional>
+-        <element name="emulatorpin">
+-          <attribute name="cpuset">
+-            <ref name="cpuset"/>
+-          </attribute>
+-        </element>
+-      </optional>
+-      <zeroOrMore>
+-        <element name="iothreadpin">
+-          <attribute name="iothread">
+-            <ref name="unsignedInt"/>
+-          </attribute>
+-          <attribute name="cpuset">
+-            <ref name="cpuset"/>
+-          </attribute>
+-        </element>
+-      </zeroOrMore>
++      <interleave>
++        <optional>
++          <element name="shares">
++            <ref name="cpushares"/>
++          </element>
++        </optional>
++        <optional>
++          <element name="period">
++            <ref name="cpuperiod"/>
++          </element>
++        </optional>
++        <optional>
++          <element name="quota">
++            <ref name="cpuquota"/>
++          </element>
++        </optional>
++        <optional>
++          <element name="emulator_period">
++            <ref name="cpuperiod"/>
++          </element>
++        </optional>
++        <optional>
++          <element name="emulator_quota">
++            <ref name="cpuquota"/>
++          </element>
++        </optional>
++        <zeroOrMore>
++          <element name="vcpupin">
++            <attribute name="vcpu">
++              <ref name="vcpuid"/>
++            </attribute>
++            <attribute name="cpuset">
++              <ref name="cpuset"/>
++            </attribute>
++          </element>
++        </zeroOrMore>
++        <optional>
++          <element name="emulatorpin">
++            <attribute name="cpuset">
++              <ref name="cpuset"/>
++            </attribute>
++          </element>
++        </optional>
++        <zeroOrMore>
++          <element name="iothreadpin">
++            <attribute name="iothread">
++              <ref name="unsignedInt"/>
++            </attribute>
++            <attribute name="cpuset">
++              <ref name="cpuset"/>
++            </attribute>
++          </element>
++        </zeroOrMore>
++      </interleave>
+     </element>
+   </define>
+ 
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-cputune-iothreads.xml b/tests/qemuxml2argvdata/qemuxml2argv-cputune-iothreads.xml
+index 435d0ae..c8cc025 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-cputune-iothreads.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-cputune-iothreads.xml
+@@ -6,14 +6,15 @@
+   <vcpu placement='static'>2</vcpu>
+   <iothreads>2</iothreads>
+   <cputune>
+-    <shares>2048</shares>
+-    <period>1000000</period>
+-    <quota>-1</quota>
+-    <vcpupin vcpu='0' cpuset='0'/>
+-    <vcpupin vcpu='1' cpuset='1'/>
+-    <emulatorpin cpuset='1'/>
+-    <iothreadpin iothread='1' cpuset='2'/>
++    <!-- intentionally in odd order -->
+     <iothreadpin iothread='2' cpuset='3'/>
++    <iothreadpin iothread='1' cpuset='2'/>
++    <emulatorpin cpuset='1'/>
++    <vcpupin vcpu='1' cpuset='1'/>
++    <vcpupin vcpu='0' cpuset='0'/>
++    <quota>-1</quota>
++    <period>1000000</period>
++    <shares>2048</shares>
+   </cputune>
+   <os>
+     <type arch='i686' machine='pc'>hvm</type>
+diff --git a/tests/qemuxml2xmloutdata/qemuxml2xmlout-cputune-iothreads.xml b/tests/qemuxml2xmloutdata/qemuxml2xmlout-cputune-iothreads.xml
+new file mode 100644
+index 0000000..3684483
+--- /dev/null
++++ b/tests/qemuxml2xmloutdata/qemuxml2xmlout-cputune-iothreads.xml
+@@ -0,0 +1,38 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory unit='KiB'>219136</memory>
++  <currentMemory unit='KiB'>219136</currentMemory>
++  <vcpu placement='static'>2</vcpu>
++  <iothreads>2</iothreads>
++  <cputune>
++    <shares>2048</shares>
++    <period>1000000</period>
++    <quota>-1</quota>
++    <vcpupin vcpu='1' cpuset='1'/>
++    <vcpupin vcpu='0' cpuset='0'/>
++    <emulatorpin cpuset='1'/>
++    <iothreadpin iothread='2' cpuset='3'/>
++    <iothreadpin iothread='1' cpuset='2'/>
++  </cputune>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='block' device='disk'>
++      <source dev='/dev/HostVG/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' target='0' unit='0'/>
++    </disk>
++    <controller type='usb' index='0'/>
++    <controller type='ide' index='0'/>
++    <controller type='pci' index='0' model='pci-root'/>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2xmltest.c b/tests/qemuxml2xmltest.c
+index 843e66d..3ca64d4 100644
+--- a/tests/qemuxml2xmltest.c
++++ b/tests/qemuxml2xmltest.c
+@@ -303,7 +303,7 @@ mymain(void)
+ 
+     DO_TEST("smp");
+     DO_TEST("iothreads");
+-    DO_TEST("cputune-iothreads");
++    DO_TEST_DIFFERENT("cputune-iothreads");
+     DO_TEST("iothreads-disk");
+     DO_TEST("lease");
+     DO_TEST("event_idx");
+-- 
+2.1.0
+

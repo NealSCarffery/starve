@@ -1,0 +1,356 @@
+From 2720e38743321bdd20f94b6abf7440b7f57f5e00 Mon Sep 17 00:00:00 2001
+Message-Id: <2720e38743321bdd20f94b6abf7440b7f57f5e00@dist-git>
+From: Pavel Hrdina <phrdina@redhat.com>
+Date: Fri, 19 Sep 2014 09:20:15 +0200
+Subject: [PATCH] Move the FIPS detection from capabilities
+
+We are not detecting the presence of FIPS from QEMU, but from procfs and
+that means it's not QEMU capability. It was decided that we will pass
+this flag to QEMU even if it's not supported by old QEMU binaries.
+
+This patch also reverts changes done by commit a21cfb0f to
+qemucapabilitestest and implements a new test case in qemuxml2argvtest.
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1135431
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+(cherry picked from commit da7799d879fd037849f820667b9b610bf94b6262)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_capabilities.c                       | 24 ---------------
+ src/qemu/qemu_command.c                            | 34 ++++++++++++++++++++--
+ src/qemu/qemu_command.h                            |  6 +++-
+ src/qemu/qemu_driver.c                             |  3 +-
+ src/qemu/qemu_process.c                            |  3 +-
+ tests/qemucapabilitiesdata/caps_1.2.2-1.caps       |  1 -
+ tests/qemucapabilitiesdata/caps_1.6.0-1.caps       |  1 -
+ tests/qemucapabilitiestest.c                       | 24 +++++----------
+ .../qemuxml2argv-fips-enabled.args                 |  6 ++++
+ .../qemuxml2argvdata/qemuxml2argv-fips-enabled.xml | 25 ++++++++++++++++
+ tests/qemuxml2argvtest.c                           |  9 +++++-
+ tests/qemuxmlnstest.c                              |  2 +-
+ 12 files changed, 89 insertions(+), 49 deletions(-)
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-fips-enabled.args
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-fips-enabled.xml
+
+diff --git a/src/qemu/qemu_capabilities.c b/src/qemu/qemu_capabilities.c
+index 67bfc36..4145c22 100644
+--- a/src/qemu/qemu_capabilities.c
++++ b/src/qemu/qemu_capabilities.c
+@@ -3215,30 +3215,6 @@ virQEMUCapsInitQMP(virQEMUCapsPtr qemuCaps,
+     config.data.nix.path = monpath;
+     config.data.nix.listen = false;
+ 
+-    /* Qemu 1.2 and later have a binary flag -enable-fips that must be
+-     * used for VNC auth to obey FIPS settings; but the flag only
+-     * exists on Linux, and with no way to probe for it via QMP.  Our
+-     * solution: if FIPS mode is required, then unconditionally use
+-     * the flag, regardless of qemu version, for the following matrix:
+-     *
+-     *                          old QEMU            new QEMU
+-     * FIPS enabled             doesn't start       VNC auth disabled
+-     * FIPS disabled/missing    VNC auth enabled    VNC auth enabled
+-     *
+-     * Setting the flag here instead of in virQEMUCapsInitQMPMonitor
+-     * or virQEMUCapsInitHelp also allows the testsuite to be
+-     * independent of FIPS setting.
+-     */
+-    if (virFileExists("/proc/sys/crypto/fips_enabled")) {
+-        char *buf = NULL;
+-
+-        if (virFileReadAll("/proc/sys/crypto/fips_enabled", 10, &buf) < 0)
+-            goto cleanup;
+-        if (STREQ(buf, "1\n"))
+-            virQEMUCapsSet(qemuCaps, QEMU_CAPS_ENABLE_FIPS);
+-        VIR_FREE(buf);
+-    }
+-
+     VIR_DEBUG("Try to get caps via QMP qemuCaps=%p", qemuCaps);
+ 
+     /*
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index fb9c453..82ee58b 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -3292,6 +3292,35 @@ qemuCheckDiskConfig(virDomainDiskDefPtr disk)
+ }
+ 
+ 
++/* Qemu 1.2 and later have a binary flag -enable-fips that must be
++ * used for VNC auth to obey FIPS settings; but the flag only
++ * exists on Linux, and with no way to probe for it via QMP.  Our
++ * solution: if FIPS mode is required, then unconditionally use
++ * the flag, regardless of qemu version, for the following matrix:
++ *
++ *                          old QEMU            new QEMU
++ * FIPS enabled             doesn't start       VNC auth disabled
++ * FIPS disabled/missing    VNC auth enabled    VNC auth enabled
++ */
++bool
++qemuCheckFips(void)
++{
++    bool ret = false;
++
++    if (virFileExists("/proc/sys/crypto/fips_enabled")) {
++        char *buf = NULL;
++
++        if (virFileReadAll("/proc/sys/crypto/fips_enabled", 10, &buf) < 0)
++            return ret;
++        if (STREQ(buf, "1\n"))
++            ret = true;
++        VIR_FREE(buf);
++    }
++
++    return ret;
++}
++
++
+ char *
+ qemuBuildDriveStr(virConnectPtr conn,
+                   virDomainDiskDefPtr disk,
+@@ -7542,7 +7571,8 @@ qemuBuildCommandLine(virConnectPtr conn,
+                      virDomainSnapshotObjPtr snapshot,
+                      virNetDevVPortProfileOp vmop,
+                      qemuBuildCommandLineCallbacksPtr callbacks,
+-                     bool standalone)
++                     bool standalone,
++                     bool enableFips)
+ {
+     virErrorPtr originalError = NULL;
+     size_t i, j;
+@@ -7655,7 +7685,7 @@ qemuBuildCommandLine(virConnectPtr conn,
+     if (!standalone)
+         virCommandAddArg(cmd, "-S"); /* freeze CPU */
+ 
+-    if (virQEMUCapsGet(qemuCaps, QEMU_CAPS_ENABLE_FIPS))
++    if (enableFips)
+         virCommandAddArg(cmd, "-enable-fips");
+ 
+     if (qemuBuildMachineArgStr(cmd, def, qemuCaps) < 0)
+diff --git a/src/qemu/qemu_command.h b/src/qemu/qemu_command.h
+index 633ff71..aa40c9e 100644
+--- a/src/qemu/qemu_command.h
++++ b/src/qemu/qemu_command.h
+@@ -78,7 +78,8 @@ virCommandPtr qemuBuildCommandLine(virConnectPtr conn,
+                                    virDomainSnapshotObjPtr current_snapshot,
+                                    virNetDevVPortProfileOp vmop,
+                                    qemuBuildCommandLineCallbacksPtr callbacks,
+-                                   bool forXMLToArgv)
++                                   bool forXMLToArgv,
++                                   bool enableFips)
+     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(11);
+ 
+ /* Generate '-device' string for chardev device */
+@@ -273,4 +274,7 @@ int qemuGetDriveSourceString(virStorageSourcePtr src,
+                              char **source);
+ 
+ int qemuCheckDiskConfig(virDomainDiskDefPtr disk);
++
++bool
++qemuCheckFips(void);
+ #endif /* __QEMU_COMMAND_H__*/
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index f914081..98b214a 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -6126,7 +6126,8 @@ static char *qemuConnectDomainXMLToNative(virConnectPtr conn,
+                                      NULL, -1, NULL,
+                                      VIR_NETDEV_VPORT_PROFILE_OP_NO_OP,
+                                      &buildCommandLineCallbacks,
+-                                     true)))
++                                     true,
++                                     qemuCheckFips())))
+         goto cleanup;
+ 
+     ret = virCommandToString(cmd);
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index 776edee..a0eb845 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -4304,7 +4304,8 @@ int qemuProcessStart(virConnectPtr conn,
+     if (!(cmd = qemuBuildCommandLine(conn, driver, vm->def, priv->monConfig,
+                                      priv->monJSON, priv->qemuCaps,
+                                      migrateFrom, stdin_fd, snapshot, vmop,
+-                                     &buildCommandLineCallbacks, false)))
++                                     &buildCommandLineCallbacks, false,
++                                     qemuCheckFips())))
+         goto cleanup;
+ 
+     /* now that we know it is about to start call the hook if present */
+diff --git a/tests/qemucapabilitiesdata/caps_1.2.2-1.caps b/tests/qemucapabilitiesdata/caps_1.2.2-1.caps
+index c8a379a..3b1b699 100644
+--- a/tests/qemucapabilitiesdata/caps_1.2.2-1.caps
++++ b/tests/qemucapabilitiesdata/caps_1.2.2-1.caps
+@@ -112,7 +112,6 @@
+     <flag name='usb-storage'/>
+     <flag name='usb-storage.removable'/>
+     <flag name='kvm-pit-lost-tick-policy'/>
+-    <flag name='enable-fips'/>
+     <flag name='usb-kbd'/>
+     <flag name='host-pci-multidomain'/>
+     <flag name='usb-audio'/>
+diff --git a/tests/qemucapabilitiesdata/caps_1.6.0-1.caps b/tests/qemucapabilitiesdata/caps_1.6.0-1.caps
+index e10f030..21d4320 100644
+--- a/tests/qemucapabilitiesdata/caps_1.6.0-1.caps
++++ b/tests/qemucapabilitiesdata/caps_1.6.0-1.caps
+@@ -138,7 +138,6 @@
+     <flag name='boot-strict'/>
+     <flag name='pvpanic'/>
+     <flag name='reboot-timeout'/>
+-    <flag name='enable-fips'/>
+     <flag name='spice-file-xfer-disable'/>
+     <flag name='spiceport'/>
+     <flag name='usb-kbd'/>
+diff --git a/tests/qemucapabilitiestest.c b/tests/qemucapabilitiestest.c
+index 4e5f9e5..2f2b73d 100644
+--- a/tests/qemucapabilitiestest.c
++++ b/tests/qemucapabilitiestest.c
+@@ -31,7 +31,6 @@ typedef testQemuData *testQemuDataPtr;
+ struct _testQemuData {
+     virDomainXMLOptionPtr xmlopt;
+     const char *base;
+-    bool fips;
+ };
+ 
+ static qemuMonitorTestPtr
+@@ -143,12 +142,6 @@ testQemuCaps(const void *opaque)
+                                   qemuMonitorTestGetMonitor(mon)) < 0)
+         goto cleanup;
+ 
+-    /* So that our test does not depend on the contents of /proc, we
+-     * hoisted the setting of ENABLE_FIPS to virQEMUCapsInitQMP.  But
+-     * we do want to test the effect of that flag.  */
+-    if (data->fips)
+-        virQEMUCapsSet(capsComputed, QEMU_CAPS_ENABLE_FIPS);
+-
+     if (testQemuCapsCompare(capsProvided, capsComputed) < 0)
+         goto cleanup;
+ 
+@@ -183,19 +176,18 @@ mymain(void)
+ 
+     data.xmlopt = xmlopt;
+ 
+-#define DO_TEST_FULL(name, use_fips)                 \
+-    data.base = name;                                \
+-    data.fips = use_fips;                            \
+-    if (virtTestRun(name, testQemuCaps, &data) < 0)  \
+-        ret = -1
++#define DO_TEST(name)                                   \
++    do {                                                \
++        data.base = name;                               \
++        if (virtTestRun(name, testQemuCaps, &data) < 0) \
++            ret = -1;                                   \
++    } while (0)
+ 
+-#define DO_TEST(name) DO_TEST_FULL(name, false)
+-
+-    DO_TEST_FULL("caps_1.2.2-1", true);
++    DO_TEST("caps_1.2.2-1");
+     DO_TEST("caps_1.3.1-1");
+     DO_TEST("caps_1.4.2-1");
+     DO_TEST("caps_1.5.3-1");
+-    DO_TEST_FULL("caps_1.6.0-1", true);
++    DO_TEST("caps_1.6.0-1");
+     DO_TEST("caps_1.6.50-1");
+ 
+     virObjectUnref(xmlopt);
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-fips-enabled.args b/tests/qemuxml2argvdata/qemuxml2argv-fips-enabled.args
+new file mode 100644
+index 0000000..196f61f
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-fips-enabled.args
+@@ -0,0 +1,6 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=none \
++/usr/bin/qemu \
++-S -enable-fips -M pc -m 214 -smp 1 -nographic -monitor \
++unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -usb \
++-hda /dev/HostVG/QEMUGuest1 -net none -serial \
++none -parallel none
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-fips-enabled.xml b/tests/qemuxml2argvdata/qemuxml2argv-fips-enabled.xml
+new file mode 100644
+index 0000000..a6b041d
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-fips-enabled.xml
+@@ -0,0 +1,25 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory unit='KiB'>219100</memory>
++  <currentMemory unit='KiB'>219100</currentMemory>
++  <vcpu placement='static' cpuset='1-4,8-20,525'>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='block' device='disk'>
++      <source dev='/dev/HostVG/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' target='0' unit='0'/>
++    </disk>
++    <controller type='ide' index='0'/>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index 68fc01b..a9129dc 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -259,6 +259,7 @@ typedef enum {
+     FLAG_EXPECT_FAILURE     = 1 << 1,
+     FLAG_EXPECT_PARSE_ERROR = 1 << 2,
+     FLAG_JSON               = 1 << 3,
++    FLAG_FIPS               = 1 << 4,
+ } virQemuXML2ArgvTestFlags;
+ 
+ static int testCompareXMLToArgvFiles(const char *xml,
+@@ -360,7 +361,8 @@ static int testCompareXMLToArgvFiles(const char *xml,
+                                      (flags & FLAG_JSON), extraFlags,
+                                      migrateFrom, migrateFd, NULL,
+                                      VIR_NETDEV_VPORT_PROFILE_OP_NO_OP,
+-                                     &testCallbacks, false))) {
++                                     &testCallbacks, false,
++                                     (flags & FLAG_FIPS)))) {
+         if (!virtTestOOMActive() &&
+             (flags & FLAG_EXPECT_FAILURE)) {
+             ret = 0;
+@@ -443,6 +445,9 @@ testCompareXMLToArgvHelper(const void *data)
+     if (virQEMUCapsGet(info->extraFlags, QEMU_CAPS_MONITOR_JSON))
+         flags |= FLAG_JSON;
+ 
++    if (virQEMUCapsGet(info->extraFlags, QEMU_CAPS_ENABLE_FIPS))
++        flags |= FLAG_FIPS;
++
+     result = testCompareXMLToArgvFiles(xml, args, info->extraFlags,
+                                        info->migrateFrom, info->migrateFd,
+                                        flags);
+@@ -1454,6 +1459,8 @@ mymain(void)
+     DO_TEST("panic", QEMU_CAPS_DEVICE_PANIC,
+             QEMU_CAPS_DEVICE, QEMU_CAPS_NODEFCONFIG);
+ 
++    DO_TEST("fips-enabled", QEMU_CAPS_ENABLE_FIPS);
++
+     virObjectUnref(driver.config);
+     virObjectUnref(driver.caps);
+     virObjectUnref(driver.xmlopt);
+diff --git a/tests/qemuxmlnstest.c b/tests/qemuxmlnstest.c
+index e8f70d6..b3a608c 100644
+--- a/tests/qemuxmlnstest.c
++++ b/tests/qemuxmlnstest.c
+@@ -119,7 +119,7 @@ static int testCompareXMLToArgvFiles(const char *xml,
+                                      vmdef, &monitor_chr, json, extraFlags,
+                                      migrateFrom, migrateFd, NULL,
+                                      VIR_NETDEV_VPORT_PROFILE_OP_NO_OP,
+-                                     &testCallbacks, false)))
++                                     &testCallbacks, false, false)))
+         goto fail;
+ 
+     if (!virtTestOOMActive()) {
+-- 
+2.1.1
+

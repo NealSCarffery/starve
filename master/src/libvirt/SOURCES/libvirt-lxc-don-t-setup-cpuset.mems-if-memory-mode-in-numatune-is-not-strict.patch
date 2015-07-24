@@ -1,0 +1,39 @@
+From 50407fa2b06aafa4b271ad3a1c3497dc6e21ee94 Mon Sep 17 00:00:00 2001
+Message-Id: <50407fa2b06aafa4b271ad3a1c3497dc6e21ee94@dist-git>
+From: Wang Rui <moon.wangrui@huawei.com>
+Date: Tue, 27 Jan 2015 11:40:09 +0100
+Subject: [PATCH] lxc: don't setup cpuset.mems if memory mode in numatune is
+ not 'strict'
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1186094
+
+If the memory mode in numatune is not 'strict', we should not setup
+cpuset.mems. Before commit 1a7be8c600905aa07ac2d78293336ba8523ad48e
+we have checked the memory mode in virDomainNumatuneGetNodeset. This
+patch adds the check as before.
+
+Signed-off-by: Wang Rui <moon.wangrui@huawei.com>
+(cherry picked from commit 8a3844f8189af257ff3f5aa298eda55b73f2a4d3)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/lxc/lxc_cgroup.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/lxc/lxc_cgroup.c b/src/lxc/lxc_cgroup.c
+index f9af31c..eb67191 100644
+--- a/src/lxc/lxc_cgroup.c
++++ b/src/lxc/lxc_cgroup.c
+@@ -79,6 +79,10 @@ static int virLXCCgroupSetupCpusetTune(virDomainDefPtr def,
+             goto cleanup;
+     }
+ 
++    if (virDomainNumatuneGetMode(def->numatune, -1) !=
++        VIR_DOMAIN_NUMATUNE_MEM_STRICT)
++        goto cleanup;
++
+     if (virDomainNumatuneMaybeFormatNodeset(def->numatune, nodemask,
+                                             &mask, -1) < 0)
+         goto cleanup;
+-- 
+2.2.2
+

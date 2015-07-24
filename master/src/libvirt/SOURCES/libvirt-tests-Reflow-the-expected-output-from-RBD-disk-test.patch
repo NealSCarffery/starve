@@ -1,0 +1,38 @@
+From d6db45d8d91467a2b38544a6f9b6856338d37a6b Mon Sep 17 00:00:00 2001
+Message-Id: <d6db45d8d91467a2b38544a6f9b6856338d37a6b@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Fri, 21 Nov 2014 15:04:07 +0100
+Subject: [PATCH] tests: Reflow the expected output from RBD disk test
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1164528
+
+Addition of tested cases to the test will be more obvious.
+
+(cherry picked from commit 162e1ac6face347d9e93715a5224653cd284a0ef)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ .../qemuxml2argvdata/qemuxml2argv-disk-drive-network-rbd.args  | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-network-rbd.args b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-network-rbd.args
+index 30f8845..21d7b64 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-network-rbd.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-disk-drive-network-rbd.args
+@@ -1,8 +1,8 @@
+ LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=none \
+ /usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -monitor \
+-unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -usb -drive \
+-file=/dev/HostVG/QEMUGuest1,if=ide,bus=0,unit=0,format=raw -drive \
+-'file=rbd:pool/image:auth_supported=none:\
++unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -usb \
++-drive file=/dev/HostVG/QEMUGuest1,if=ide,bus=0,unit=0,format=raw \
++-drive 'file=rbd:pool/image:auth_supported=none:\
+ mon_host=mon1.example.org\:6321\;mon2.example.org\:6322\;\
+-mon3.example.org\:6322,\
+-if=virtio,format=raw' -net none -serial none -parallel none
++mon3.example.org\:6322,if=virtio,format=raw' \
++-net none -serial none -parallel none
+-- 
+2.1.3
+

@@ -1,0 +1,303 @@
+From 2d14de522db3d5735e02f76e9204e550363a37ea Mon Sep 17 00:00:00 2001
+Message-Id: <2d14de522db3d5735e02f76e9204e550363a37ea@dist-git>
+From: Matthew Rosato <mjrosato@linux.vnet.ibm.com>
+Date: Sun, 14 Dec 2014 23:44:49 -0500
+Subject: [PATCH] network: Bring netdevs online later
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1081461
+
+Currently, MAC registration occurs during device creation, which is
+early enough that, during live migration, you end up with duplicate
+MAC addresses on still-running source and target devices, even though
+the target device isn't actually being used yet.
+This patch proposes to defer MAC registration until right before
+the guest can actually use the device -- In other words, right
+before starting guest CPUs.
+
+Signed-off-by: Matthew Rosato <mjrosato@linux.vnet.ibm.com>
+Signed-off-by: Laine Stump <laine@laine.org>
+(cherry picked from commit 82977058f5b1d143a355079900029e9cbfee2fe4)
+
+Conflicts:
+	src/lxc/lxc_process.c
+          - bandwidth removed from function arglist upstream
+	src/qemu/qemu_hotplug.c
+          - context upstream different due to centralized handling
+            of bandwidth setting.
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/Makefile.am             |   3 +-
+ src/lxc/lxc_process.c       |   4 +-
+ src/qemu/qemu_hotplug.c     |   5 +++
+ src/qemu/qemu_interface.c   | 100 ++++++++++++++++++++++++++++++++++++++++++++
+ src/qemu/qemu_interface.h   |  32 ++++++++++++++
+ src/qemu/qemu_process.c     |   7 ++++
+ src/util/virnetdevmacvlan.c |   8 ++--
+ src/util/virnetdevmacvlan.h |   2 +
+ 8 files changed, 156 insertions(+), 5 deletions(-)
+ create mode 100644 src/qemu/qemu_interface.c
+ create mode 100644 src/qemu/qemu_interface.h
+
+diff --git a/src/Makefile.am b/src/Makefile.am
+index fa741a8..035120e 100644
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -703,7 +703,8 @@ QEMU_DRIVER_SOURCES =							\
+ 		qemu/qemu_monitor_text.h				\
+ 		qemu/qemu_monitor_json.c				\
+ 		qemu/qemu_monitor_json.h				\
+-		qemu/qemu_driver.c qemu/qemu_driver.h
++		qemu/qemu_driver.c qemu/qemu_driver.h	\
++		qemu/qemu_interface.c qemu/qemu_interface.h
+ 
+ XENAPI_DRIVER_SOURCES =						\
+ 		xenapi/xenapi_driver.c xenapi/xenapi_driver.h	\
+diff --git a/src/lxc/lxc_process.c b/src/lxc/lxc_process.c
+index 6c83fdb..3b294fe 100644
+--- a/src/lxc/lxc_process.c
++++ b/src/lxc/lxc_process.c
+@@ -300,6 +300,7 @@ char *virLXCProcessSetupInterfaceDirect(virConnectPtr conn,
+     virNetDevBandwidthPtr bw;
+     virNetDevVPortProfilePtr prof;
+     virLXCDriverConfigPtr cfg = virLXCDriverGetConfig(driver);
++    unsigned int macvlan_create_flags = VIR_NETDEV_MACVLAN_CREATE_IFUP;
+ 
+     /* XXX how todo bandwidth controls ?
+      * Since the 'net-ifname' is about to be moved to a different
+@@ -336,7 +337,8 @@ char *virLXCProcessSetupInterfaceDirect(virConnectPtr conn,
+             &res_ifname,
+             VIR_NETDEV_VPORT_PROFILE_OP_CREATE,
+             cfg->stateDir,
+-            virDomainNetGetActualBandwidth(net), 0) < 0)
++            virDomainNetGetActualBandwidth(net),
++            macvlan_create_flags) < 0)
+         goto cleanup;
+ 
+     ret = res_ifname;
+diff --git a/src/qemu/qemu_hotplug.c b/src/qemu/qemu_hotplug.c
+index 54febb3..aaa7e21 100644
+--- a/src/qemu/qemu_hotplug.c
++++ b/src/qemu/qemu_hotplug.c
+@@ -30,6 +30,7 @@
+ #include "qemu_domain.h"
+ #include "qemu_command.h"
+ #include "qemu_hostdev.h"
++#include "qemu_interface.h"
+ #include "domain_audit.h"
+ #include "domain_nwfilter.h"
+ #include "virlog.h"
+@@ -948,6 +949,10 @@ int qemuDomainAttachNetDevice(virConnectPtr conn,
+             goto cleanup;
+     }
+ 
++    /* Set device online immediately */
++    if (qemuInterfaceStartDevice(net) < 0)
++       goto cleanup;
++
+     for (i = 0; i < tapfdSize; i++) {
+         if (virSecurityManagerSetTapFDLabel(driver->securityManager,
+                                             vm->def, tapfd[i]) < 0)
+diff --git a/src/qemu/qemu_interface.c b/src/qemu/qemu_interface.c
+new file mode 100644
+index 0000000..b0f0c5d
+--- /dev/null
++++ b/src/qemu/qemu_interface.c
+@@ -0,0 +1,100 @@
++/*
++ * qemu_interface.c: QEMU interface management
++ *
++ * Copyright IBM Corp. 2014
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library.  If not, see
++ * <http://www.gnu.org/licenses/>.
++ *
++ * Authors:
++ *     Matthew J. Rosato <mjrosato@linux.vnet.ibm.com>
++ */
++
++#include <config.h>
++
++#include "qemu_interface.h"
++#include "virnetdev.h"
++#include "virnetdevtap.h"
++#include "virnetdevmacvlan.h"
++#include "virnetdevvportprofile.h"
++
++/**
++ * qemuInterfaceStartDevice:
++ * @net: net device to start
++ *
++ * Based upon the type of device provided, perform the appropriate
++ * work to completely activate the device and make it reachable from
++ * the rest of the network.
++ */
++int
++qemuInterfaceStartDevice(virDomainNetDefPtr net)
++{
++    int ret = -1;
++
++    switch (virDomainNetGetActualType(net)) {
++    case VIR_DOMAIN_NET_TYPE_BRIDGE:
++    case VIR_DOMAIN_NET_TYPE_NETWORK:
++        break;
++    case VIR_DOMAIN_NET_TYPE_DIRECT:
++        /* macvtap devices share their MAC address with the guest
++         * domain, and if they are set online prior to the domain CPUs
++         * being started, the host may send out traffic from this
++         * device that could confuse other entities on the network (in
++         * particular, if this new domain is the destination of a
++         * migration, and the source domain is still running, another
++         * host may mistakenly direct traffic for the guest to the
++         * destination domain rather than source domain). To prevent
++         * this, we create the macvtap device with IFF_UP false
++         * (i.e. "offline") then wait to bring it online until just as
++         * we are starting the domain CPUs.
++         */
++        if (virNetDevSetOnline(net->ifname, true) < 0)
++            goto cleanup;
++        break;
++
++    case VIR_DOMAIN_NET_TYPE_USER:
++    case VIR_DOMAIN_NET_TYPE_ETHERNET:
++    case VIR_DOMAIN_NET_TYPE_VHOSTUSER:
++    case VIR_DOMAIN_NET_TYPE_SERVER:
++    case VIR_DOMAIN_NET_TYPE_CLIENT:
++    case VIR_DOMAIN_NET_TYPE_MCAST:
++    case VIR_DOMAIN_NET_TYPE_INTERNAL:
++    case VIR_DOMAIN_NET_TYPE_HOSTDEV:
++    case VIR_DOMAIN_NET_TYPE_LAST:
++        /* these types all require no action */
++        break;
++    }
++
++    ret = 0;
++ cleanup:
++    return ret;
++}
++
++/**
++ * qemuInterfaceStartDevices:
++ * @def: domain definition
++ *
++ * Set all ifaces associated with this domain to the online state.
++ */
++int
++qemuInterfaceStartDevices(virDomainDefPtr def)
++{
++    size_t i;
++
++    for (i = 0; i < def->nnets; i++) {
++        if (qemuInterfaceStartDevice(def->nets[i]) < 0)
++            return -1;
++    }
++    return 0;
++}
+diff --git a/src/qemu/qemu_interface.h b/src/qemu/qemu_interface.h
+new file mode 100644
+index 0000000..d040f52
+--- /dev/null
++++ b/src/qemu/qemu_interface.h
+@@ -0,0 +1,32 @@
++/*
++ * qemu_interface.h: QEMU interface management
++ *
++ * Copyright IBM Corp. 2014
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library.  If not, see
++ * <http://www.gnu.org/licenses/>.
++ *
++ * Authors:
++ *     Matthew J. Rosato <mjrosato@linux.vnet.ibm.com>
++ */
++
++#ifndef __QEMU_INTERFACE_H__
++# define __QEMU_INTERFACE_H__
++
++# include "domain_conf.h"
++
++int qemuInterfaceStartDevice(virDomainNetDefPtr net);
++int qemuInterfaceStartDevices(virDomainDefPtr def);
++
++#endif /* __QEMU_INTERFACE_H__ */
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index 3d275a3..dd74432 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -42,6 +42,7 @@
+ #include "qemu_hostdev.h"
+ #include "qemu_hotplug.h"
+ #include "qemu_migration.h"
++#include "qemu_interface.h"
+ 
+ #include "cpu/cpu.h"
+ #include "datatypes.h"
+@@ -3112,6 +3113,12 @@ qemuProcessStartCPUs(virQEMUDriverPtr driver, virDomainObjPtr vm,
+     qemuDomainObjPrivatePtr priv = vm->privateData;
+     virQEMUDriverConfigPtr cfg = virQEMUDriverGetConfig(driver);
+ 
++    /* Bring up netdevs before starting CPUs */
++    if (reason != VIR_DOMAIN_RUNNING_UNPAUSED &&
++        reason != VIR_DOMAIN_RUNNING_SAVE_CANCELED &&
++        qemuInterfaceStartDevices(vm->def) < 0)
++       goto cleanup;
++
+     VIR_DEBUG("Using lock state '%s'", NULLSTR(priv->lockState));
+     if (virDomainLockProcessResume(driver->lockManager, cfg->uri,
+                                    vm, priv->lockState) < 0) {
+diff --git a/src/util/virnetdevmacvlan.c b/src/util/virnetdevmacvlan.c
+index 50aabc5..9f4c2a7 100644
+--- a/src/util/virnetdevmacvlan.c
++++ b/src/util/virnetdevmacvlan.c
+@@ -903,9 +903,11 @@ int virNetDevMacVLanCreateWithVPortProfile(const char *tgifname,
+         goto link_del_exit;
+     }
+ 
+-    if (virNetDevSetOnline(cr_ifname, true) < 0) {
+-        rc = -1;
+-        goto disassociate_exit;
++    if (flags & VIR_NETDEV_MACVLAN_CREATE_IFUP) {
++        if (virNetDevSetOnline(cr_ifname, true) < 0) {
++            rc = -1;
++            goto disassociate_exit;
++        }
+     }
+ 
+     if (flags & VIR_NETDEV_MACVLAN_CREATE_WITH_TAP) {
+diff --git a/src/util/virnetdevmacvlan.h b/src/util/virnetdevmacvlan.h
+index 41aa4e2..41b4014 100644
+--- a/src/util/virnetdevmacvlan.h
++++ b/src/util/virnetdevmacvlan.h
+@@ -44,6 +44,8 @@ typedef enum {
+    VIR_NETDEV_MACVLAN_CREATE_NONE     = 0,
+    /* Create with a tap device */
+    VIR_NETDEV_MACVLAN_CREATE_WITH_TAP = 1 << 0,
++   /* Bring the interface up */
++   VIR_NETDEV_MACVLAN_CREATE_IFUP     = 1 << 1,
+ } virNetDevMacVLanCreateFlags;
+ 
+ int virNetDevMacVLanCreate(const char *ifname,
+-- 
+2.2.0
+

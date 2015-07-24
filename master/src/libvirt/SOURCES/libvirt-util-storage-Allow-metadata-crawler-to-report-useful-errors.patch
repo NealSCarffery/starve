@@ -1,0 +1,145 @@
+From a50730a3f46ffae2e9178a69dda6ac995bbdc154 Mon Sep 17 00:00:00 2001
+Message-Id: <a50730a3f46ffae2e9178a69dda6ac995bbdc154@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Wed, 24 Sep 2014 11:01:27 +0200
+Subject: [PATCH] util: storage: Allow metadata crawler to report useful errors
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1138231
+
+Add a new parameter to virStorageFileGetMetadata that will break the
+backing chain detection process and report useful error message rather
+than having to use virStorageFileChainGetBroken.
+
+This patch just introduces the option, usage will be provided
+separately.
+
+(cherry picked from commit b8549877a1e3ca1854fab2527508637b38e63f0d)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_domain.c        |  3 ++-
+ src/security/virt-aa-helper.c |  2 +-
+ src/storage/storage_driver.c  | 24 +++++++++++++++++-------
+ src/storage/storage_driver.h  |  3 ++-
+ tests/virstoragetest.c        |  2 +-
+ 5 files changed, 23 insertions(+), 11 deletions(-)
+
+diff --git a/src/qemu/qemu_domain.c b/src/qemu/qemu_domain.c
+index 746625a..e471af5 100644
+--- a/src/qemu/qemu_domain.c
++++ b/src/qemu/qemu_domain.c
+@@ -2734,7 +2734,8 @@ qemuDomainDetermineDiskChain(virQEMUDriverPtr driver,
+ 
+     if (virStorageFileGetMetadata(disk->src,
+                                   uid, gid,
+-                                  cfg->allowDiskFormatProbing) < 0)
++                                  cfg->allowDiskFormatProbing,
++                                  false) < 0)
+         ret = -1;
+ 
+  cleanup:
+diff --git a/src/security/virt-aa-helper.c b/src/security/virt-aa-helper.c
+index 311ce3b..ba542cc 100644
+--- a/src/security/virt-aa-helper.c
++++ b/src/security/virt-aa-helper.c
+@@ -932,7 +932,7 @@ get_files(vahControl * ctl)
+          */
+         if (!disk->src->backingStore) {
+             bool probe = ctl->allowDiskFormatProbing;
+-            virStorageFileGetMetadata(disk->src, -1, -1, probe);
++            virStorageFileGetMetadata(disk->src, -1, -1, probe, false);
+         }
+ 
+         /* XXX passing ignoreOpenFailure = true to get back to the behavior
+diff --git a/src/storage/storage_driver.c b/src/storage/storage_driver.c
+index 433d7b7..c3b29c4 100644
+--- a/src/storage/storage_driver.c
++++ b/src/storage/storage_driver.c
+@@ -2783,6 +2783,7 @@ static int
+ virStorageFileGetMetadataRecurse(virStorageSourcePtr src,
+                                  uid_t uid, gid_t gid,
+                                  bool allow_probe,
++                                 bool report_broken,
+                                  virHashTablePtr cycle)
+ {
+     int ret = -1;
+@@ -2847,9 +2848,13 @@ virStorageFileGetMetadataRecurse(virStorageSourcePtr src,
+     else
+         backingStore->format = backingFormat;
+ 
+-    if (virStorageFileGetMetadataRecurse(backingStore,
+-                                         uid, gid, allow_probe,
+-                                         cycle) < 0) {
++    if ((ret = virStorageFileGetMetadataRecurse(backingStore,
++                                                uid, gid,
++                                                allow_probe, report_broken,
++                                                cycle)) < 0) {
++        if (report_broken)
++            goto cleanup;
++
+         /* if we fail somewhere midway, just accept and return a
+          * broken chain */
+         ret = 0;
+@@ -2883,15 +2888,20 @@ virStorageFileGetMetadataRecurse(virStorageSourcePtr src,
+  * format, since a malicious guest can turn a raw file into any
+  * other non-raw format at will.
+  *
++ * If @report_broken is true, the whole function fails with a possibly sane
++ * error instead of just returning a broken chain.
++ *
+  * Caller MUST free result after use via virStorageSourceFree.
+  */
+ int
+ virStorageFileGetMetadata(virStorageSourcePtr src,
+                           uid_t uid, gid_t gid,
+-                          bool allow_probe)
++                          bool allow_probe,
++                          bool report_broken)
+ {
+-    VIR_DEBUG("path=%s format=%d uid=%d gid=%d probe=%d",
+-              src->path, src->format, (int)uid, (int)gid, allow_probe);
++    VIR_DEBUG("path=%s format=%d uid=%d gid=%d probe=%d, report_broken=%d",
++              src->path, src->format, (int)uid, (int)gid,
++              allow_probe, report_broken);
+ 
+     virHashTablePtr cycle = NULL;
+     int ret = -1;
+@@ -2903,7 +2913,7 @@ virStorageFileGetMetadata(virStorageSourcePtr src,
+         src->format = allow_probe ? VIR_STORAGE_FILE_AUTO : VIR_STORAGE_FILE_RAW;
+ 
+     ret = virStorageFileGetMetadataRecurse(src, uid, gid,
+-                                           allow_probe, cycle);
++                                           allow_probe, report_broken, cycle);
+ 
+     virHashFree(cycle);
+     return ret;
+diff --git a/src/storage/storage_driver.h b/src/storage/storage_driver.h
+index e773928..b805ddd 100644
+--- a/src/storage/storage_driver.h
++++ b/src/storage/storage_driver.h
+@@ -50,7 +50,8 @@ bool virStorageFileSupportsSecurityDriver(virStorageSourcePtr src);
+ 
+ int virStorageFileGetMetadata(virStorageSourcePtr src,
+                               uid_t uid, gid_t gid,
+-                              bool allow_probe)
++                              bool allow_probe,
++                              bool report_broken)
+     ATTRIBUTE_NONNULL(1);
+ 
+ int virStorageTranslateDiskSourcePool(virConnectPtr conn,
+diff --git a/tests/virstoragetest.c b/tests/virstoragetest.c
+index e2ee3ff..29f5c7a 100644
+--- a/tests/virstoragetest.c
++++ b/tests/virstoragetest.c
+@@ -119,7 +119,7 @@ testStorageFileGetMetadata(const char *path,
+     if (VIR_STRDUP(ret->path, path) < 0)
+         goto error;
+ 
+-    if (virStorageFileGetMetadata(ret, uid, gid, allow_probe) < 0)
++    if (virStorageFileGetMetadata(ret, uid, gid, allow_probe, false) < 0)
+         goto error;
+ 
+     return ret;
+-- 
+2.1.1
+

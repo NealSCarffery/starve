@@ -1,0 +1,93 @@
+From 1b1bbd468451d73c72aaf27d4ab8f85866b78299 Mon Sep 17 00:00:00 2001
+Message-Id: <1b1bbd468451d73c72aaf27d4ab8f85866b78299@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Mon, 22 Sep 2014 17:52:38 +0200
+Subject: [PATCH] qemu: save image: Split out new definition check/update
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1142693
+
+Split out the call to the update method only to places where it is
+actually used rather than having a mega-method that does all the stuff.
+
+(cherry picked from commit 4e215bcb2f522f898872dc551d3df3cd68c653ba)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c | 26 +++++++++++++++-----------
+ 1 file changed, 15 insertions(+), 11 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 530caef..96c7dd2 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -5502,16 +5502,6 @@ qemuDomainSaveImageOpen(virQEMUDriverPtr driver,
+                                         VIR_DOMAIN_XML_INACTIVE)))
+         goto error;
+ 
+-    if (xmlin) {
+-        virDomainDefPtr tmp;
+-
+-        if (!(tmp = qemuDomainSaveImageUpdateDef(driver, def, xmlin)))
+-            goto error;
+-
+-        virDomainDefFree(def);
+-        def = tmp;
+-    }
+-
+     if (xmlout)
+         *xmlout = xml;
+     else
+@@ -5654,6 +5644,7 @@ qemuDomainRestoreFlags(virConnectPtr conn,
+ {
+     virQEMUDriverPtr driver = conn->privateData;
+     virDomainDefPtr def = NULL;
++    virDomainDefPtr newdef = NULL;
+     virDomainObjPtr vm = NULL;
+     int fd = -1;
+     int ret = -1;
+@@ -5680,6 +5671,14 @@ qemuDomainRestoreFlags(virConnectPtr conn,
+     if (virDomainRestoreFlagsEnsureACL(conn, def) < 0)
+         goto cleanup;
+ 
++    if (dxml) {
++        if (!(newdef = qemuDomainSaveImageUpdateDef(driver, def, dxml)))
++            goto cleanup;
++
++        virDomainDefFree(def);
++        def = newdef;
++    }
++
+     if (!(vm = virDomainObjListAdd(driver->domains, def,
+                                    driver->xmlopt,
+                                    VIR_DOMAIN_OBJ_LIST_ADD_LIVE |
+@@ -5756,6 +5755,7 @@ qemuDomainSaveImageDefineXML(virConnectPtr conn, const char *path,
+     virQEMUDriverPtr driver = conn->privateData;
+     int ret = -1;
+     virDomainDefPtr def = NULL;
++    virDomainDefPtr newdef = NULL;
+     int fd = -1;
+     virQEMUSaveHeader header;
+     char *xml = NULL;
+@@ -5783,7 +5783,10 @@ qemuDomainSaveImageDefineXML(virConnectPtr conn, const char *path,
+     if (virDomainSaveImageDefineXMLEnsureACL(conn, def) < 0)
+         goto cleanup;
+ 
+-    xml = qemuDomainDefFormatXML(driver, def,
++    if (!(newdef = qemuDomainSaveImageUpdateDef(driver, def, dxml)))
++        goto cleanup;
++
++    xml = qemuDomainDefFormatXML(driver, newdef,
+                                  VIR_DOMAIN_XML_INACTIVE |
+                                  VIR_DOMAIN_XML_SECURE |
+                                  VIR_DOMAIN_XML_MIGRATABLE);
+@@ -5814,6 +5817,7 @@ qemuDomainSaveImageDefineXML(virConnectPtr conn, const char *path,
+ 
+  cleanup:
+     virDomainDefFree(def);
++    virDomainDefFree(newdef);
+     VIR_FORCE_CLOSE(fd);
+     VIR_FREE(xml);
+     return ret;
+-- 
+2.1.1
+

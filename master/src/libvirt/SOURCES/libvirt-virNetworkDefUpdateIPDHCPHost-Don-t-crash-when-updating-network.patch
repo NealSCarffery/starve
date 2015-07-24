@@ -1,0 +1,63 @@
+From 1711b9ad32a5ebc2349ef36e76dc0e3bcae4a6ac Mon Sep 17 00:00:00 2001
+Message-Id: <1711b9ad32a5ebc2349ef36e76dc0e3bcae4a6ac@dist-git>
+From: Michal Privoznik <mprivozn@redhat.com>
+Date: Fri, 16 Jan 2015 10:03:26 +0100
+Subject: [PATCH] virNetworkDefUpdateIPDHCPHost: Don't crash when updating
+ network
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1182486
+
+When updating a network and adding new ip-dhcp-host entry, the deamon
+may crash. The problem is, we iterate over existing <host/> entries
+trying to compare MAC addresses to see if there's already an existing
+rule. However, not all entries are required to have MAC address. For
+instance, the following is perfectly valid entry:
+
+<host id='00:04:58:fd:e4:15:1b:09:4c:0e:09:af:e4:d3:8c:b8:ca:1e'
+name='redhatipv6.redhat.com' ip='2001:db8:ca2:2::119'/>
+
+When the checking loop iterates over this, the entry's MAC address is
+accessed directly. Well, the fix is obvious - check if the address is
+defined before trying to compare it.
+
+Signed-off-by: Michal Privoznik <mprivozn@redhat.com>
+(cherry picked from commit 7d3ae359db604f6052247ad49d7fbce1db7ef99c)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/conf/network_conf.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/src/conf/network_conf.c b/src/conf/network_conf.c
+index 7b19592..73cca4c 100644
+--- a/src/conf/network_conf.c
++++ b/src/conf/network_conf.c
+@@ -3550,7 +3550,7 @@ virNetworkDefUpdateIPDHCPHost(virNetworkDefPtr def,
+         /* search for the entry with this (ip|mac|name),
+          * and update the IP+(mac|name) */
+         for (i = 0; i < ipdef->nhosts; i++) {
+-            if ((host.mac &&
++            if ((host.mac && ipdef->hosts[i].mac &&
+                  !virMacAddrCompare(host.mac, ipdef->hosts[i].mac)) ||
+                 (VIR_SOCKET_ADDR_VALID(&host.ip) &&
+                  virSocketAddrEqual(&host.ip, &ipdef->hosts[i].ip)) ||
+@@ -3585,7 +3585,7 @@ virNetworkDefUpdateIPDHCPHost(virNetworkDefPtr def,
+ 
+         /* log error if an entry with same name/address/ip already exists */
+         for (i = 0; i < ipdef->nhosts; i++) {
+-            if ((host.mac &&
++            if ((host.mac && ipdef->hosts[i].mac &&
+                  !virMacAddrCompare(host.mac, ipdef->hosts[i].mac)) ||
+                 (host.name &&
+                  STREQ_NULLABLE(host.name, ipdef->hosts[i].name)) ||
+@@ -3614,7 +3614,7 @@ virNetworkDefUpdateIPDHCPHost(virNetworkDefPtr def,
+ 
+         /* find matching entry - all specified attributes must match */
+         for (i = 0; i < ipdef->nhosts; i++) {
+-            if ((!host.mac ||
++            if ((!host.mac || !ipdef->hosts[i].mac ||
+                  !virMacAddrCompare(host.mac, ipdef->hosts[i].mac)) &&
+                 (!host.name ||
+                  STREQ_NULLABLE(host.name, ipdef->hosts[i].name)) &&
+-- 
+2.2.1
+

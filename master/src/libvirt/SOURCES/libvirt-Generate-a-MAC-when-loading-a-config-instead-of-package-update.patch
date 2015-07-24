@@ -1,0 +1,44 @@
+From 4cf1de1c458fd21cc55546f4281ed03fc1532c7b Mon Sep 17 00:00:00 2001
+Message-Id: <4cf1de1c458fd21cc55546f4281ed03fc1532c7b@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Tue, 2 Dec 2014 16:12:35 +0100
+Subject: [PATCH] Generate a MAC when loading a config instead of package
+ update
+
+Partially reverts commit 5754dbd.
+
+The code in the specfile adds a MAC address to every <bridge>,
+even for <forward mode='bridge'> for which we don't support
+changing MAC addresses.
+
+Remove it completely. For new networks, we have been adding
+MAC addresses on definition/creation since the commit mentioned above.
+For existing networks (pre-0.9.0), the MAC is added by this commit.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1156367
+(cherry picked from commit a47ae7c004e92f959b45808ca82326e8559c2f61)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ libvirt.spec.in         | 42 ------------------------------------------
+ src/conf/network_conf.c |  4 ++++
+ 2 files changed, 4 insertions(+), 42 deletions(-)
+
+diff --git a/src/conf/network_conf.c b/src/conf/network_conf.c
+index d348a20..7b17d59 100644
+--- a/src/conf/network_conf.c
++++ b/src/conf/network_conf.c
+@@ -3147,6 +3147,10 @@ virNetworkObjPtr virNetworkLoadConfig(virNetworkObjListPtr nets,
+         def->forward.type == VIR_NETWORK_FORWARD_NAT ||
+         def->forward.type == VIR_NETWORK_FORWARD_ROUTE) {
+ 
++        if (!def->mac_specified) {
++            virNetworkSetBridgeMacAddr(def);
++            virNetworkSaveConfig(configDir, def);
++        }
+         /* Generate a bridge if none is specified, but don't check for collisions
+          * if a bridge is hardcoded, so the network is at least defined.
+          */
+-- 
+2.2.0
+

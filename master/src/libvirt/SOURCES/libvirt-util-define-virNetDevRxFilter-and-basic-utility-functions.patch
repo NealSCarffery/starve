@@ -1,0 +1,141 @@
+From 2a2edf5c04fcf31b221e29b9939efc728a600cf3 Mon Sep 17 00:00:00 2001
+Message-Id: <2a2edf5c04fcf31b221e29b9939efc728a600cf3@dist-git>
+From: Laine Stump <laine@laine.org>
+Date: Mon, 3 Nov 2014 10:00:17 -0500
+Subject: [PATCH] util: define virNetDevRxFilter and basic utility functions
+
+https://bugzilla.redhat.com/show_bug.cgi?id=848199
+
+This same structure will be used to retrieve RX filter info for
+interfaces on the host via netlink messages, and RX filter info for
+interfaces on the guest via the qemu "query-rx-filter" command.
+
+(cherry picked from commit aa7c595a31d11e019ee7c6bdf59e52bba41d066e)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/libvirt_private.syms |  4 ++++
+ src/util/virnetdev.c     | 31 +++++++++++++++++++++++++++++++
+ src/util/virnetdev.h     | 42 +++++++++++++++++++++++++++++++++++++++++-
+ 3 files changed, 76 insertions(+), 1 deletion(-)
+
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index 9ec9716..e2aae21 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -1593,6 +1593,10 @@ virNetDevReplaceMacAddress;
+ virNetDevReplaceNetConfig;
+ virNetDevRestoreMacAddress;
+ virNetDevRestoreNetConfig;
++virNetDevRxFilterFree;
++virNetDevRxFilterModeTypeFromString;
++virNetDevRxFilterModeTypeToString;
++virNetDevRxFilterNew;
+ virNetDevSetIPv4Address;
+ virNetDevSetMAC;
+ virNetDevSetMTU;
+diff --git a/src/util/virnetdev.c b/src/util/virnetdev.c
+index fc9ec1e..36b5a49 100644
+--- a/src/util/virnetdev.c
++++ b/src/util/virnetdev.c
+@@ -1933,3 +1933,34 @@ virNetDevGetLinkInfo(const char *ifname,
+     return 0;
+ }
+ #endif /* defined(__linux__) */
++
++
++VIR_ENUM_IMPL(virNetDevRxFilterMode,
++              VIR_NETDEV_RX_FILTER_MODE_LAST,
++              "none",
++              "normal",
++              "all");
++
++
++virNetDevRxFilterPtr
++virNetDevRxFilterNew(void)
++{
++    virNetDevRxFilterPtr filter;
++
++    if (VIR_ALLOC(filter) < 0)
++        return NULL;
++    return filter;
++}
++
++
++void
++virNetDevRxFilterFree(virNetDevRxFilterPtr filter)
++{
++    if (filter) {
++        VIR_FREE(filter->name);
++        VIR_FREE(filter->unicast.table);
++        VIR_FREE(filter->multicast.table);
++        VIR_FREE(filter->vlan.table);
++        VIR_FREE(filter);
++    }
++}
+diff --git a/src/util/virnetdev.h b/src/util/virnetdev.h
+index 69e365e..2a6e67d 100644
+--- a/src/util/virnetdev.h
++++ b/src/util/virnetdev.h
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (C) 2007-2013 Red Hat, Inc.
++ * Copyright (C) 2007-2014 Red Hat, Inc.
+  *
+  * This library is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU Lesser General Public
+@@ -37,6 +37,42 @@ typedef struct ifreq virIfreq;
+ typedef void virIfreq;
+ # endif
+ 
++typedef enum {
++   VIR_NETDEV_RX_FILTER_MODE_NONE = 0,
++   VIR_NETDEV_RX_FILTER_MODE_NORMAL,
++   VIR_NETDEV_RX_FILTER_MODE_ALL,
++
++   VIR_NETDEV_RX_FILTER_MODE_LAST
++} virNetDevRxFilterMode;
++VIR_ENUM_DECL(virNetDevRxFilterMode)
++
++typedef struct _virNetDevRxFilter virNetDevRxFilter;
++typedef virNetDevRxFilter *virNetDevRxFilterPtr;
++struct _virNetDevRxFilter {
++    char *name; /* the alias used by qemu, *not* name used by guest */
++    virMacAddr mac;
++    bool promiscuous;
++    bool broadcastAllowed;
++
++    struct {
++        int mode; /* enum virNetDevRxFilterMode */
++        bool overflow;
++        virMacAddrPtr table;
++        size_t nTable;
++    } unicast;
++    struct {
++        int mode; /* enum virNetDevRxFilterMode */
++        bool overflow;
++        virMacAddrPtr table;
++        size_t nTable;
++    } multicast;
++    struct {
++        int mode; /* enum virNetDevRxFilterMode */
++        unsigned int *table;
++        size_t nTable;
++    } vlan;
++};
++
+ int virNetDevSetupControl(const char *ifname,
+                           virIfreq *ifr)
+     ATTRIBUTE_RETURN_CHECK;
+@@ -150,4 +186,8 @@ int virNetDevGetLinkInfo(const char *ifname,
+                          virInterfaceLinkPtr lnk)
+     ATTRIBUTE_NONNULL(1);
+ 
++virNetDevRxFilterPtr virNetDevRxFilterNew(void)
++   ATTRIBUTE_RETURN_CHECK;
++void virNetDevRxFilterFree(virNetDevRxFilterPtr filter);
++
+ #endif /* __VIR_NETDEV_H__ */
+-- 
+2.1.3
+

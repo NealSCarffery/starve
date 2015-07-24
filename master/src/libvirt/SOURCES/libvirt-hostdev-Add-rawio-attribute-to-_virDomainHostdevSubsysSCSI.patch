@@ -1,0 +1,227 @@
+From 5cb75e163743eddefdc5ea8cc63763918b8da51a Mon Sep 17 00:00:00 2001
+Message-Id: <5cb75e163743eddefdc5ea8cc63763918b8da51a@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Fri, 26 Sep 2014 11:27:12 +0200
+Subject: [PATCH] hostdev: Add "rawio" attribute to _virDomainHostdevSubsysSCSI
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1103739
+
+Add the 'rawio' attribute to match _virDomainDiskDef and process the
+hostdev XML similarly to the disk XML for a lun which supports/requires rawio
+
+(cherry picked from commit 58abf1bb36ee89e9de39ab09995006fd1d461665)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ docs/formatdomain.html.in                          | 12 ++++++--
+ docs/schemas/domaincommon.rng                      | 12 ++++++--
+ src/conf/domain_conf.c                             | 24 +++++++++++++++
+ src/conf/domain_conf.h                             |  1 +
+ .../qemuxml2argv-hostdev-scsi-rawio.xml            | 35 ++++++++++++++++++++++
+ tests/qemuxml2xmltest.c                            |  1 +
+ 6 files changed, 79 insertions(+), 6 deletions(-)
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-hostdev-scsi-rawio.xml
+
+diff --git a/docs/formatdomain.html.in b/docs/formatdomain.html.in
+index 830bfa2..ee00eca 100644
+--- a/docs/formatdomain.html.in
++++ b/docs/formatdomain.html.in
+@@ -1815,7 +1815,7 @@
+           <dt><code>rawio</code> attribute
+           <span class="since">since 0.9.10</span></dt>
+             <dd>
+-            Indicates whether the disk is needs rawio capability; valid
++            Indicates whether the disk needs rawio capability. Valid
+             settings are "yes" or "no" (default is "no"). If any one disk
+             in a domain has rawio='yes', rawio capability will be enabled
+             for all disks in the domain (because, in the case of QEMU, this
+@@ -2925,7 +2925,7 @@
+ <pre>
+   ...
+   &lt;devices&gt;
+-    &lt;hostdev mode='subsystem' type='scsi'&gt;
++    &lt;hostdev mode='subsystem' type='scsi' sgio='filtered' rawio='yes'&gt;
+       &lt;source&gt;
+         &lt;adapter name='scsi_host0'/&gt;
+         &lt;address type='scsi' bus='0' target='0' unit='0'/&gt;
+@@ -2984,7 +2984,13 @@
+             (<span class="since">since 1.0.6</span>) attribute indicates
+             whether the kernel will filter unprivileged SG_IO commands for
+             the disk, valid settings are "filtered" or "unfiltered".
+-            The default is "filtered".
++            The default is "filtered". The optional <code>rawio</code>
++            (<span class="since">since 1.2.9</span>) attribute indicates
++            whether the lun needs the rawio capability. Valid settings are
++            "yes" or "no". See the rawio description within the
++            <a href="#elementsDisks">disk</a> section.
++            If a disk lun in the domain already has the rawio capability,
++            then this setting not required.
+           </dd>
+         </dl>
+       </dd>
+diff --git a/docs/schemas/domaincommon.rng b/docs/schemas/domaincommon.rng
+index ccfb511..e561486 100644
+--- a/docs/schemas/domaincommon.rng
++++ b/docs/schemas/domaincommon.rng
+@@ -1252,9 +1252,7 @@
+             </choice>
+           </attribute>
+           <optional>
+-            <attribute name="rawio">
+-              <ref name="virYesNo"/>
+-            </attribute>
++            <ref name="rawIO"/>
+           </optional>
+           <optional>
+             <attribute name="sgio">
+@@ -3641,6 +3639,9 @@
+         </choice>
+       </attribute>
+     </optional>
++    <optional>
++      <ref name="rawIO"/>
++    </optional>
+     <element name="source">
+       <choice>
+         <group>  <!-- scsi_host adapter -->
+@@ -5001,4 +5002,9 @@
+       </optional>
+     </element>
+   </define>
++  <define name="rawIO">
++    <attribute name="rawio">
++      <ref name="virYesNo"/>
++    </attribute>
++  </define>
+ </grammar>
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 4e80467..40626b8 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -4501,6 +4501,7 @@ virDomainHostdevDefParseXMLSubsys(xmlNodePtr node,
+     xmlNodePtr sourcenode;
+     char *managed = NULL;
+     char *sgio = NULL;
++    char *rawio = NULL;
+     char *backendStr = NULL;
+     int backend;
+     int ret = -1;
+@@ -4518,6 +4519,7 @@ virDomainHostdevDefParseXMLSubsys(xmlNodePtr node,
+     }
+ 
+     sgio = virXMLPropString(node, "sgio");
++    rawio = virXMLPropString(node, "rawio");
+ 
+     /* @type is passed in from the caller rather than read from the
+      * xml document, because it is specified in different places for
+@@ -4569,6 +4571,21 @@ virDomainHostdevDefParseXMLSubsys(xmlNodePtr node,
+         }
+     }
+ 
++    if (rawio) {
++        if (def->source.subsys.type != VIR_DOMAIN_HOSTDEV_SUBSYS_TYPE_SCSI) {
++            virReportError(VIR_ERR_XML_ERROR, "%s",
++                           _("rawio is only supported for scsi host device"));
++            goto error;
++        }
++
++        if ((scsisrc->rawio = virTristateBoolTypeFromString(rawio)) <= 0) {
++            virReportError(VIR_ERR_XML_ERROR,
++                           _("unknown hostdev rawio setting '%s'"),
++                           rawio);
++            goto error;
++        }
++    }
++
+     switch (def->source.subsys.type) {
+     case VIR_DOMAIN_HOSTDEV_SUBSYS_TYPE_PCI:
+         if (virDomainHostdevSubsysPCIDefParseXML(sourcenode, def, flags) < 0)
+@@ -4608,6 +4625,7 @@ virDomainHostdevDefParseXMLSubsys(xmlNodePtr node,
+  error:
+     VIR_FREE(managed);
+     VIR_FREE(sgio);
++    VIR_FREE(rawio);
+     VIR_FREE(backendStr);
+     return ret;
+ }
+@@ -17975,6 +17993,12 @@ virDomainHostdevDefFormat(virBufferPtr buf,
+             scsisrc->sgio)
+             virBufferAsprintf(buf, " sgio='%s'",
+                               virDomainDeviceSGIOTypeToString(scsisrc->sgio));
++
++        if (def->source.subsys.type == VIR_DOMAIN_HOSTDEV_SUBSYS_TYPE_SCSI &&
++            scsisrc->rawio) {
++            virBufferAsprintf(buf, " rawio='%s'",
++                              virTristateBoolTypeToString(scsisrc->rawio));
++        }
+     }
+     virBufferAddLit(buf, ">\n");
+     virBufferAdjustIndent(buf, 2);
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index 39f1948..b981020 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -439,6 +439,7 @@ typedef virDomainHostdevSubsysSCSI *virDomainHostdevSubsysSCSIPtr;
+ struct _virDomainHostdevSubsysSCSI {
+     int protocol; /* enum virDomainHostdevSCSIProtocolType */
+     int sgio; /* enum virDomainDeviceSGIO */
++    int rawio; /* enum virTristateBool */
+     union {
+         virDomainHostdevSubsysSCSIHost host;
+         virDomainHostdevSubsysSCSIiSCSI iscsi;
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-hostdev-scsi-rawio.xml b/tests/qemuxml2argvdata/qemuxml2argv-hostdev-scsi-rawio.xml
+new file mode 100644
+index 0000000..69fdde3
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-hostdev-scsi-rawio.xml
+@@ -0,0 +1,35 @@
++<domain type='qemu'>
++  <name>QEMUGuest2</name>
++  <uuid>c7a5fdbd-edaf-9466-926a-d65c16db1809</uuid>
++  <memory unit='KiB'>219100</memory>
++  <currentMemory unit='KiB'>219100</currentMemory>
++  <vcpu placement='static'>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='block' device='disk'>
++      <source dev='/dev/HostVG/QEMUGuest2'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' target='0' unit='0'/>
++    </disk>
++    <controller type='scsi' index='0' model='virtio-scsi'/>
++    <controller type='usb' index='0'/>
++    <controller type='ide' index='0'/>
++    <controller type='pci' index='0' model='pci-root'/>
++    <hostdev mode='subsystem' type='scsi' managed='yes' sgio='unfiltered' rawio='yes'>
++      <source>
++        <adapter name='scsi_host0'/>
++        <address bus='0' target='0' unit='0'/>
++      </source>
++      <address type='drive' controller='0' bus='0' target='4' unit='8'/>
++    </hostdev>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2xmltest.c b/tests/qemuxml2xmltest.c
+index ee05212..6e71cb2 100644
+--- a/tests/qemuxml2xmltest.c
++++ b/tests/qemuxml2xmltest.c
+@@ -369,6 +369,7 @@ mymain(void)
+     DO_TEST("disk-copy_on_read");
+     DO_TEST("hostdev-scsi-shareable");
+     DO_TEST("hostdev-scsi-sgio");
++    DO_TEST("hostdev-scsi-rawio");
+ 
+     DO_TEST_DIFFERENT("hostdev-scsi-autogen-address");
+ 
+-- 
+2.1.1
+

@@ -1,0 +1,134 @@
+From 62a0658c8081f1b42b532265379404803d979d0a Mon Sep 17 00:00:00 2001
+Message-Id: <62a0658c8081f1b42b532265379404803d979d0a@dist-git>
+From: Shanzhi Yu <shyu@redhat.com>
+Date: Wed, 22 Oct 2014 09:54:37 +0200
+Subject: [PATCH] qemu: call qemuDomainObjBeginJob/qemuDomainObjEndJob in
+ qemuDomainSetInterfaceParameters
+
+add call qemuDomainObjBeginJob/qemuDomainObjEndJob in
+qemuDomainSetInterfaceParameters
+
+Signed-off-by: Shanzhi Yu <shyu@redhat.com>
+(cherry picked from commit 99fe8755b919a4df9e48b6994da4c0c2907dfc83)
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1146511
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c | 30 +++++++++++++++++++-----------
+ 1 file changed, 19 insertions(+), 11 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 12a32ec..90f81a0 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -10140,16 +10140,19 @@ qemuDomainSetInterfaceParameters(virDomainPtr dom,
+     if (!(caps = virQEMUDriverGetCapabilities(driver, false)))
+         goto cleanup;
+ 
++    if (qemuDomainObjBeginJob(driver, vm, QEMU_JOB_MODIFY) < 0)
++        goto cleanup;
++
+     if (virDomainLiveConfigHelperMethod(caps, driver->xmlopt, vm, &flags,
+                                         &persistentDef) < 0)
+-        goto cleanup;
++        goto endjob;
+ 
+     if (flags & VIR_DOMAIN_AFFECT_LIVE) {
+         net = virDomainNetFind(vm->def, device);
+         if (!net) {
+             virReportError(VIR_ERR_INVALID_ARG,
+                            _("Can't find device %s"), device);
+-            goto cleanup;
++            goto endjob;
+         }
+     }
+     if (flags & VIR_DOMAIN_AFFECT_CONFIG) {
+@@ -10157,14 +10160,14 @@ qemuDomainSetInterfaceParameters(virDomainPtr dom,
+         if (!persistentNet) {
+             virReportError(VIR_ERR_INVALID_ARG,
+                            _("Can't find device %s"), device);
+-            goto cleanup;
++            goto endjob;
+         }
+     }
+ 
+     if ((VIR_ALLOC(bandwidth) < 0) ||
+         (VIR_ALLOC(bandwidth->in) < 0) ||
+         (VIR_ALLOC(bandwidth->out) < 0))
+-        goto cleanup;
++        goto endjob;
+ 
+     for (i = 0; i < nparams; i++) {
+         virTypedParameterPtr param = &params[i];
+@@ -10198,7 +10201,7 @@ qemuDomainSetInterfaceParameters(virDomainPtr dom,
+ 
+     if (flags & VIR_DOMAIN_AFFECT_LIVE) {
+         if (VIR_ALLOC(newBandwidth) < 0)
+-            goto cleanup;
++            goto endjob;
+ 
+         /* virNetDevBandwidthSet() will clear any previous value of
+          * bandwidth parameters, so merge with old bandwidth parameters
+@@ -10206,7 +10209,7 @@ qemuDomainSetInterfaceParameters(virDomainPtr dom,
+         if (bandwidth->in ||
+             (!inboundSpecified && net->bandwidth && net->bandwidth->in)) {
+             if (VIR_ALLOC(newBandwidth->in) < 0)
+-                goto cleanup;
++                goto endjob;
+ 
+             memcpy(newBandwidth->in,
+                    bandwidth->in ? bandwidth->in : net->bandwidth->in,
+@@ -10215,7 +10218,7 @@ qemuDomainSetInterfaceParameters(virDomainPtr dom,
+         if (bandwidth->out ||
+             (!outboundSpecified && net->bandwidth && net->bandwidth->out)) {
+             if (VIR_ALLOC(newBandwidth->out) < 0)
+-                goto cleanup;
++                goto endjob;
+ 
+             memcpy(newBandwidth->out,
+                    bandwidth->out ? bandwidth->out : net->bandwidth->out,
+@@ -10223,7 +10226,7 @@ qemuDomainSetInterfaceParameters(virDomainPtr dom,
+         }
+ 
+         if (virNetDevBandwidthSet(net->ifname, newBandwidth, false) < 0)
+-            goto cleanup;
++            goto endjob;
+ 
+         virNetDevBandwidthFree(net->bandwidth);
+         if (newBandwidth->in || newBandwidth->out) {
+@@ -10237,11 +10240,11 @@ qemuDomainSetInterfaceParameters(virDomainPtr dom,
+             virNetDevBandwidthFree(net->data.network.actual->bandwidth);
+             if (virNetDevBandwidthCopy(&net->data.network.actual->bandwidth,
+                                        net->bandwidth) < 0)
+-                goto cleanup;
++                goto endjob;
+         }
+ 
+         if (virDomainSaveStatus(driver->xmlopt, cfg->stateDir, vm) < 0)
+-            goto cleanup;
++            goto endjob;
+     }
+ 
+     if (flags & VIR_DOMAIN_AFFECT_CONFIG) {
+@@ -10266,10 +10269,15 @@ qemuDomainSetInterfaceParameters(virDomainPtr dom,
+         }
+ 
+         if (virDomainSaveConfig(cfg->configDir, persistentDef) < 0)
+-            goto cleanup;
++            goto endjob;
+     }
+ 
+     ret = 0;
++
++ endjob:
++    if (!qemuDomainObjEndJob(driver, vm))
++        vm = NULL;
++
+  cleanup:
+     virNetDevBandwidthFree(bandwidth);
+     virNetDevBandwidthFree(newBandwidth);
+-- 
+2.1.3
+

@@ -1,0 +1,145 @@
+From 6b34e105829caf93a230b41f43200b036061638d Mon Sep 17 00:00:00 2001
+Message-Id: <6b34e105829caf93a230b41f43200b036061638d@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Thu, 11 Dec 2014 13:28:10 +0100
+Subject: [PATCH] Ignore CPU features without a model for host-passthrough
+
+This fixes reverting to snapshots created by older libvirt
+and allows libvirt not to lose track of a domain that
+has this in its live status XML (such as a domain
+restored from managedsave)
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1030793
+https://bugzilla.redhat.com/show_bug.cgi?id=1151885
+(cherry picked from commit 15abebdecb35308ddd4d2967efa6dffa4842fac9)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/conf/cpu_conf.c                                |  5 ++
+ ...argv-cpu-host-passthrough-features-invalid.args | 22 +++++++++
+ ...2argv-cpu-host-passthrough-features-invalid.xml | 55 ++++++++++++++++++++++
+ tests/qemuxml2argvtest.c                           |  1 +
+ 4 files changed, 83 insertions(+)
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-cpu-host-passthrough-features-invalid.args
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-cpu-host-passthrough-features-invalid.xml
+
+diff --git a/src/conf/cpu_conf.c b/src/conf/cpu_conf.c
+index 72555a7..95e04c7 100644
+--- a/src/conf/cpu_conf.c
++++ b/src/conf/cpu_conf.c
+@@ -365,6 +365,11 @@ virCPUDefParseXML(xmlNodePtr node,
+         goto error;
+ 
+     if (n > 0) {
++        if (!def->model && def->mode == VIR_CPU_MODE_HOST_PASSTHROUGH) {
++            /* silently ignore incorrectly formatted features generated
++             * by older libvirt */
++            goto cleanup;
++        }
+         if (!def->model && def->mode != VIR_CPU_MODE_HOST_MODEL) {
+             virReportError(VIR_ERR_XML_ERROR, "%s",
+                            _("Non-empty feature list specified without "
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-cpu-host-passthrough-features-invalid.args b/tests/qemuxml2argvdata/qemuxml2argv-cpu-host-passthrough-features-invalid.args
+new file mode 100644
+index 0000000..18c1dce
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-cpu-host-passthrough-features-invalid.args
+@@ -0,0 +1,22 @@
++LC_ALL=C \
++PATH=/bin \
++HOME=/home/test \
++USER=test \
++LOGNAME=test \
++QEMU_AUD\
++IO_DRV=none \
++/usr/bin/qemu \
++-S \
++-M pc \
++-cpu host \
++-m 214 \
++-smp 1 \
++-nographic \
++-monitor unix:/tmp/test-monitor,server,nowait \
++-no-acpi \
++-boot c \
++-usb \
++-hda /dev/HostVG/QEMUGuest1 \
++-net none \
++-serial none \
++-parallel none
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-cpu-host-passthrough-features-invalid.xml b/tests/qemuxml2argvdata/qemuxml2argv-cpu-host-passthrough-features-invalid.xml
+new file mode 100644
+index 0000000..b5f5326
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-cpu-host-passthrough-features-invalid.xml
+@@ -0,0 +1,55 @@
++<domain type='kvm'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <title>A description of the test machine.</title>
++  <description>
++      A test of qemu&apos;s minimal configuration.
++      This test also tests the description and title elements.
++  </description>
++  <memory unit='KiB'>219100</memory>
++  <currentMemory unit='KiB'>219100</currentMemory>
++  <vcpu placement='static' cpuset='1-4,8-20,525'>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <cpu mode='host-passthrough'>
++    <feature policy='require' name='abm'/>
++    <feature policy='require' name='pdpe1gb'/>
++    <feature policy='require' name='rdrand'/>
++    <feature policy='require' name='f16c'/>
++    <feature policy='require' name='osxsave'/>
++    <feature policy='require' name='pdcm'/>
++    <feature policy='require' name='xtpr'/>
++    <feature policy='require' name='tm2'/>
++    <feature policy='require' name='est'/>
++    <feature policy='require' name='smx'/>
++    <feature policy='require' name='vmx'/>
++    <feature policy='require' name='ds_cpl'/>
++    <feature policy='require' name='monitor'/>
++    <feature policy='require' name='dtes64'/>
++    <feature policy='require' name='pbe'/>
++    <feature policy='require' name='tm'/>
++    <feature policy='require' name='ht'/>
++    <feature policy='require' name='ss'/>
++    <feature policy='require' name='acpi'/>
++    <feature policy='require' name='ds'/>
++    <feature policy='require' name='vme'/>
++  </cpu>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='block' device='disk'>
++      <source dev='/dev/HostVG/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' target='0' unit='0'/>
++    </disk>
++    <controller type='usb' index='0'/>
++    <controller type='ide' index='0'/>
++    <controller type='pci' index='0' model='pci-root'/>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index 967760a..595b658 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -1490,6 +1490,7 @@ mymain(void)
+     DO_TEST_FAILURE("shmem-invalid-size", NONE);
+     DO_TEST_FAILURE("shmem-small-size", NONE);
+     DO_TEST_PARSE_ERROR("shmem-msi-only", NONE);
++    DO_TEST("cpu-host-passthrough-features-invalid", QEMU_CAPS_KVM, QEMU_CAPS_CPU_HOST);
+ 
+     virObjectUnref(driver.config);
+     virObjectUnref(driver.caps);
+-- 
+2.2.0
+

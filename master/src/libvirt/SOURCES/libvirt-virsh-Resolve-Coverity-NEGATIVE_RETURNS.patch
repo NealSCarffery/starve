@@ -1,0 +1,54 @@
+From f298d86936d05d3378edb23776dfcbc043bed2ff Mon Sep 17 00:00:00 2001
+Message-Id: <f298d86936d05d3378edb23776dfcbc043bed2ff@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Mon, 15 Sep 2014 15:13:55 -0400
+Subject: [PATCH] virsh: Resolve Coverity NEGATIVE_RETURNS
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1141209
+
+Coverity notes that after we VIR_ALLOC_N(params, nparams) a failed call to
+virDomainGetCPUStats could result in nparams being set to -1. In that case,
+the subsequent virTypedParamsFree in cleanup will pass -1 which isn't good.
+
+Use the returned value as the number of stats to display in the loop as
+it will be the value reported from the hypervisor and may be less than
+nparams which is OK
+
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+(cherry picked from commit be365d8dff1aec37b9a487ca31abce3f904419dd)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ tools/virsh-domain.c | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/tools/virsh-domain.c b/tools/virsh-domain.c
+index 1ff264e..3e974e0 100644
+--- a/tools/virsh-domain.c
++++ b/tools/virsh-domain.c
+@@ -6525,7 +6525,7 @@ cmdCPUStats(vshControl *ctl, const vshCmd *cmd)
+ {
+     virDomainPtr dom;
+     virTypedParameterPtr params = NULL;
+-    int pos, max_id, cpu = 0, show_count = -1, nparams = 0;
++    int pos, max_id, cpu = 0, show_count = -1, nparams = 0, stats_per_cpu;
+     size_t i, j;
+     bool show_total = false, show_per_cpu = false;
+     unsigned int flags = 0;
+@@ -6644,11 +6644,12 @@ cmdCPUStats(vshControl *ctl, const vshCmd *cmd)
+         goto cleanup;
+ 
+     /* passing start_cpu == -1 gives us domain's total status */
+-    if ((nparams = virDomainGetCPUStats(dom, params, nparams, -1, 1, flags)) < 0)
++    if ((stats_per_cpu = virDomainGetCPUStats(dom, params, nparams,
++                                              -1, 1, flags)) < 0)
+         goto failed_stats;
+ 
+     vshPrint(ctl, _("Total:\n"));
+-    for (i = 0; i < nparams; i++) {
++    for (i = 0; i < stats_per_cpu; i++) {
+         vshPrint(ctl, "\t%-12s ", params[i].field);
+         if ((STREQ(params[i].field, VIR_DOMAIN_CPU_STATS_CPUTIME) ||
+              STREQ(params[i].field, VIR_DOMAIN_CPU_STATS_USERTIME) ||
+-- 
+2.1.0
+

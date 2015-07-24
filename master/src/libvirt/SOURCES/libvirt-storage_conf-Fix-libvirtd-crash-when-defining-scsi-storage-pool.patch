@@ -1,0 +1,83 @@
+From f9669867ec4a8ae7bc3eed9b8b02be4a7adc5e2f Mon Sep 17 00:00:00 2001
+Message-Id: <f9669867ec4a8ae7bc3eed9b8b02be4a7adc5e2f@dist-git>
+From: "Pradipta Kr. Banerjee" <pradipta.banerjee@gmail.com>
+Date: Tue, 16 Sep 2014 11:47:31 -0400
+Subject: [PATCH] storage_conf: Fix libvirtd crash when defining scsi storage
+ pool
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1141943
+
+Since 9f781da69de02745acb719e78982df9aeccfcd7b
+
+Resolve a libvirtd crash in virStoragePoolSourceFindDuplicate()
+when there is an existing SCSI pool defined with adapter type as
+'scsi_host' and defining a new SCSI pool with adapter type as
+'fc_host' and parent attribute missing or vice versa.
+
+For example, if there is an existing SCSI pool with adapter type
+as 'scsi_host' defined using the following XML
+
+<pool type='scsi'>
+  <name>TEST_SCSI_POOL</name>
+    <source>
+       <adapter type='scsi_host' name='scsi_host1'/>
+    </source>
+    <target>
+        <path>/dev/disk/by-path</path>
+    </target>
+</pool>
+
+When defining another SCSI pool with adapter type as 'fc_host' using the
+following XML will crash libvirtd
+
+<pool type='scsi'>
+  <name>TEST_SCSI_FC_POOL</name>
+  <source>
+     <adapter type='fc_host' wwnn='1234567890abcdef' wwpn='abcdef1234567890'/>
+  </source>
+  <target>
+     <path>/dev/disk/by-path</path>
+  </target>
+</pool>
+
+Same is true for the reverse case as well where there exists a SCSI pool
+with adapter type as 'fc_host' and another SCSI pool is defined with
+adapter type as 'scsi_host'.
+
+This happens because for fc_host 'name' is optional attribute whereas for
+scsi_host its mandatory. However the check in libvirt for finding duplicate
+storage pools didn't take that into account while comparing
+
+Signed-off-by: Pradipta Kr. Banerjee <bpradip@in.ibm.com>
+(cherry picked from commit 119b6dfc40cff5c90cdc2a77df01191727332b4b)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/conf/storage_conf.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/conf/storage_conf.c b/src/conf/storage_conf.c
+index e72a869..d42cde7 100644
+--- a/src/conf/storage_conf.c
++++ b/src/conf/storage_conf.c
+@@ -2117,6 +2117,8 @@ virStoragePoolSourceFindDuplicate(virStoragePoolObjListPtr pools,
+             break;
+         case VIR_STORAGE_POOL_SCSI:
+             if (pool->def->source.adapter.type ==
++                VIR_STORAGE_POOL_SOURCE_ADAPTER_TYPE_FC_HOST &&
++                def->source.adapter.type ==
+                 VIR_STORAGE_POOL_SOURCE_ADAPTER_TYPE_FC_HOST) {
+                 if (STREQ(pool->def->source.adapter.data.fchost.wwnn,
+                           def->source.adapter.data.fchost.wwnn) &&
+@@ -2124,6 +2126,8 @@ virStoragePoolSourceFindDuplicate(virStoragePoolObjListPtr pools,
+                           def->source.adapter.data.fchost.wwpn))
+                     matchpool = pool;
+             } else if (pool->def->source.adapter.type ==
++                       VIR_STORAGE_POOL_SOURCE_ADAPTER_TYPE_SCSI_HOST &&
++                       def->source.adapter.type ==
+                        VIR_STORAGE_POOL_SOURCE_ADAPTER_TYPE_SCSI_HOST) {
+                 if (pool->def->source.adapter.data.scsi_host.name) {
+                     if (STREQ(pool->def->source.adapter.data.scsi_host.name,
+-- 
+2.1.0
+

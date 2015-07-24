@@ -1,0 +1,97 @@
+From e2bc63134ab6c302d7a7e605e0da4fd46b4c687a Mon Sep 17 00:00:00 2001
+Message-Id: <e2bc63134ab6c302d7a7e605e0da4fd46b4c687a@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Thu, 18 Sep 2014 09:29:52 -0400
+Subject: [PATCH] qemu_domain: Add niothreadpids and iothreadpids
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1101574
+
+Add new 'niothreadpids' and 'iothreadpids' to mimic the 'ncpupids' and
+'vcpupids' that already exist.
+
+(cherry picked from commit 586905512ac2a43698e6d1fa9e719fa564571613)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_domain.c | 36 ++++++++++++++++++++++++++++++++++++
+ src/qemu/qemu_domain.h |  3 +++
+ 2 files changed, 39 insertions(+)
+
+diff --git a/src/qemu/qemu_domain.c b/src/qemu/qemu_domain.c
+index c0306d7..863ab09 100644
+--- a/src/qemu/qemu_domain.c
++++ b/src/qemu/qemu_domain.c
+@@ -425,6 +425,7 @@ qemuDomainObjPrivateFree(void *data)
+     virDomainChrSourceDefFree(priv->monConfig);
+     qemuDomainObjFreeJob(priv);
+     VIR_FREE(priv->vcpupids);
++    VIR_FREE(priv->iothreadpids);
+     VIR_FREE(priv->lockState);
+     VIR_FREE(priv->origname);
+ 
+@@ -483,6 +484,18 @@ qemuDomainObjPrivateXMLFormat(virBufferPtr buf, void *data)
+         virBufferAddLit(buf, "</vcpus>\n");
+     }
+ 
++    if (priv->niothreadpids) {
++        size_t i;
++        virBufferAddLit(buf, "<iothreads>\n");
++        virBufferAdjustIndent(buf, 2);
++        for (i = 0; i < priv->niothreadpids; i++) {
++            virBufferAsprintf(buf, "<iothread pid='%d'/>\n",
++                              priv->iothreadpids[i]);
++        }
++        virBufferAdjustIndent(buf, -2);
++        virBufferAddLit(buf, "</iothreads>\n");
++    }
++
+     if (priv->qemuCaps) {
+         size_t i;
+         virBufferAddLit(buf, "<qemuCaps>\n");
+@@ -606,6 +619,29 @@ qemuDomainObjPrivateXMLParse(xmlXPathContextPtr ctxt, void *data)
+         VIR_FREE(nodes);
+     }
+ 
++    n = virXPathNodeSet("./iothreads/iothread", ctxt, &nodes);
++    if (n < 0)
++        goto error;
++    if (n) {
++        priv->niothreadpids = n;
++        if (VIR_REALLOC_N(priv->iothreadpids, priv->niothreadpids) < 0)
++            goto error;
++
++        for (i = 0; i < n; i++) {
++            char *pidstr = virXMLPropString(nodes[i], "pid");
++            if (!pidstr)
++                goto error;
++
++            if (virStrToLong_i(pidstr, NULL, 10,
++                               &(priv->iothreadpids[i])) < 0) {
++                VIR_FREE(pidstr);
++                goto error;
++            }
++            VIR_FREE(pidstr);
++        }
++        VIR_FREE(nodes);
++    }
++
+     if ((n = virXPathNodeSet("./qemuCaps/flag", ctxt, &nodes)) < 0) {
+         virReportError(VIR_ERR_INTERNAL_ERROR,
+                        "%s", _("failed to parse qemu capabilities flags"));
+diff --git a/src/qemu/qemu_domain.h b/src/qemu/qemu_domain.h
+index 479b51f..4ae2c57 100644
+--- a/src/qemu/qemu_domain.h
++++ b/src/qemu/qemu_domain.h
+@@ -154,6 +154,9 @@ struct _qemuDomainObjPrivate {
+     int nvcpupids;
+     int *vcpupids;
+ 
++    int niothreadpids;
++    int *iothreadpids;
++
+     virDomainPCIAddressSetPtr pciaddrs;
+     virDomainCCWAddressSetPtr ccwaddrs;
+     int persistentAddrs;
+-- 
+2.1.0
+

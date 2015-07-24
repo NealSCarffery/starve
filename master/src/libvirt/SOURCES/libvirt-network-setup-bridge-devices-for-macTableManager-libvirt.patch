@@ -1,0 +1,144 @@
+From c245c3ae639f702cfc1f8cdb0b0272600bc4ad1e Mon Sep 17 00:00:00 2001
+Message-Id: <c245c3ae639f702cfc1f8cdb0b0272600bc4ad1e@dist-git>
+From: Laine Stump <laine@laine.org>
+Date: Mon, 15 Dec 2014 10:51:30 -0500
+Subject: [PATCH] network: setup bridge devices for macTableManager='libvirt'
+
+This is part of the fix for:
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=1099210
+
+When the bridge device for a network has macTableManager='libvirt' the
+intent is that all kernel management of the bridge's MAC table
+(Forwarding Database, or fdb, in the case of a Linux Host Bridge) be
+disabled, with libvirt handling updates to the table instead. The
+setup required for the bridge itself is:
+
+1) set the "vlan_filtering" property of the bridge device to 1.
+
+2) If the bridge has a "Dummy" tap device used to set a fixed MAC
+address on the bridge (which is always the case for a bridge created
+by libvirt, and never the case for a bridge created by the host system
+network config), turn off learning and unicast_flood on this tap (this
+is needed even though this tap is never IFF_UP, because the kernel
+ignores the IFF_UP flag of devices when using their settings to
+automatically decide whether or not to turn off promiscuous mode for
+any attached device).
+
+(1) is done both for libvirt-created/managed bridges, and for bridges
+that are created by the host system config, while (2) is done only for
+bridges created by libvirt (i.e. for forward modes of nat, routed, and
+isolated bridges)
+
+There is no attempt to turn vlan_filtering off when destroying the
+network because in the case of a libvirt-created bridge, the bridge is
+about to be destroyed anyway, and in the case of a system bridge, if
+the other devices attached to the bridge could operate properly before
+destroying libvirt's network object, they will continue to operate
+properly (this is similar to the way that libvirt will enable
+ip_forwarding whenever a routed/natted network is started, but will
+never attempt to disable it if they are stopped).
+
+(cherry picked from commit 8a144c90457a8699fb35fbefe8974a2530980eaa)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/network/bridge_driver.c | 54 +++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 54 insertions(+)
+
+diff --git a/src/network/bridge_driver.c b/src/network/bridge_driver.c
+index 361029f..3e3e4de 100644
+--- a/src/network/bridge_driver.c
++++ b/src/network/bridge_driver.c
+@@ -1928,6 +1928,29 @@ networkAddAddrToBridge(virNetworkObjPtr network,
+     return 0;
+ }
+ 
++
++static int
++networkStartHandleMACTableManagerMode(virNetworkObjPtr network,
++                                      const char *macTapIfName)
++{
++    const char *brname = network->def->bridge;
++
++    if (brname &&
++        network->def->macTableManager
++        == VIR_NETWORK_BRIDGE_MAC_TABLE_MANAGER_LIBVIRT) {
++        if (virNetDevBridgeSetVlanFiltering(brname, true) < 0)
++            return -1;
++        if (macTapIfName) {
++            if (virNetDevBridgePortSetLearning(brname, macTapIfName, false) < 0)
++                return -1;
++            if (virNetDevBridgePortSetUnicastFlood(brname, macTapIfName, false) < 0)
++                return -1;
++        }
++    }
++    return 0;
++}
++
++
+ /* add an IP (static) route to a bridge */
+ static int
+ networkAddRouteToBridge(virNetworkObjPtr network,
+@@ -2056,6 +2079,9 @@ networkStartNetworkVirtual(virNetworkDriverStatePtr driver,
+         }
+     }
+ 
++    if (networkStartHandleMACTableManagerMode(network, macTapIfName) < 0)
++        goto err2;
++
+     /* Bring up the bridge interface */
+     if (virNetDevSetOnline(network->def->bridge, 1) < 0)
+         goto err2;
+@@ -2201,6 +2227,27 @@ static int networkShutdownNetworkVirtual(virNetworkDriverStatePtr driver ATTRIBU
+ }
+ 
+ 
++static int
++networkStartNetworkBridge(virNetworkObjPtr network)
++{
++    /* put anything here that needs to be done each time a network of
++     * type BRIDGE, is started. On failure, undo anything you've done,
++     * and return -1. On success return 0.
++     */
++    return networkStartHandleMACTableManagerMode(network, NULL);
++}
++
++static int
++networkShutdownNetworkBridge(virNetworkObjPtr network ATTRIBUTE_UNUSED)
++{
++    /* put anything here that needs to be done each time a network of
++     * type BRIDGE is shutdown. On failure, undo anything you've done,
++     * and return -1. On success return 0.
++     */
++    return 0;
++}
++
++
+ /* networkCreateInterfacePool:
+  * @netdef: the original NetDef from the network
+  *
+@@ -2367,6 +2414,10 @@ networkStartNetwork(virNetworkDriverStatePtr driver,
+         break;
+ 
+     case VIR_NETWORK_FORWARD_BRIDGE:
++       if (networkStartNetworkBridge(network) < 0)
++          goto cleanup;
++       break;
++
+     case VIR_NETWORK_FORWARD_PRIVATE:
+     case VIR_NETWORK_FORWARD_VEPA:
+     case VIR_NETWORK_FORWARD_PASSTHROUGH:
+@@ -2434,6 +2485,9 @@ static int networkShutdownNetwork(virNetworkDriverStatePtr driver,
+         break;
+ 
+     case VIR_NETWORK_FORWARD_BRIDGE:
++        ret = networkShutdownNetworkBridge(network);
++        break;
++
+     case VIR_NETWORK_FORWARD_PRIVATE:
+     case VIR_NETWORK_FORWARD_VEPA:
+     case VIR_NETWORK_FORWARD_PASSTHROUGH:
+-- 
+2.2.0
+

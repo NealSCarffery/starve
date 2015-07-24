@@ -1,0 +1,52 @@
+From 64d3b1546dc6c96afd2d06403f0c93308e0b34b6 Mon Sep 17 00:00:00 2001
+Message-Id: <64d3b1546dc6c96afd2d06403f0c93308e0b34b6@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Tue, 23 Dec 2014 15:54:35 -0700
+Subject: [PATCH] qemu: migration: Unlock vm on failed ACL check in protocol v2
+ APIs
+
+CVE-2014-8136 (RHEL 7.0.z, 7.1)
+
+Avoid leaving the domain locked on a failed ACL check in
+qemuDomainMigratePerform() and qemuDomainMigrateFinish2().
+
+Introduced in commit abf75aea247e (Add ACL checks into the QEMU driver).
+
+(cherry picked from commit 2bdcd29c713dfedd813c89f56ae98f6f3898313d)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 619f2d6..1b08cc4 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -11343,8 +11343,10 @@ qemuDomainMigratePerform(virDomainPtr dom,
+     if (!(vm = qemuDomObjFromDomain(dom)))
+         goto cleanup;
+ 
+-    if (virDomainMigratePerformEnsureACL(dom->conn, vm->def) < 0)
++    if (virDomainMigratePerformEnsureACL(dom->conn, vm->def) < 0) {
++        virObjectUnlock(vm);
+         goto cleanup;
++    }
+ 
+     if (flags & VIR_MIGRATE_PEER2PEER) {
+         dconnuri = uri;
+@@ -11391,8 +11393,10 @@ qemuDomainMigrateFinish2(virConnectPtr dconn,
+         goto cleanup;
+     }
+ 
+-    if (virDomainMigrateFinish2EnsureACL(dconn, vm->def) < 0)
++    if (virDomainMigrateFinish2EnsureACL(dconn, vm->def) < 0) {
++        virObjectUnlock(vm);
+         goto cleanup;
++    }
+ 
+     /* Do not use cookies in v2 protocol, since the cookie
+      * length was not sufficiently large, causing failures
+-- 
+2.2.1
+

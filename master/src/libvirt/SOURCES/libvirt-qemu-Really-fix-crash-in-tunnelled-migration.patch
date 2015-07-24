@@ -1,0 +1,33 @@
+From df89cb75c6663d7b6245cc92a9f31bb1eae6bb66 Mon Sep 17 00:00:00 2001
+Message-Id: <df89cb75c6663d7b6245cc92a9f31bb1eae6bb66@dist-git>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Thu, 20 Nov 2014 13:44:18 +0100
+Subject: [PATCH] qemu: Really fix crash in tunnelled migration
+
+Oops, I forgot to squash one more instance of the same check in the
+previous commit (v1.2.10-144-g52691f9).
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1147331
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+(cherry picked from commit 800454e45ec9ad1ee495bfa7ffe617453f349d3e)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_migration.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/qemu/qemu_migration.c b/src/qemu/qemu_migration.c
+index 4b701d3..225aafd 100644
+--- a/src/qemu/qemu_migration.c
++++ b/src/qemu/qemu_migration.c
+@@ -2765,7 +2765,7 @@ qemuMigrationPrepareAny(virQEMUDriverPtr driver,
+                                     QEMU_ASYNC_JOB_MIGRATION_IN) < 0)
+         goto stop;
+ 
+-    if (STREQ(protocol, "rdma") &&
++    if (STREQ_NULLABLE(protocol, "rdma") &&
+         virProcessSetMaxMemLock(vm->pid, vm->def->mem.hard_limit << 10) < 0) {
+         goto stop;
+     }
+-- 
+2.1.3
+

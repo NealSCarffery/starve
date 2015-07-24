@@ -1,0 +1,124 @@
+From 1442e803c97a4e528a6319f097d82968ed46f965 Mon Sep 17 00:00:00 2001
+Message-Id: <1442e803c97a4e528a6319f097d82968ed46f965@dist-git>
+From: Pavel Hrdina <phrdina@redhat.com>
+Date: Tue, 25 Nov 2014 10:53:00 +0100
+Subject: [PATCH] QXL: fix setting ram and vram values for QEMU QXL device
+
+QEMU has two different type of QXL display device. The first "qxl-vga"
+is for primary video device and second "qxl" is for secondary video
+device.
+
+There are also two different ways how to specify those devices on qemu
+command line, the first one and obsolete is using "-vga" option and the
+current new one is using "-device" option. The "-vga" could be used only
+to setup primary video device, so the "-vga qxl" equal to
+"-device qxl-vga". Unfortunately the "-vga qxl" doesn't support setting
+additional parameters for the device and "-global" option must be used
+for this purpose. It's mandatory to use "-global qxl-vga...." to set the
+parameters of primary video device previously defined with "-vga qxl".
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1076098
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+(cherry picked from commit c32cfc6d3ff53e6493928ac4bc14a19cd162bc4b)
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_command.c                                   | 15 +++++++++++++--
+ .../qemuxml2argv-graphics-spice-compression.args          |  2 +-
+ .../qemuxml2argv-graphics-spice-sasl.args                 |  4 ++--
+ tests/qemuxml2argvdata/qemuxml2argv-graphics-spice.args   |  4 ++--
+ tests/qemuxml2argvdata/qemuxml2argv-pcihole64-q35.args    |  2 +-
+ tests/qemuxml2argvdata/qemuxml2argv-q35.args              |  2 +-
+ 6 files changed, 20 insertions(+), 9 deletions(-)
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 8d73f89..c75d3b0 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -9107,11 +9107,22 @@ qemuBuildCommandLine(virConnectPtr conn,
+ 
+                 virCommandAddArgList(cmd, "-vga", vgastr, NULL);
+ 
++                /* If we cannot use --device option to specify the video device
++                 * in QEMU we will fallback to the old --vga option. To get the
++                 * correct device name for the --vga option the 'qemuVideo' is
++                 * used, but to set some device attributes we need to use the
++                 * --global option and for that we need to specify the device
++                 * name the same as for --device option and for that we need to
++                 * use 'qemuDeviceVideo'.
++                 *
++                 * See 'Graphics Devices' section in docs/qdev-device-use.txt in
++                 * QEMU repository.
++                 */
++                const char *dev = qemuDeviceVideoTypeToString(primaryVideoType);
++
+                 if (def->videos[0]->type == VIR_DOMAIN_VIDEO_TYPE_QXL &&
+                     (def->videos[0]->vram || def->videos[0]->ram) &&
+                     virQEMUCapsGet(qemuCaps, QEMU_CAPS_DEVICE)) {
+-                    const char *dev = (virQEMUCapsGet(qemuCaps, QEMU_CAPS_DEVICE_QXL_VGA)
+-                                       ? "qxl-vga" : "qxl");
+                     unsigned int ram = def->videos[0]->ram;
+                     unsigned int vram = def->videos[0]->vram;
+ 
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-compression.args b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-compression.args
+index cdc916c..e08ee20 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-compression.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-compression.args
+@@ -6,6 +6,6 @@ x509-dir=/etc/pki/libvirt-spice,\
+ image-compression=auto_glz,jpeg-wan-compression=auto,\
+ zlib-glz-wan-compression=auto,\
+ playback-compression=on,streaming-video=filter -vga \
+-qxl -global qxl.ram_size=67108864 -global qxl.vram_size=33554432 \
++qxl -global qxl-vga.ram_size=67108864 -global qxl-vga.vram_size=33554432 \
+ -device qxl,id=video1,ram_size=67108864,vram_size=33554432,bus=pci.0,addr=0x4 \
+ -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-sasl.args b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-sasl.args
+index 0c9df16..4f7f09b 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-sasl.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-sasl.args
+@@ -5,5 +5,5 @@ SASL_CONF_PATH=/root/.sasl2 QEMU_AUDIO_DRV=spice \
+ /dev/HostVG/QEMUGuest1 \
+ -spice port=5903,tls-port=5904,sasl,addr=127.0.0.1,\
+ x509-dir=/etc/pki/libvirt-spice,tls-channel=default \
+--vga qxl -global qxl.ram_size=67108864 -global \
+-qxl.vram_size=33554432 -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
++-vga qxl -global qxl-vga.ram_size=67108864 -global qxl-vga.vram_size=33554432 \
++-device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice.args b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice.args
+index 704cec7..97755c3 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice.args
+@@ -7,7 +7,7 @@ plaintext-channel=inputs,\
+ image-compression=auto_glz,jpeg-wan-compression=auto,\
+ zlib-glz-wan-compression=auto,\
+ playback-compression=on,streaming-video=filter,disable-copy-paste,\
+-disable-agent-file-xfer -vga qxl -global qxl.ram_size=67108864 \
+--global qxl.vram_size=33554432 \
++disable-agent-file-xfer -vga qxl -global qxl-vga.ram_size=67108864 \
++-global qxl-vga.vram_size=33554432 \
+ -device qxl,id=video1,ram_size=67108864,vram_size=33554432,bus=pci.0,addr=0x4 \
+ -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-pcihole64-q35.args b/tests/qemuxml2argvdata/qemuxml2argv-pcihole64-q35.args
+index c8045a4..cd2ccca 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-pcihole64-q35.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-pcihole64-q35.args
+@@ -6,4 +6,4 @@ LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=none \
+ -device pci-bridge,chassis_nr=2,id=pci.2,bus=pci.1,addr=0x1 \
+ -drive file=/dev/HostVG/QEMUGuest1,if=none,id=drive-sata0-0-0 \
+ -device ide-drive,bus=ide.0,drive=drive-sata0-0-0,id=sata0-0-0 \
+--vga qxl -global qxl.ram_size=67108864 -global qxl.vram_size=33554432
++-vga qxl -global qxl-vga.ram_size=67108864 -global qxl-vga.vram_size=33554432
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-q35.args b/tests/qemuxml2argvdata/qemuxml2argv-q35.args
+index 08bd96e..888aa6b 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-q35.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-q35.args
+@@ -5,4 +5,4 @@ LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=none \
+ -device pci-bridge,chassis_nr=2,id=pci.2,bus=pci.1,addr=0x1 \
+ -drive file=/dev/HostVG/QEMUGuest1,if=none,id=drive-sata0-0-0 \
+ -device ide-drive,bus=ide.0,drive=drive-sata0-0-0,id=sata0-0-0 \
+--vga qxl -global qxl.ram_size=67108864 -global qxl.vram_size=33554432
++-vga qxl -global qxl-vga.ram_size=67108864 -global qxl-vga.vram_size=33554432
+-- 
+2.1.3
+

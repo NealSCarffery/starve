@@ -1,0 +1,46 @@
+From e172cc333ddcdb7fdfa49147f9def22da05c3b94 Mon Sep 17 00:00:00 2001
+Message-Id: <e172cc333ddcdb7fdfa49147f9def22da05c3b94@dist-git>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Tue, 23 Sep 2014 15:47:59 +0200
+Subject: [PATCH] qemu: Fix memory leak in RDMA migration code
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1013055
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+(cherry picked from commit ad56f863787d6d7f212bbffd42286349ce0ae0ad)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_migration.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/src/qemu/qemu_migration.c b/src/qemu/qemu_migration.c
+index fda7cda..1db9108 100644
+--- a/src/qemu/qemu_migration.c
++++ b/src/qemu/qemu_migration.c
+@@ -3792,13 +3792,13 @@ static int doNativeMigrate(virQEMUDriverPtr driver,
+             virReportError(VIR_ERR_OPERATION_UNSUPPORTED, "%s",
+                            _("outgoing RDMA migration is not supported "
+                              "with this QEMU binary"));
+-            return -1;
++            goto cleanup;
+         }
+         if (!vm->def->mem.hard_limit) {
+             virReportError(VIR_ERR_OPERATION_INVALID, "%s",
+                            _("cannot start RDMA migration with no memory hard "
+                              "limit set"));
+-            return -1;
++            goto cleanup;
+         }
+     }
+ 
+@@ -3819,6 +3819,7 @@ static int doNativeMigrate(virQEMUDriverPtr driver,
+     if (spec.destType == MIGRATION_DEST_FD)
+         VIR_FORCE_CLOSE(spec.dest.fd.qemu);
+ 
++ cleanup:
+     virURIFree(uribits);
+ 
+     return ret;
+-- 
+2.1.1
+

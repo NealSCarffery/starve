@@ -1,0 +1,135 @@
+From d4419813040b7acccda8b637ac26c67912cb747f Mon Sep 17 00:00:00 2001
+Message-Id: <d4419813040b7acccda8b637ac26c67912cb747f@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Wed, 29 Oct 2014 18:04:09 +0100
+Subject: [PATCH] storage: Fix crash when parsing backing store URI with schema
+
+The code that parses the schema from the URI touches the "hosts[0]"
+member of the storage file source structure in case the URI contains a
+schema. The hosts array was not yet allocated at the point in the code
+where the transport protocol was parsed and set. This lead to a crash of
+libvirtd.
+
+Fix the code by allocating the "hosts" array upfront and add a test case
+to verify this scenario. (Unfortunately this requires shuffling the test
+case numbers too).
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1156288
+(cherry picked from commit 98784369fd52ed6aa9bab2a9a9d213c52019e6ee)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/util/virstoragefile.c | 10 +++++-----
+ tests/virstoragetest.c    | 31 +++++++++++++++++++++++++------
+ 2 files changed, 30 insertions(+), 11 deletions(-)
+
+diff --git a/src/util/virstoragefile.c b/src/util/virstoragefile.c
+index fdf14c0..6e6ee08 100644
+--- a/src/util/virstoragefile.c
++++ b/src/util/virstoragefile.c
+@@ -2111,6 +2111,11 @@ virStorageSourceParseBackingURI(virStorageSourcePtr src,
+         goto cleanup;
+     }
+ 
++    if (VIR_ALLOC(src->hosts) < 0)
++        goto cleanup;
++
++    src->nhosts = 1;
++
+     if (!(scheme = virStringSplit(uri->scheme, "+", 2)))
+         goto cleanup;
+ 
+@@ -2161,11 +2166,6 @@ virStorageSourceParseBackingURI(virStorageSourcePtr src,
+         tmp[0] = '\0';
+     }
+ 
+-    if (VIR_ALLOC(src->hosts) < 0)
+-        goto cleanup;
+-
+-    src->nhosts = 1;
+-
+     if (uri->port > 0) {
+         if (virAsprintf(&src->hosts->port, "%d", uri->port) < 0)
+             goto cleanup;
+diff --git a/tests/virstoragetest.c b/tests/virstoragetest.c
+index 29f5c7a..05e48f3 100644
+--- a/tests/virstoragetest.c
++++ b/tests/virstoragetest.c
+@@ -835,6 +835,25 @@ mymain(void)
+                (&qcow2, &nbd), EXP_PASS,
+                (&qcow2, &nbd), ALLOW_PROBE | EXP_PASS);
+ 
++    /* Rewrite qcow2 to use an nbd: protocol as backend */
++    virCommandFree(cmd);
++    cmd = virCommandNewArgList(qemuimg, "rebase", "-u", "-f", "qcow2",
++                               "-F", "raw", "-b", "nbd+tcp://example.org:6000/blah",
++                               "qcow2", NULL);
++    if (virCommandRun(cmd, NULL) < 0)
++        ret = -1;
++    qcow2.expBackingStoreRaw = "nbd+tcp://example.org:6000/blah";
++
++    /* Qcow2 file with backing protocol instead of file */
++    testFileData nbd2 = {
++        .path = "blah",
++        .type = VIR_STORAGE_TYPE_NETWORK,
++        .format = VIR_STORAGE_FILE_RAW,
++    };
++    TEST_CHAIN(12, absqcow2, VIR_STORAGE_FILE_QCOW2,
++               (&qcow2, &nbd2), EXP_PASS,
++               (&qcow2, &nbd2), ALLOW_PROBE | EXP_PASS);
++
+     /* qed file */
+     testFileData qed = {
+         .expBackingStoreRaw = absraw,
+@@ -848,7 +867,7 @@ mymain(void)
+         .type = VIR_STORAGE_TYPE_FILE,
+         .format = VIR_STORAGE_FILE_RAW,
+     };
+-    TEST_CHAIN(12, absqed, VIR_STORAGE_FILE_AUTO,
++    TEST_CHAIN(13, absqed, VIR_STORAGE_FILE_AUTO,
+                (&qed_as_raw), EXP_PASS,
+                (&qed, &raw), ALLOW_PROBE | EXP_PASS);
+ 
+@@ -858,10 +877,10 @@ mymain(void)
+         .type = VIR_STORAGE_TYPE_DIR,
+         .format = VIR_STORAGE_FILE_DIR,
+     };
+-    TEST_CHAIN(13, absdir, VIR_STORAGE_FILE_AUTO,
++    TEST_CHAIN(14, absdir, VIR_STORAGE_FILE_AUTO,
+                (&dir), EXP_PASS,
+                (&dir), ALLOW_PROBE | EXP_PASS);
+-    TEST_CHAIN(14, absdir, VIR_STORAGE_FILE_DIR,
++    TEST_CHAIN(15, absdir, VIR_STORAGE_FILE_DIR,
+                (&dir), EXP_PASS,
+                (&dir), ALLOW_PROBE | EXP_PASS);
+ 
+@@ -900,7 +919,7 @@ mymain(void)
+ 
+     raw.path = datadir "/sub/../sub/../raw";
+     raw.pathRel = "../raw";
+-    TEST_CHAIN(15, abslink2, VIR_STORAGE_FILE_QCOW2,
++    TEST_CHAIN(16, abslink2, VIR_STORAGE_FILE_QCOW2,
+                (&link2, &link1, &raw), EXP_PASS,
+                (&link2, &link1, &raw), ALLOW_PROBE | EXP_PASS);
+ #endif
+@@ -914,7 +933,7 @@ mymain(void)
+     qcow2.expBackingStoreRaw = "qcow2";
+ 
+     /* Behavior of an infinite loop chain */
+-    TEST_CHAIN(16, absqcow2, VIR_STORAGE_FILE_QCOW2,
++    TEST_CHAIN(17, absqcow2, VIR_STORAGE_FILE_QCOW2,
+                (&qcow2), EXP_WARN,
+                (&qcow2), ALLOW_PROBE | EXP_WARN);
+ 
+@@ -933,7 +952,7 @@ mymain(void)
+     qcow2.expBackingStoreRaw = "wrap";
+ 
+     /* Behavior of an infinite loop chain */
+-    TEST_CHAIN(17, abswrap, VIR_STORAGE_FILE_QCOW2,
++    TEST_CHAIN(18, abswrap, VIR_STORAGE_FILE_QCOW2,
+                (&wrap, &qcow2), EXP_WARN,
+                (&wrap, &qcow2), ALLOW_PROBE | EXP_WARN);
+ 
+-- 
+2.1.3
+

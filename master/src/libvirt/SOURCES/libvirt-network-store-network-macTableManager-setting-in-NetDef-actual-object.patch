@@ -1,0 +1,188 @@
+From 2970e543f7d9446229332966a266103dbdbefdc6 Mon Sep 17 00:00:00 2001
+Message-Id: <2970e543f7d9446229332966a266103dbdbefdc6@dist-git>
+From: Laine Stump <laine@laine.org>
+Date: Mon, 15 Dec 2014 10:51:29 -0500
+Subject: [PATCH] network: store network macTableManager setting in NetDef
+ actual object
+
+This is part of the fix for:
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=1099210
+
+At the time that the network driver allocates a connection to a
+network, the tap device that will be used hasn't yet been created -
+that will be done later by qemu (or lxc or whoever) - but if the
+network has macTableManager='libvirt', then when we do get around to
+creating the tap device, we will need to add an entry for it to the
+network bridge's fdb (forwarding database) *and* turn off learning and
+unicast_flood for that tap device in the bridge's sysfs settings. This
+means that qemu needs to know both the bridge name as well as the
+setting of macTableManager, so we either need to create a new API to
+retrieve that info, or just pass it back in the ActualNetDef that is
+created during networkAllocateActualDevice. We choose the latter
+method, since it's already done for the bridge device, and it has the
+side effect of making the information available in domain status.
+
+(NB: in the future, I think that the tap device should actually be
+created by networkAllocateActualDevice(), as that will solve several
+other problems, but that is a battle for another day, and this
+information will still be useful outside the network driver)
+
+(cherry picked from commit 33f4a8bc038bf05ece1ed42e9bf77fba780d0cb1)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/conf/domain_conf.c      | 30 ++++++++++++++++++++++++++++++
+ src/conf/domain_conf.h      |  2 ++
+ src/libvirt_private.syms    |  1 +
+ src/network/bridge_driver.c |  6 +++++-
+ 4 files changed, 38 insertions(+), 1 deletion(-)
+
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 4cbc431..8c161b5 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -51,6 +51,7 @@
+ #include "netdev_bandwidth_conf.h"
+ #include "netdev_vlan_conf.h"
+ #include "device_conf.h"
++#include "network_conf.h"
+ #include "virtpm.h"
+ #include "virstring.h"
+ 
+@@ -6842,6 +6843,7 @@ virDomainActualNetDefParseXML(xmlNodePtr node,
+     char *mode = NULL;
+     char *addrtype = NULL;
+     char *trustGuestRxFilters = NULL;
++    char *macTableManager = NULL;
+ 
+     if (VIR_ALLOC(actual) < 0)
+         return -1;
+@@ -6958,6 +6960,16 @@ virDomainActualNetDefParseXML(xmlNodePtr node,
+             goto error;
+         }
+         actual->data.bridge.brname = brname;
++        macTableManager = virXPathString("string(./source/@macTableManager)", ctxt);
++        if (macTableManager &&
++            (actual->data.bridge.macTableManager
++             = virNetworkBridgeMACTableManagerTypeFromString(macTableManager)) <= 0) {
++            virReportError(VIR_ERR_XML_ERROR,
++                           _("Invalid macTableManager setting '%s' "
++                             "in domain interface's <actual> element"),
++                           macTableManager);
++            goto error;
++        }
+     }
+ 
+     bandwidth_node = virXPathNode("./bandwidth", ctxt);
+@@ -6978,6 +6990,7 @@ virDomainActualNetDefParseXML(xmlNodePtr node,
+     VIR_FREE(mode);
+     VIR_FREE(addrtype);
+     VIR_FREE(trustGuestRxFilters);
++    VIR_FREE(macTableManager);
+     virDomainActualNetDefFree(actual);
+ 
+     ctxt->node = save_ctxt;
+@@ -16763,12 +16776,18 @@ virDomainActualNetDefContentsFormat(virBufferPtr buf,
+         }
+         if (actualType == VIR_DOMAIN_NET_TYPE_BRIDGE ||
+             actualType == VIR_DOMAIN_NET_TYPE_NETWORK) {
++            int macTableManager = virDomainNetGetActualBridgeMACTableManager(def);
++
+             /* actualType == NETWORK includes the name of the bridge
+              * that is used by the network, whether we are
+              * "inSubElement" or not.
+              */
+             virBufferEscapeString(buf, " bridge='%s'",
+                                   virDomainNetGetActualBridgeName(def));
++            if (macTableManager) {
++                virBufferAsprintf(buf, " macTableManager='%s'",
++                                  virNetworkBridgeMACTableManagerTypeToString(macTableManager));
++            }
+         } else if (actualType == VIR_DOMAIN_NET_TYPE_DIRECT) {
+             const char *mode;
+ 
+@@ -20384,6 +20403,17 @@ virDomainNetGetActualBridgeName(virDomainNetDefPtr iface)
+     return NULL;
+ }
+ 
++int
++virDomainNetGetActualBridgeMACTableManager(virDomainNetDefPtr iface)
++{
++    if (iface->type == VIR_DOMAIN_NET_TYPE_NETWORK &&
++        iface->data.network.actual &&
++        (iface->data.network.actual->type == VIR_DOMAIN_NET_TYPE_BRIDGE ||
++         iface->data.network.actual->type == VIR_DOMAIN_NET_TYPE_NETWORK))
++        return iface->data.network.actual->data.bridge.macTableManager;
++    return 0;
++}
++
+ const char *
+ virDomainNetGetActualDirectDev(virDomainNetDefPtr iface)
+ {
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index 01d5aeb..b912845 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -874,6 +874,7 @@ struct _virDomainActualNetDef {
+     union {
+         struct {
+             char *brname;
++            int macTableManager; /* enum virNetworkBridgeMACTableManagerType */
+         } bridge;
+         struct {
+             char *linkdev;
+@@ -2496,6 +2497,7 @@ int virDomainGraphicsListenSetNetwork(virDomainGraphicsDefPtr def,
+ 
+ int virDomainNetGetActualType(virDomainNetDefPtr iface);
+ const char *virDomainNetGetActualBridgeName(virDomainNetDefPtr iface);
++int virDomainNetGetActualBridgeMACTableManager(virDomainNetDefPtr iface);
+ const char *virDomainNetGetActualDirectDev(virDomainNetDefPtr iface);
+ int virDomainNetGetActualDirectMode(virDomainNetDefPtr iface);
+ virDomainHostdevDefPtr virDomainNetGetActualHostdev(virDomainNetDefPtr iface);
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index e4da444..cf3c842 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -326,6 +326,7 @@ virDomainNetFind;
+ virDomainNetFindIdx;
+ virDomainNetGenerateMAC;
+ virDomainNetGetActualBandwidth;
++virDomainNetGetActualBridgeMACTableManager;
+ virDomainNetGetActualBridgeName;
+ virDomainNetGetActualDirectDev;
+ virDomainNetGetActualDirectMode;
+diff --git a/src/network/bridge_driver.c b/src/network/bridge_driver.c
+index 236095f..361029f 100644
+--- a/src/network/bridge_driver.c
++++ b/src/network/bridge_driver.c
+@@ -3833,7 +3833,7 @@ networkAllocateActualDevice(virDomainDefPtr dom,
+          */
+         iface->data.network.actual->type = VIR_DOMAIN_NET_TYPE_NETWORK;
+ 
+-        /* we also store the bridge device
++        /* we also store the bridge device and macTableManager settings
+          * in iface->data.network.actual->data.bridge for later use
+          * after the domain's tap device is created (to attach to the
+          * bridge and set flood/learning mode on the tap device)
+@@ -3841,6 +3841,8 @@ networkAllocateActualDevice(virDomainDefPtr dom,
+         if (VIR_STRDUP(iface->data.network.actual->data.bridge.brname,
+                        netdef->bridge) < 0)
+             goto error;
++        iface->data.network.actual->data.bridge.macTableManager
++           = netdef->macTableManager;
+ 
+         if (networkPlugBandwidth(network, iface) < 0)
+             goto error;
+@@ -3856,6 +3858,8 @@ networkAllocateActualDevice(virDomainDefPtr dom,
+         if (VIR_STRDUP(iface->data.network.actual->data.bridge.brname,
+                        netdef->bridge) < 0)
+             goto error;
++        iface->data.network.actual->data.bridge.macTableManager
++           = netdef->macTableManager;
+ 
+         /* merge virtualports from interface, network, and portgroup to
+          * arrive at actual virtualport to use
+-- 
+2.2.0
+

@@ -1,0 +1,46 @@
+From 40e7bc4ad1d7552a83bd9d8c19ee8fe650779b03 Mon Sep 17 00:00:00 2001
+Message-Id: <40e7bc4ad1d7552a83bd9d8c19ee8fe650779b03@dist-git>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Tue, 9 Sep 2014 10:17:46 +0200
+Subject: [PATCH] qemu: Silence coverity on optional migration stats
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+(cherry picked from commit 1ffff046ac7eef04f7591bbc73da7db8076d4a5f)
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1063724
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_monitor_json.c | 10 ++++++----
+ 1 file changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index 2ae8ee0..106d807 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -2463,7 +2463,8 @@ qemuMonitorJSONGetMigrationStatusReply(virJSONValuePtr reply,
+         return -1;
+     }
+ 
+-    virJSONValueObjectGetNumberUlong(ret, "total-time", &status->total_time);
++    ignore_value(virJSONValueObjectGetNumberUlong(ret, "total-time",
++                                                  &status->total_time));
+     if (status->status == QEMU_MONITOR_MIGRATION_STATUS_COMPLETED) {
+         rc = virJSONValueObjectGetNumberUlong(ret, "downtime",
+                                               &status->downtime);
+@@ -2508,9 +2509,10 @@ qemuMonitorJSONGetMigrationStatusReply(virJSONValuePtr reply,
+         if (virJSONValueObjectGetNumberUlong(ram, "duplicate",
+                                              &status->ram_duplicate) == 0)
+             status->ram_duplicate_set = true;
+-        virJSONValueObjectGetNumberUlong(ram, "normal", &status->ram_normal);
+-        virJSONValueObjectGetNumberUlong(ram, "normal-bytes",
+-                                         &status->ram_normal_bytes);
++        ignore_value(virJSONValueObjectGetNumberUlong(ram, "normal",
++                                                      &status->ram_normal));
++        ignore_value(virJSONValueObjectGetNumberUlong(ram, "normal-bytes",
++                                                      &status->ram_normal_bytes));
+ 
+         virJSONValuePtr disk = virJSONValueObjectGet(ret, "disk");
+         if (disk) {
+-- 
+2.1.0
+

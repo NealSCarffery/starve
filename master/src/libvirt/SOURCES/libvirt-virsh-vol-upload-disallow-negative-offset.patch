@@ -1,0 +1,44 @@
+From a9dbb5abbf4b8f6980cb584d7ff70654b9d426bc Mon Sep 17 00:00:00 2001
+Message-Id: <a9dbb5abbf4b8f6980cb584d7ff70654b9d426bc@dist-git>
+From: Shanzhi Yu <shyu@redhat.com>
+Date: Wed, 3 Dec 2014 13:35:28 -0500
+Subject: [PATCH] virsh: vol-upload disallow negative offset
+
+Commit 570d0f63 describes disabling negative offset usage for
+vol-upload/download (e.g. cmdVolDownload and cmdVolUpload; however,
+the change was only made to cmdVolDownload. There was no change to
+cmdVolUpload.  This patch adds the same checks for vol-upload.
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1087104
+Signed-off-by: Shanzhi Yu <shyu@redhat.com>
+(cherry picked from commit cd53d947eff4aeebc8b534f874431f3fd2c0cf67)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ tools/virsh-volume.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/tools/virsh-volume.c b/tools/virsh-volume.c
+index 4f810f8..cbc31d7 100644
+--- a/tools/virsh-volume.c
++++ b/tools/virsh-volume.c
+@@ -677,13 +677,13 @@ cmdVolUpload(vshControl *ctl, const vshCmd *cmd)
+     const char *name = NULL;
+     unsigned long long offset = 0, length = 0;
+ 
+-    if (vshCommandOptULongLongWrap(cmd, "offset", &offset) < 0) {
+-        vshError(ctl, _("Unable to parse integer"));
++    if (vshCommandOptULongLong(cmd, "offset", &offset) < 0) {
++        vshError(ctl, _("Unable to parse offset value"));
+         return false;
+     }
+ 
+     if (vshCommandOptULongLongWrap(cmd, "length", &length) < 0) {
+-        vshError(ctl, _("Unable to parse integer"));
++        vshError(ctl, _("Unable to parse length value"));
+         return false;
+     }
+ 
+-- 
+2.2.0
+

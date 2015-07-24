@@ -1,0 +1,40 @@
+From 3ddcdff13e730d59851f99ce0135f499c5188495 Mon Sep 17 00:00:00 2001
+Message-Id: <3ddcdff13e730d59851f99ce0135f499c5188495@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Thu, 18 Sep 2014 09:30:02 -0400
+Subject: [PATCH] qemu: Don't fail startup/attach for IOThreads if no JSON
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1101574
+
+If the qemu being used doesn't support JSON, then querying for IOThread
+data would fail. In that case, ensure the *iothreads is NULL and return 0
+as the count of iothreads available.
+
+(cherry picked from commit 15ee3c2511157a7dfd3516e633057ce26b9fbd62)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_monitor.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index 00f1d38..db2fe71 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -4113,10 +4113,10 @@ qemuMonitorGetIOThreads(qemuMonitorPtr mon,
+         return -1;
+     }
+ 
++    /* Requires JSON to make the query */
+     if (!mon->json) {
+-        virReportError(VIR_ERR_OPERATION_UNSUPPORTED, "%s",
+-                       _("JSON monitor is required"));
+-        return -1;
++        *iothreads = NULL;
++        return 0;
+     }
+ 
+     return qemuMonitorJSONGetIOThreads(mon, iothreads);
+-- 
+2.1.0
+

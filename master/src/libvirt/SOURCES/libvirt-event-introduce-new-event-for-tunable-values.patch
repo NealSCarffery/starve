@@ -1,0 +1,517 @@
+From c4dcb385ad24712b6bd474d0ac0fec22f1978657 Mon Sep 17 00:00:00 2001
+Message-Id: <c4dcb385ad24712b6bd474d0ac0fec22f1978657@dist-git>
+From: Pavel Hrdina <phrdina@redhat.com>
+Date: Fri, 26 Sep 2014 12:43:55 +0200
+Subject: [PATCH] event: introduce new event for tunable values
+
+This new event will use typedParameters to expose what has been actually
+updated and the reason is that we can in the future extend any tunable
+values or add new tunable values. With typedParameters we don't have to
+worry about creating some other events, we will just use this universal
+event to inform user about updates.
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+(cherry picked from commit e426718129a91f80cfbe7261196da6945376db5c)
+
+Conflicts:
+	src/remote/remote_protocol.x: Context as 1069e3b9 is not
+            backported yet.
+	src/remote_protocol-structs: Context as 1069e3b9 is not
+            backported yet.
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1115898
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ daemon/remote.c              | 45 +++++++++++++++++++++
+ include/libvirt/libvirt.h.in | 22 +++++++++++
+ src/conf/domain_event.c      | 93 ++++++++++++++++++++++++++++++++++++++++++++
+ src/conf/domain_event.h      |  9 +++++
+ src/libvirt_private.syms     |  2 +
+ src/remote/remote_driver.c   | 42 ++++++++++++++++++++
+ src/remote/remote_protocol.x | 17 +++++++-
+ src/remote_protocol-structs  |  9 +++++
+ tools/virsh-domain.c         | 33 ++++++++++++++++
+ 9 files changed, 271 insertions(+), 1 deletion(-)
+
+diff --git a/daemon/remote.c b/daemon/remote.c
+index 89714ca..fc43c69 100644
+--- a/daemon/remote.c
++++ b/daemon/remote.c
+@@ -111,6 +111,13 @@ remoteDeserializeTypedParameters(remote_typed_param *args_params_val,
+                                  int *nparams);
+ 
+ static int
++remoteSerializeTypedParameters(virTypedParameterPtr params,
++                               int nparams,
++                               remote_typed_param **ret_params_val,
++                               u_int *ret_params_len,
++                               unsigned int flags);
++
++static int
+ remoteSerializeDomainDiskErrors(virDomainDiskErrorPtr errors,
+                                 int nerrors,
+                                 remote_domain_disk_error **ret_errors_val,
+@@ -969,6 +976,43 @@ remoteRelayDomainEventBlockJob2(virConnectPtr conn,
+ }
+ 
+ 
++static int
++remoteRelayDomainEventTunable(virConnectPtr conn,
++                              virDomainPtr dom,
++                              virTypedParameterPtr params,
++                              int nparams,
++                              void *opaque)
++{
++    daemonClientEventCallbackPtr callback = opaque;
++    remote_domain_event_callback_tunable_msg data;
++
++    if (callback->callbackID < 0 ||
++        !remoteRelayDomainEventCheckACL(callback->client, conn, dom))
++        return -1;
++
++    VIR_DEBUG("Relaying domain tunable event %s %d, callback %d",
++              dom->name, dom->id, callback->callbackID);
++
++    /* build return data */
++    memset(&data, 0, sizeof(data));
++    data.callbackID = callback->callbackID;
++    make_nonnull_domain(&data.dom, dom);
++
++    if (remoteSerializeTypedParameters(params, nparams,
++                                       &data.params.params_val,
++                                       &data.params.params_len,
++                                       VIR_TYPED_PARAM_STRING_OKAY) < 0)
++        return -1;
++
++    remoteDispatchObjectEventSend(callback->client, remoteProgram,
++                                  REMOTE_PROC_DOMAIN_EVENT_CALLBACK_TUNABLE,
++                                  (xdrproc_t)xdr_remote_domain_event_callback_tunable_msg,
++                                  &data);
++
++    return 0;
++}
++
++
+ static virConnectDomainEventGenericCallback domainEventCallbacks[] = {
+     VIR_DOMAIN_EVENT_CALLBACK(remoteRelayDomainEventLifecycle),
+     VIR_DOMAIN_EVENT_CALLBACK(remoteRelayDomainEventReboot),
+@@ -987,6 +1031,7 @@ static virConnectDomainEventGenericCallback domainEventCallbacks[] = {
+     VIR_DOMAIN_EVENT_CALLBACK(remoteRelayDomainEventPMSuspendDisk),
+     VIR_DOMAIN_EVENT_CALLBACK(remoteRelayDomainEventDeviceRemoved),
+     VIR_DOMAIN_EVENT_CALLBACK(remoteRelayDomainEventBlockJob2),
++    VIR_DOMAIN_EVENT_CALLBACK(remoteRelayDomainEventTunable),
+ };
+ 
+ verify(ARRAY_CARDINALITY(domainEventCallbacks) == VIR_DOMAIN_EVENT_ID_LAST);
+diff --git a/include/libvirt/libvirt.h.in b/include/libvirt/libvirt.h.in
+index 0b40727..56c665c 100644
+--- a/include/libvirt/libvirt.h.in
++++ b/include/libvirt/libvirt.h.in
+@@ -5167,6 +5167,27 @@ typedef void (*virConnectDomainEventDeviceRemovedCallback)(virConnectPtr conn,
+                                                            const char *devAlias,
+                                                            void *opaque);
+ 
++/**
++ * virConnectDomainEventTunableCallback:
++ * @conn: connection object
++ * @dom: domain on which the event occurred
++ * @params: changed tunable values stored as array of virTypedParameter
++ * @nparams: size of the array
++ * @opaque: application specified data
++ *
++ * This callback occurs when tunable values are updated. The params must not
++ * be freed in the callback handler as it's done internally after the callback
++ * handler is executed.
++ *
++ * The callback signature to use when registering for an event of type
++ * VIR_DOMAIN_EVENT_ID_TUNABLE with virConnectDomainEventRegisterAny()
++ */
++typedef void (*virConnectDomainEventTunableCallback)(virConnectPtr conn,
++                                                     virDomainPtr dom,
++                                                     virTypedParameterPtr params,
++                                                     int nparams,
++                                                     void *opaque);
++
+ 
+ /**
+  * VIR_DOMAIN_EVENT_CALLBACK:
+@@ -5202,6 +5223,7 @@ typedef enum {
+     VIR_DOMAIN_EVENT_ID_PMSUSPEND_DISK = 14, /* virConnectDomainEventPMSuspendDiskCallback */
+     VIR_DOMAIN_EVENT_ID_DEVICE_REMOVED = 15, /* virConnectDomainEventDeviceRemovedCallback */
+     VIR_DOMAIN_EVENT_ID_BLOCK_JOB_2 = 16,    /* virConnectDomainEventBlockJobCallback */
++    VIR_DOMAIN_EVENT_ID_TUNABLE = 17,        /* virConnectDomainEventTunableCallback */
+ 
+ #ifdef VIR_ENUM_SENTINELS
+     VIR_DOMAIN_EVENT_ID_LAST
+diff --git a/src/conf/domain_event.c b/src/conf/domain_event.c
+index 73ae289..bf187cd 100644
+--- a/src/conf/domain_event.c
++++ b/src/conf/domain_event.c
+@@ -34,6 +34,7 @@
+ #include "viralloc.h"
+ #include "virerror.h"
+ #include "virstring.h"
++#include "virtypedparam.h"
+ 
+ #define VIR_FROM_THIS VIR_FROM_NONE
+ 
+@@ -52,6 +53,7 @@ static virClassPtr virDomainEventBalloonChangeClass;
+ static virClassPtr virDomainEventDeviceRemovedClass;
+ static virClassPtr virDomainEventPMClass;
+ static virClassPtr virDomainQemuMonitorEventClass;
++static virClassPtr virDomainEventTunableClass;
+ 
+ 
+ static void virDomainEventDispose(void *obj);
+@@ -67,6 +69,7 @@ static void virDomainEventBalloonChangeDispose(void *obj);
+ static void virDomainEventDeviceRemovedDispose(void *obj);
+ static void virDomainEventPMDispose(void *obj);
+ static void virDomainQemuMonitorEventDispose(void *obj);
++static void virDomainEventTunableDispose(void *obj);
+ 
+ static void
+ virDomainEventDispatchDefaultFunc(virConnectPtr conn,
+@@ -203,6 +206,15 @@ struct _virDomainQemuMonitorEvent {
+ typedef struct _virDomainQemuMonitorEvent virDomainQemuMonitorEvent;
+ typedef virDomainQemuMonitorEvent *virDomainQemuMonitorEventPtr;
+ 
++struct _virDomainEventTunable {
++    virDomainEvent parent;
++
++    virTypedParameterPtr params;
++    int nparams;
++};
++typedef struct _virDomainEventTunable virDomainEventTunable;
++typedef virDomainEventTunable *virDomainEventTunablePtr;
++
+ 
+ static int
+ virDomainEventsOnceInit(void)
+@@ -285,6 +297,12 @@ virDomainEventsOnceInit(void)
+                       sizeof(virDomainQemuMonitorEvent),
+                       virDomainQemuMonitorEventDispose)))
+         return -1;
++    if (!(virDomainEventTunableClass =
++          virClassNew(virDomainEventClass,
++                      "virDomainEventTunable",
++                      sizeof(virDomainEventTunable),
++                      virDomainEventTunableDispose)))
++        return -1;
+     return 0;
+ }
+ 
+@@ -420,6 +438,15 @@ virDomainQemuMonitorEventDispose(void *obj)
+     VIR_FREE(event->details);
+ }
+ 
++static void
++virDomainEventTunableDispose(void *obj)
++{
++    virDomainEventTunablePtr event = obj;
++    VIR_DEBUG("obj=%p", event);
++
++    virTypedParamsFree(event->params, event->nparams);
++}
++
+ 
+ static void *
+ virDomainEventNew(virClassPtr klass,
+@@ -1175,6 +1202,61 @@ virDomainEventDeviceRemovedNewFromDom(virDomainPtr dom,
+                                           devAlias);
+ }
+ 
++/* This function consumes the params so caller don't have to care about
++ * freeing it even if error occurs. The reason is to not have to do deep
++ * copy of params.
++ */
++static virObjectEventPtr
++virDomainEventTunableNew(int id,
++                         const char *name,
++                         unsigned char *uuid,
++                         virTypedParameterPtr params,
++                         int nparams)
++{
++    virDomainEventTunablePtr ev;
++
++    if (virDomainEventsInitialize() < 0)
++        goto error;
++
++    if (!(ev = virDomainEventNew(virDomainEventTunableClass,
++                                 VIR_DOMAIN_EVENT_ID_TUNABLE,
++                                 id, name, uuid)))
++        goto error;
++
++    ev->params = params;
++    ev->nparams = nparams;
++
++    return (virObjectEventPtr)ev;
++
++ error:
++    virTypedParamsFree(params, nparams);
++    return NULL;
++}
++
++virObjectEventPtr
++virDomainEventTunableNewFromObj(virDomainObjPtr obj,
++                                virTypedParameterPtr params,
++                                int nparams)
++{
++    return virDomainEventTunableNew(obj->def->id,
++                                    obj->def->name,
++                                    obj->def->uuid,
++                                    params,
++                                    nparams);
++}
++
++virObjectEventPtr
++virDomainEventTunableNewFromDom(virDomainPtr dom,
++                                virTypedParameterPtr params,
++                                int nparams)
++{
++    return virDomainEventTunableNew(dom->id,
++                                    dom->name,
++                                    dom->uuid,
++                                    params,
++                                    nparams);
++}
++
+ 
+ static void
+ virDomainEventDispatchDefaultFunc(virConnectPtr conn,
+@@ -1366,6 +1448,17 @@ virDomainEventDispatchDefaultFunc(virConnectPtr conn,
+             goto cleanup;
+         }
+ 
++    case VIR_DOMAIN_EVENT_ID_TUNABLE:
++        {
++            virDomainEventTunablePtr tunableEvent;
++            tunableEvent = (virDomainEventTunablePtr)event;
++            ((virConnectDomainEventTunableCallback)cb)(conn, dom,
++                                                       tunableEvent->params,
++                                                       tunableEvent->nparams,
++                                                       cbopaque);
++            goto cleanup;
++        }
++
+     case VIR_DOMAIN_EVENT_ID_LAST:
+         break;
+     }
+diff --git a/src/conf/domain_event.h b/src/conf/domain_event.h
+index a3330ca..dc0109c 100644
+--- a/src/conf/domain_event.h
++++ b/src/conf/domain_event.h
+@@ -184,6 +184,15 @@ virDomainEventDeviceRemovedNewFromObj(virDomainObjPtr obj,
+ virObjectEventPtr
+ virDomainEventDeviceRemovedNewFromDom(virDomainPtr dom,
+                                       const char *devAlias);
++virObjectEventPtr
++virDomainEventTunableNewFromObj(virDomainObjPtr obj,
++                                virTypedParameterPtr params,
++                                int nparams);
++virObjectEventPtr
++virDomainEventTunableNewFromDom(virDomainPtr dom,
++                                virTypedParameterPtr params,
++                                int nparams);
++
+ 
+ int
+ virDomainEventStateRegister(virConnectPtr conn,
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index ab81ba2..138d84f 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -472,6 +472,8 @@ virDomainEventStateRegister;
+ virDomainEventStateRegisterID;
+ virDomainEventTrayChangeNewFromDom;
+ virDomainEventTrayChangeNewFromObj;
++virDomainEventTunableNewFromDom;
++virDomainEventTunableNewFromObj;
+ virDomainEventWatchdogNewFromDom;
+ virDomainEventWatchdogNewFromObj;
+ virDomainQemuMonitorEventNew;
+diff --git a/src/remote/remote_driver.c b/src/remote/remote_driver.c
+index 8bc4baa..6cf1aae 100644
+--- a/src/remote/remote_driver.c
++++ b/src/remote/remote_driver.c
+@@ -326,6 +326,11 @@ remoteDomainBuildEventBlockJob2(virNetClientProgramPtr prog,
+                                 void *evdata, void *opaque);
+ 
+ static void
++remoteDomainBuildEventCallbackTunable(virNetClientProgramPtr prog,
++                                      virNetClientPtr client,
++                                      void *evdata, void *opaque);
++
++static void
+ remoteNetworkBuildEventLifecycle(virNetClientProgramPtr prog ATTRIBUTE_UNUSED,
+                                  virNetClientPtr client ATTRIBUTE_UNUSED,
+                                  void *evdata, void *opaque);
+@@ -476,6 +481,10 @@ static virNetClientProgramEvent remoteEvents[] = {
+       remoteDomainBuildEventBlockJob2,
+       sizeof(remote_domain_event_block_job_2_msg),
+       (xdrproc_t)xdr_remote_domain_event_block_job_2_msg },
++    { REMOTE_PROC_DOMAIN_EVENT_CALLBACK_TUNABLE,
++      remoteDomainBuildEventCallbackTunable,
++      sizeof(remote_domain_event_callback_tunable_msg),
++      (xdrproc_t)xdr_remote_domain_event_callback_tunable_msg },
+ };
+ 
+ 
+@@ -5500,6 +5509,39 @@ remoteDomainBuildEventCallbackDeviceRemoved(virNetClientProgramPtr prog ATTRIBUT
+ 
+ 
+ static void
++remoteDomainBuildEventCallbackTunable(virNetClientProgramPtr prog ATTRIBUTE_UNUSED,
++                                      virNetClientPtr client ATTRIBUTE_UNUSED,
++                                      void *evdata, void *opaque)
++{
++    virConnectPtr conn = opaque;
++    remote_domain_event_callback_tunable_msg *msg = evdata;
++    struct private_data *priv = conn->privateData;
++    virDomainPtr dom;
++    virTypedParameterPtr params = NULL;
++    int nparams = 0;
++    virObjectEventPtr event = NULL;
++
++    if (remoteDeserializeTypedParameters(msg->params.params_val,
++                                         msg->params.params_len,
++                                         REMOTE_DOMAIN_EVENT_TUNABLE_MAX,
++                                         &params, &nparams) < 0)
++        return;
++
++    dom = get_nonnull_domain(conn, msg->dom);
++    if (!dom) {
++        virTypedParamsFree(params, nparams);
++        return;
++    }
++
++    event = virDomainEventTunableNewFromDom(dom, params, nparams);
++
++    virDomainFree(dom);
++
++    remoteEventQueue(priv, event, msg->callbackID);
++}
++
++
++static void
+ remoteNetworkBuildEventLifecycle(virNetClientProgramPtr prog ATTRIBUTE_UNUSED,
+                                  virNetClientPtr client ATTRIBUTE_UNUSED,
+                                  void *evdata, void *opaque)
+diff --git a/src/remote/remote_protocol.x b/src/remote/remote_protocol.x
+index 8fc552f..e7ee2e8 100644
+--- a/src/remote/remote_protocol.x
++++ b/src/remote/remote_protocol.x
+@@ -244,6 +244,9 @@ const REMOTE_NETWORK_DHCP_LEASES_MAX = 65536;
+ /* Upper limit on count of parameters returned via bulk stats API */
+ const REMOTE_CONNECT_GET_ALL_DOMAIN_STATS_MAX = 4096;
+ 
++/* Upper limit of message size for tunable event. */
++const REMOTE_DOMAIN_EVENT_TUNABLE_MAX = 8388608;
++
+ /* UUID.  VIR_UUID_BUFLEN definition comes from libvirt.h */
+ typedef opaque remote_uuid[VIR_UUID_BUFLEN];
+ 
+@@ -2980,6 +2983,12 @@ struct remote_domain_event_block_job_2_msg {
+     int status;
+ };
+ 
++struct remote_domain_event_callback_tunable_msg {
++    int callbackID;
++    remote_nonnull_domain dom;
++    remote_typed_param params<REMOTE_DOMAIN_EVENT_TUNABLE_MAX>;
++};
++
+ struct remote_connect_get_cpu_model_names_args {
+     remote_nonnull_string arch;
+     int need_results;
+@@ -5456,5 +5465,11 @@ enum remote_procedure {
+      * @acl: connect:search_domains
+      * @aclfilter: domain:read
+      */
+-    REMOTE_PROC_CONNECT_GET_ALL_DOMAIN_STATS = 344
++    REMOTE_PROC_CONNECT_GET_ALL_DOMAIN_STATS = 344,
++
++    /**
++     * @generate: both
++     * @acl: none
++     */
++    REMOTE_PROC_DOMAIN_EVENT_CALLBACK_TUNABLE = 346
+ };
+diff --git a/src/remote_protocol-structs b/src/remote_protocol-structs
+index 899f1cc..9d6d104 100644
+--- a/src/remote_protocol-structs
++++ b/src/remote_protocol-structs
+@@ -2435,6 +2435,14 @@ struct remote_domain_event_block_job_2_msg {
+         int                        type;
+         int                        status;
+ };
++struct remote_domain_event_callback_tunable_msg {
++        int                        callbackID;
++        remote_nonnull_domain      dom;
++        struct {
++                u_int              params_len;
++                remote_typed_param * params_val;
++        } params;
++};
+ struct remote_connect_get_cpu_model_names_args {
+         remote_nonnull_string      arch;
+         int                        need_results;
+@@ -2890,4 +2898,5 @@ enum remote_procedure {
+         REMOTE_PROC_CONNECT_GET_DOMAIN_CAPABILITIES = 342,
+         REMOTE_PROC_DOMAIN_OPEN_GRAPHICS_FD = 343,
+         REMOTE_PROC_CONNECT_GET_ALL_DOMAIN_STATS = 344,
++        REMOTE_PROC_DOMAIN_EVENT_CALLBACK_TUNABLE = 346,
+ };
+diff --git a/tools/virsh-domain.c b/tools/virsh-domain.c
+index 23395e5..f182dd0 100644
+--- a/tools/virsh-domain.c
++++ b/tools/virsh-domain.c
+@@ -11245,6 +11245,37 @@ vshEventDeviceRemovedPrint(virConnectPtr conn ATTRIBUTE_UNUSED,
+         vshEventDone(data->ctl);
+ }
+ 
++static void
++vshEventTunablePrint(virConnectPtr conn ATTRIBUTE_UNUSED,
++                     virDomainPtr dom,
++                     virTypedParameterPtr params,
++                     int nparams,
++                     void *opaque)
++{
++    vshDomEventData *data = opaque;
++    size_t i;
++    char *value = NULL;
++
++    if (!data->loop && *data->count)
++        return;
++
++    vshPrint(data->ctl,
++             _("event 'tunable' for domain %s:\n"),
++             virDomainGetName(dom));
++
++    for (i = 0; i < nparams; i++) {
++        value = virTypedParameterToString(&params[i]);
++        if (value) {
++            vshPrint(data->ctl, _("\t%s: %s\n"), params[i].field, value);
++            VIR_FREE(value);
++        }
++    }
++
++    (*data->count)++;
++    if (!data->loop)
++        vshEventDone(data->ctl);
++}
++
+ static vshEventCallback vshEventCallbacks[] = {
+     { "lifecycle",
+       VIR_DOMAIN_EVENT_CALLBACK(vshEventLifecyclePrint), },
+@@ -11278,6 +11309,8 @@ static vshEventCallback vshEventCallbacks[] = {
+       VIR_DOMAIN_EVENT_CALLBACK(vshEventDeviceRemovedPrint), },
+     { "block-job-2",
+       VIR_DOMAIN_EVENT_CALLBACK(vshEventBlockJobPrint), },
++    { "tunable",
++      VIR_DOMAIN_EVENT_CALLBACK(vshEventTunablePrint), },
+ };
+ verify(VIR_DOMAIN_EVENT_ID_LAST == ARRAY_CARDINALITY(vshEventCallbacks));
+ 
+-- 
+2.1.1
+

@@ -1,0 +1,41 @@
+From 9f11a5b2ac9dd7f4470d13ecfd3d4d298a72ecf6 Mon Sep 17 00:00:00 2001
+Message-Id: <9f11a5b2ac9dd7f4470d13ecfd3d4d298a72ecf6@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Tue, 28 Oct 2014 22:28:46 -0400
+Subject: [PATCH] hotplug: Check for alias in hostdev detach
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1141621
+
+If the QEMU_CAPS_DEVICE is set, then ensure the host device alias has
+been properly set before making the calls to detach the device
+
+(cherry picked from commit 9de26f27cfa6a32ce9a23e30a58991432bdcbee5)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_hotplug.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/src/qemu/qemu_hotplug.c b/src/qemu/qemu_hotplug.c
+index 246b4b9..a7b0ec7 100644
+--- a/src/qemu/qemu_hotplug.c
++++ b/src/qemu/qemu_hotplug.c
+@@ -3381,8 +3381,15 @@ qemuDomainDetachThisHostDevice(virQEMUDriverPtr driver,
+                                virDomainObjPtr vm,
+                                virDomainHostdevDefPtr detach)
+ {
++    qemuDomainObjPrivatePtr priv = vm->privateData;
+     int ret = -1;
+ 
++    if (virQEMUCapsGet(priv->qemuCaps, QEMU_CAPS_DEVICE) &&
++        !detach->info->alias) {
++        if (qemuAssignDeviceHostdevAlias(vm->def, detach, -1) < 0)
++            return -1;
++    }
++
+     switch (detach->source.subsys.type) {
+     case VIR_DOMAIN_HOSTDEV_SUBSYS_TYPE_PCI:
+         ret = qemuDomainDetachHostPCIDevice(driver, vm, detach);
+-- 
+2.1.3
+

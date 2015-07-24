@@ -1,0 +1,61 @@
+From 7f3f658cf0370f13c8197e2889113196415e32de Mon Sep 17 00:00:00 2001
+Message-Id: <7f3f658cf0370f13c8197e2889113196415e32de@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Mon, 19 Jan 2015 10:48:28 +0100
+Subject: [PATCH] Mark the domain as active in qemuhotplugtest
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1161024
+
+This will allow us to call qemuDomainObjIsActive() in
+the tested functions to check if the domain has crashed.
+
+(cherry picked from commit a5e5996b91129130863be8b5608d47d0ef01e326)
+Signed-off-by: Ján Tomko <jtomko@redhat.com>
+
+Conflicts:
+  tests/qemuhotplugtest.c - 0ecd685 not backported
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ tests/qemuhotplugtest.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/tests/qemuhotplugtest.c b/tests/qemuhotplugtest.c
+index 1077013..ae8a8a9 100644
+--- a/tests/qemuhotplugtest.c
++++ b/tests/qemuhotplugtest.c
+@@ -40,6 +40,8 @@ enum {
+     UPDATE
+ };
+ 
++#define QEMU_HOTPLUG_TEST_DOMAIN_ID 7
++
+ struct qemuHotplugTestData {
+     const char *domain_filename;
+     const char *device_filename;
+@@ -90,6 +92,8 @@ qemuHotplugCreateObjects(virDomainXMLOptionPtr xmlopt,
+     if (qemuAssignDeviceAliases((*vm)->def, priv->qemuCaps) < 0)
+         goto cleanup;
+ 
++    (*vm)->def->id = QEMU_HOTPLUG_TEST_DOMAIN_ID;
++
+     ret = 0;
+  cleanup:
+     return ret;
+@@ -177,9 +181,11 @@ testQemuHotplugCheckResult(virDomainObjPtr vm,
+     char *actual;
+     int ret;
+ 
++    vm->def->id = -1;
+     actual = virDomainDefFormat(vm->def, VIR_DOMAIN_XML_SECURE);
+     if (!actual)
+         return -1;
++    vm->def->id = QEMU_HOTPLUG_TEST_DOMAIN_ID;
+ 
+     if (STREQ(expected, actual)) {
+         if (fail && virTestGetVerbose())
+-- 
+2.2.1
+

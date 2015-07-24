@@ -1,0 +1,46 @@
+From da7b0b8fbd276704b8b2ce4aad865dd454eb3095 Mon Sep 17 00:00:00 2001
+Message-Id: <da7b0b8fbd276704b8b2ce4aad865dd454eb3095@dist-git>
+From: Giuseppe Scrivano <gscrivan@redhat.com>
+Date: Thu, 4 Sep 2014 12:43:59 +0200
+Subject: [PATCH] tests: force FIPS testing mode with new enough GNU TLS
+ versions
+
+Closes: https://bugzilla.redhat.com/show_bug.cgi?id=1128497
+
+Signed-off-by: Giuseppe Scrivano <gscrivan@redhat.com>
+(cherry picked from commit 8afbd52f29b1c04150eb1ec50162e2f1ff7c64a7)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ tests/virnettlscontexttest.c | 2 ++
+ tests/virnettlssessiontest.c | 2 ++
+ 2 files changed, 4 insertions(+)
+
+diff --git a/tests/virnettlscontexttest.c b/tests/virnettlscontexttest.c
+index 51a0369..a3e24a3 100644
+--- a/tests/virnettlscontexttest.c
++++ b/tests/virnettlscontexttest.c
+@@ -113,6 +113,8 @@ mymain(void)
+ {
+     int ret = 0;
+ 
++    setenv("GNUTLS_FORCE_FIPS_MODE", "2", 1);
++
+     testTLSInit(KEYFILE);
+ 
+ # define DO_CTX_TEST(_isServer, _caCrt, _crt, _expectFail)              \
+diff --git a/tests/virnettlssessiontest.c b/tests/virnettlssessiontest.c
+index 1e2683c..3af948a 100644
+--- a/tests/virnettlssessiontest.c
++++ b/tests/virnettlssessiontest.c
+@@ -240,6 +240,8 @@ mymain(void)
+ {
+     int ret = 0;
+ 
++    setenv("GNUTLS_FORCE_FIPS_MODE", "2", 1);
++
+     testTLSInit(KEYFILE);
+ 
+ # define DO_SESS_TEST(_caCrt, _serverCrt, _clientCrt, _expectServerFail, \
+-- 
+2.1.0
+

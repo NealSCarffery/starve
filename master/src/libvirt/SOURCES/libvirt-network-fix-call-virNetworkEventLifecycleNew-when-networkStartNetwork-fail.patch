@@ -1,0 +1,40 @@
+From 08d3c335c6fd055aab8536a8bf4dbc1d69975007 Mon Sep 17 00:00:00 2001
+Message-Id: <08d3c335c6fd055aab8536a8bf4dbc1d69975007@dist-git>
+From: Luyao Huang <lhuang@redhat.com>
+Date: Wed, 12 Nov 2014 09:05:32 +0100
+Subject: [PATCH] network: fix call virNetworkEventLifecycleNew when
+ networkStartNetwork fail
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+When start a network fail, libvirt still call virNetworkEventLifecycleNew
+to send a event.
+
+Signed-off-by: Luyao Huang <lhuang@redhat.com>
+(cherry picked from commit 45d9ea5cddad5ed151db15362a881b730b8c88f1)
+Signed-off-by: Ján Tomko <jtomko@redhat.com>
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1162915
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/network/bridge_driver.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/network/bridge_driver.c b/src/network/bridge_driver.c
+index d33de2f..9746099 100644
+--- a/src/network/bridge_driver.c
++++ b/src/network/bridge_driver.c
+@@ -3253,7 +3253,8 @@ static int networkCreate(virNetworkPtr net)
+     if (virNetworkCreateEnsureACL(net->conn, network->def) < 0)
+         goto cleanup;
+ 
+-    ret = networkStartNetwork(driver, network);
++    if ((ret = networkStartNetwork(driver, network)) < 0)
++        goto cleanup;
+ 
+     event = virNetworkEventLifecycleNew(network->def->name,
+                                         network->def->uuid,
+-- 
+2.1.3
+

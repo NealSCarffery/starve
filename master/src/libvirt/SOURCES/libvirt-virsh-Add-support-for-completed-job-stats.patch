@@ -1,0 +1,113 @@
+From c9a9ebccf24d0b78b590b2899dae33c91b29848a Mon Sep 17 00:00:00 2001
+Message-Id: <c9a9ebccf24d0b78b590b2899dae33c91b29848a@dist-git>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Fri, 22 Aug 2014 14:29:41 +0200
+Subject: [PATCH] virsh: Add support for completed job stats
+
+New --completed flag for virsh domjobinfo command.
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+(cherry picked from commit 13f3c4639f5a3b1692e2f626dc02a6977e28412e)
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1063724
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ tools/virsh-domain.c | 27 ++++++++++++++++++++++++---
+ tools/virsh.pod      |  7 +++++--
+ 2 files changed, 29 insertions(+), 5 deletions(-)
+
+diff --git a/tools/virsh-domain.c b/tools/virsh-domain.c
+index c75cd73..80b06ce 100644
+--- a/tools/virsh-domain.c
++++ b/tools/virsh-domain.c
+@@ -4905,6 +4905,10 @@ static const vshCmdOptDef opts_resume[] = {
+      .flags = VSH_OFLAG_REQ,
+      .help = N_("domain name, id or uuid")
+     },
++    {.name = "completed",
++     .type = VSH_OT_BOOL,
++     .help = N_("return statistics of a recently completed job")
++    },
+     {.name = NULL}
+ };
+ 
+@@ -5195,14 +5199,18 @@ cmdDomjobinfo(vshControl *ctl, const vshCmd *cmd)
+     virTypedParameterPtr params = NULL;
+     int nparams = 0;
+     unsigned long long value;
++    unsigned int flags = 0;
+     int rc;
+ 
+     if (!(dom = vshCommandOptDomain(ctl, cmd, NULL)))
+         return false;
+ 
++    if (vshCommandOptBool(cmd, "completed"))
++        flags |= VIR_DOMAIN_JOB_STATS_COMPLETED;
++
+     memset(&info, 0, sizeof(info));
+ 
+-    rc = virDomainGetJobStats(dom, &info.type, &params, &nparams, 0);
++    rc = virDomainGetJobStats(dom, &info.type, &params, &nparams, flags);
+     if (rc == 0) {
+         if (virTypedParamsGetULLong(params, nparams,
+                                     VIR_DOMAIN_JOB_TIME_ELAPSED,
+@@ -5239,6 +5247,11 @@ cmdDomjobinfo(vshControl *ctl, const vshCmd *cmd)
+                                     &info.fileRemaining) < 0)
+             goto save_error;
+     } else if (last_error->code == VIR_ERR_NO_SUPPORT) {
++        if (flags) {
++            vshError(ctl, "%s", _("Optional flags are not supported by the "
++                                  "daemon"));
++            goto cleanup;
++        }
+         vshDebug(ctl, VSH_ERR_DEBUG, "detailed statistics not supported\n");
+         vshResetLibvirtError();
+         rc = virDomainGetJobInfo(dom, &info);
+@@ -5249,7 +5262,9 @@ cmdDomjobinfo(vshControl *ctl, const vshCmd *cmd)
+     vshPrint(ctl, "%-17s %-12s\n", _("Job type:"),
+              vshDomainJobToString(info.type));
+     if (info.type != VIR_DOMAIN_JOB_BOUNDED &&
+-        info.type != VIR_DOMAIN_JOB_UNBOUNDED) {
++        info.type != VIR_DOMAIN_JOB_UNBOUNDED &&
++        (!(flags & VIR_DOMAIN_JOB_STATS_COMPLETED) ||
++         info.type != VIR_DOMAIN_JOB_COMPLETED)) {
+         ret = true;
+         goto cleanup;
+     }
+@@ -5314,7 +5329,13 @@ cmdDomjobinfo(vshControl *ctl, const vshCmd *cmd)
+                                       &value)) < 0) {
+         goto save_error;
+     } else if (rc) {
+-        vshPrint(ctl, "%-17s %-12llu ms\n", _("Expected downtime:"), value);
++        if (info.type == VIR_DOMAIN_JOB_COMPLETED) {
++            vshPrint(ctl, "%-17s %-12llu ms\n",
++                     _("Total downtime:"), value);
++        } else {
++            vshPrint(ctl, "%-17s %-12llu ms\n",
++                     _("Expected downtime:"), value);
++        }
+     }
+ 
+     if ((rc = virTypedParamsGetULLong(params, nparams,
+diff --git a/tools/virsh.pod b/tools/virsh.pod
+index ea9267e..aad40d5 100644
+--- a/tools/virsh.pod
++++ b/tools/virsh.pod
+@@ -1112,9 +1112,12 @@ Convert a domain name (or UUID) to a domain id
+ 
+ Abort the currently running domain job.
+ 
+-=item B<domjobinfo> I<domain>
++=item B<domjobinfo> I<domain> [I<--completed>]
+ 
+-Returns information about jobs running on a domain.
++Returns information about jobs running on a domain. I<--completed> tells
++virsh to return information about a recently finished job. Statistics of
++a completed job are automatically destroyed once read or when libvirtd
++is restarted.
+ 
+ =item B<domname> I<domain-id-or-uuid>
+ 
+-- 
+2.1.0
+

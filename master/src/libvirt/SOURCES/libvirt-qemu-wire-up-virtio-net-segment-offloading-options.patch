@@ -1,0 +1,112 @@
+From 8e70457b217ea22feea3ae674e4bf080f6518177 Mon Sep 17 00:00:00 2001
+Message-Id: <8e70457b217ea22feea3ae674e4bf080f6518177@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Wed, 24 Sep 2014 16:55:45 +0200
+Subject: [PATCH] qemu: wire up virtio-net segment offloading options
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1139364
+
+Format the segment offloading options specified by
+<driver>
+  <host .../>
+  <guest .../>
+</driver>
+on virtio-net command line.
+
+(cherry picked from commit 2d79e1752a0609eb17eef06223e4645f79fbb2cd)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_command.c                            | 44 ++++++++++++++++++++++
+ .../qemuxml2argv-net-virtio-disable-offloads.args  | 10 +++++
+ tests/qemuxml2argvtest.c                           |  2 +
+ 3 files changed, 56 insertions(+)
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-net-virtio-disable-offloads.args
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 7d4f3cc..6c4e2ff 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -4472,6 +4472,50 @@ qemuBuildNicDevStr(virDomainDefPtr def,
+             virBufferAsprintf(&buf, ",event_idx=%s",
+                               virTristateSwitchTypeToString(net->driver.virtio.event_idx));
+         }
++        if (net->driver.virtio.host.csum) {
++            virBufferAsprintf(&buf, ",csum=%s",
++                              virTristateSwitchTypeToString(net->driver.virtio.host.csum));
++        }
++        if (net->driver.virtio.host.gso) {
++            virBufferAsprintf(&buf, ",gso=%s",
++                              virTristateSwitchTypeToString(net->driver.virtio.host.gso));
++        }
++        if (net->driver.virtio.host.tso4) {
++            virBufferAsprintf(&buf, ",host_tso4=%s",
++                              virTristateSwitchTypeToString(net->driver.virtio.host.tso4));
++        }
++        if (net->driver.virtio.host.tso6) {
++            virBufferAsprintf(&buf, ",host_tso6=%s",
++                              virTristateSwitchTypeToString(net->driver.virtio.host.tso6));
++        }
++        if (net->driver.virtio.host.ecn) {
++            virBufferAsprintf(&buf, ",host_ecn=%s",
++                              virTristateSwitchTypeToString(net->driver.virtio.host.ecn));
++        }
++        if (net->driver.virtio.host.ufo) {
++            virBufferAsprintf(&buf, ",host_ufo=%s",
++                              virTristateSwitchTypeToString(net->driver.virtio.host.ufo));
++        }
++        if (net->driver.virtio.guest.csum) {
++            virBufferAsprintf(&buf, ",guest_csum=%s",
++                              virTristateSwitchTypeToString(net->driver.virtio.guest.csum));
++        }
++        if (net->driver.virtio.guest.tso4) {
++            virBufferAsprintf(&buf, ",guest_tso4=%s",
++                              virTristateSwitchTypeToString(net->driver.virtio.guest.tso4));
++        }
++        if (net->driver.virtio.guest.tso6) {
++            virBufferAsprintf(&buf, ",guest_tso6=%s",
++                              virTristateSwitchTypeToString(net->driver.virtio.guest.tso6));
++        }
++        if (net->driver.virtio.guest.ecn) {
++            virBufferAsprintf(&buf, ",guest_ecn=%s",
++                              virTristateSwitchTypeToString(net->driver.virtio.guest.ecn));
++        }
++        if (net->driver.virtio.guest.ufo) {
++            virBufferAsprintf(&buf, ",guest_ufo=%s",
++                              virTristateSwitchTypeToString(net->driver.virtio.guest.ufo));
++        }
+     }
+     if (usingVirtio && vhostfdSize > 1) {
+         /* As advised at http://www.linux-kvm.org/page/Multiqueue
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-net-virtio-disable-offloads.args b/tests/qemuxml2argvdata/qemuxml2argv-net-virtio-disable-offloads.args
+new file mode 100644
+index 0000000..b7ce282
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-net-virtio-disable-offloads.args
+@@ -0,0 +1,10 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=none \
++/usr/bin/qemu -S -M pc -m 214 -smp 1 -nographic -nodefconfig -nodefaults \
++-monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -usb \
++-hda /dev/HostVG/QEMUGuest7 \
++-device virtio-net-pci,csum=off,gso=off,\
++host_tso4=off,host_tso6=off,host_ecn=off,host_ufo=off,\
++guest_csum=off,guest_tso4=off,guest_tso6=off,guest_ecn=off,guest_ufo=off,\
++vlan=0,id=net0,mac=00:22:44:66:88:aa,bus=pci.0,addr=0x3 \
++-net user,vlan=0,name=hostnet0 \
++-device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x4
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index a9129dc..410540f 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -969,6 +969,8 @@ mymain(void)
+     DO_TEST("net-virtio", NONE);
+     DO_TEST("net-virtio-device",
+             QEMU_CAPS_DEVICE, QEMU_CAPS_NODEFCONFIG, QEMU_CAPS_VIRTIO_TX_ALG);
++    DO_TEST("net-virtio-disable-offloads",
++            QEMU_CAPS_DEVICE, QEMU_CAPS_NODEFCONFIG);
+     DO_TEST("net-virtio-netdev",
+             QEMU_CAPS_DEVICE, QEMU_CAPS_NETDEV, QEMU_CAPS_NODEFCONFIG);
+     DO_TEST("net-virtio-s390",
+-- 
+2.1.1
+

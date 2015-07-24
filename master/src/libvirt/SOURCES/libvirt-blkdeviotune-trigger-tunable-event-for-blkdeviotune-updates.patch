@@ -1,0 +1,202 @@
+From 1285973505b7c917737cc9bf4eaca08a0617395b Mon Sep 17 00:00:00 2001
+Message-Id: <1285973505b7c917737cc9bf4eaca08a0617395b@dist-git>
+From: Pavel Hrdina <phrdina@redhat.com>
+Date: Fri, 26 Sep 2014 12:44:01 +0200
+Subject: [PATCH] blkdeviotune: trigger tunable event for blkdeviotune updates
+
+Use the universal tunable event to report changes to user. All
+blkdeviotune values are prefixed with "blkdeviotune".
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+(cherry picked from commit 18fc3199c2d45256ae1dd80d855cef9f1ec65118)
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1115898
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ include/libvirt/libvirt.h.in | 56 ++++++++++++++++++++++++++++++++++++++++++++
+ src/qemu/qemu_driver.c       | 47 +++++++++++++++++++++++++++++++++++++
+ 2 files changed, 103 insertions(+)
+
+diff --git a/include/libvirt/libvirt.h.in b/include/libvirt/libvirt.h.in
+index b78f110..026df48 100644
+--- a/include/libvirt/libvirt.h.in
++++ b/include/libvirt/libvirt.h.in
+@@ -5226,6 +5226,61 @@ typedef void (*virConnectDomainEventDeviceRemovedCallback)(virConnectPtr conn,
+  */
+ #define VIR_DOMAIN_EVENT_CPUTUNE_EMULATOR_QUOTA "cputune.emulator_quota"
+ 
++/**
++ * VIR_DOMAIN_EVENT_BLKDEVIOTUNE_DISK:
++ *
++ * Macro represents the name of guest disk for which the values are updated,
++ * as VIR_TYPED_PARAM_STRING.
++ */
++#define VIR_DOMAIN_EVENT_BLKDEVIOTUNE_DISK "blkdeviotune.disk"
++
++/**
++ * VIR_DOMAIN_EVENT_BLKDEVIOTUNE_TOTAL_BYTES_SEC:
++ *
++ * Marco represents the total throughput limit in bytes per second,
++ * as VIR_TYPED_PARAM_ULLONG.
++ */
++#define VIR_DOMAIN_EVENT_BLKDEVIOTUNE_TOTAL_BYTES_SEC "blkdeviotune.total_bytes_sec"
++
++/**
++ * VIR_DOMAIN_EVENT_BLKDEVIOTUNE_READ_BYTES_SEC:
++ *
++ * Marco represents the read throughput limit in bytes per second,
++ * as VIR_TYPED_PARAM_ULLONG.
++ */
++#define VIR_DOMAIN_EVENT_BLKDEVIOTUNE_READ_BYTES_SEC "blkdeviotune.read_bytes_sec"
++
++/**
++ * VIR_DOMAIN_EVENT_BLKDEVIOTUNE_WRITE_BYTES_SEC:
++ *
++ * Macro represents the write throughput limit in bytes per second,
++ * as VIR_TYPED_PARAM_ULLONG.
++ */
++#define VIR_DOMAIN_EVENT_BLKDEVIOTUNE_WRITE_BYTES_SEC "blkdeviotune.write_bytes_sec"
++
++/**
++ * VIR_DOMAIN_EVENT_BLKDEVIOTUNE_TOTAL_IOPS_SEC:
++ *
++ * Macro represents the total I/O operations per second,
++ * as VIR_TYPED_PARAM_ULLONG.
++ */
++#define VIR_DOMAIN_EVENT_BLKDEVIOTUNE_TOTAL_IOPS_SEC "blkdeviotune.total_iops_sec"
++
++/**
++ * VIR_DOMAIN_EVENT_BLKDEVIOTUNE_READ_IOPS_SEC:
++ *
++ * Macro represents the read I/O operations per second,
++ * as VIR_TYPED_PARAM_ULLONG.
++ */
++#define VIR_DOMAIN_EVENT_BLKDEVIOTUNE_READ_IOPS_SEC "blkdeviotune.read_iops_sec"
++
++/**
++ * VIR_DOMAIN_EVENT_BLKDEVIOTUNE_WRITE_IOPS_SEC:
++ *
++ * Macro represents the write I/O operations per second,
++ * as VIR_TYPED_PARAM_ULLONG.
++ */
++#define VIR_DOMAIN_EVENT_BLKDEVIOTUNE_WRITE_IOPS_SEC "blkdeviotune.write_iops_sec"
+ 
+ /**
+  * virConnectDomainEventTunableCallback:
+@@ -5241,6 +5296,7 @@ typedef void (*virConnectDomainEventDeviceRemovedCallback)(virConnectPtr conn,
+  *
+  * Currently supported name spaces:
+  *  "cputune.*"
++ *  "blkdeviotune.*"
+  *
+  * The callback signature to use when registering for an event of type
+  * VIR_DOMAIN_EVENT_ID_TUNABLE with virConnectDomainEventRegisterAny()
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 663c98d..843101c 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -16059,6 +16059,10 @@ qemuDomainSetBlockIoTune(virDomainPtr dom,
+     bool set_iops = false;
+     virQEMUDriverConfigPtr cfg = NULL;
+     virCapsPtr caps = NULL;
++    virObjectEventPtr event = NULL;
++    virTypedParameterPtr eventParams = NULL;
++    int eventNparams = 0;
++    int eventMaxparams = 0;
+ 
+     virCheckFlags(VIR_DOMAIN_AFFECT_LIVE |
+                   VIR_DOMAIN_AFFECT_CONFIG, -1);
+@@ -16100,6 +16104,10 @@ qemuDomainSetBlockIoTune(virDomainPtr dom,
+                                         &persistentDef) < 0)
+         goto endjob;
+ 
++    if (virTypedParamsAddString(&eventParams, &eventNparams, &eventMaxparams,
++                                VIR_DOMAIN_EVENT_BLKDEVIOTUNE_DISK, disk) < 0)
++        goto endjob;
++
+     for (i = 0; i < nparams; i++) {
+         virTypedParameterPtr param = &params[i];
+ 
+@@ -16113,26 +16121,56 @@ qemuDomainSetBlockIoTune(virDomainPtr dom,
+         if (STREQ(param->field, VIR_DOMAIN_BLOCK_IOTUNE_TOTAL_BYTES_SEC)) {
+             info.total_bytes_sec = param->value.ul;
+             set_bytes = true;
++            if (virTypedParamsAddULLong(&eventParams, &eventNparams,
++                                        &eventMaxparams,
++                                        VIR_DOMAIN_EVENT_BLKDEVIOTUNE_TOTAL_BYTES_SEC,
++                                        param->value.ul) < 0)
++                goto endjob;
+         } else if (STREQ(param->field,
+                          VIR_DOMAIN_BLOCK_IOTUNE_READ_BYTES_SEC)) {
+             info.read_bytes_sec = param->value.ul;
+             set_bytes = true;
++            if (virTypedParamsAddULLong(&eventParams, &eventNparams,
++                                        &eventMaxparams,
++                                        VIR_DOMAIN_EVENT_BLKDEVIOTUNE_READ_BYTES_SEC,
++                                        param->value.ul) < 0)
++                goto endjob;
+         } else if (STREQ(param->field,
+                          VIR_DOMAIN_BLOCK_IOTUNE_WRITE_BYTES_SEC)) {
+             info.write_bytes_sec = param->value.ul;
+             set_bytes = true;
++            if (virTypedParamsAddULLong(&eventParams, &eventNparams,
++                                        &eventMaxparams,
++                                        VIR_DOMAIN_EVENT_BLKDEVIOTUNE_WRITE_BYTES_SEC,
++                                        param->value.ul) < 0)
++                goto endjob;
+         } else if (STREQ(param->field,
+                          VIR_DOMAIN_BLOCK_IOTUNE_TOTAL_IOPS_SEC)) {
+             info.total_iops_sec = param->value.ul;
+             set_iops = true;
++            if (virTypedParamsAddULLong(&eventParams, &eventNparams,
++                                        &eventMaxparams,
++                                        VIR_DOMAIN_EVENT_BLKDEVIOTUNE_TOTAL_IOPS_SEC,
++                                        param->value.ul) < 0)
++                goto endjob;
+         } else if (STREQ(param->field,
+                          VIR_DOMAIN_BLOCK_IOTUNE_READ_IOPS_SEC)) {
+             info.read_iops_sec = param->value.ul;
+             set_iops = true;
++            if (virTypedParamsAddULLong(&eventParams, &eventNparams,
++                                        &eventMaxparams,
++                                        VIR_DOMAIN_EVENT_BLKDEVIOTUNE_READ_IOPS_SEC,
++                                        param->value.ul) < 0)
++                goto endjob;
+         } else if (STREQ(param->field,
+                          VIR_DOMAIN_BLOCK_IOTUNE_WRITE_IOPS_SEC)) {
+             info.write_iops_sec = param->value.ul;
+             set_iops = true;
++            if (virTypedParamsAddULLong(&eventParams, &eventNparams,
++                                        &eventMaxparams,
++                                        VIR_DOMAIN_EVENT_BLKDEVIOTUNE_WRITE_IOPS_SEC,
++                                        param->value.ul) < 0)
++                goto endjob;
+         }
+     }
+ 
+@@ -16197,6 +16235,13 @@ qemuDomainSetBlockIoTune(virDomainPtr dom,
+                            _("Saving live XML config failed"));
+             goto endjob;
+         }
++
++        if (eventNparams) {
++            event = virDomainEventTunableNewFromDom(dom, eventParams, eventNparams);
++            eventNparams = 0;
++            if (event)
++                qemuDomainEventQueue(driver, event);
++        }
+     }
+ 
+     if (flags & VIR_DOMAIN_AFFECT_CONFIG) {
+@@ -16229,6 +16274,8 @@ qemuDomainSetBlockIoTune(virDomainPtr dom,
+     VIR_FREE(device);
+     if (vm)
+         virObjectUnlock(vm);
++    if (eventNparams)
++        virTypedParamsFree(eventParams, eventNparams);
+     virObjectUnref(caps);
+     virObjectUnref(cfg);
+     return ret;
+-- 
+2.1.1
+

@@ -1,0 +1,105 @@
+From f7959239dcc411b050db4b5560d7349df7f8f848 Mon Sep 17 00:00:00 2001
+Message-Id: <f7959239dcc411b050db4b5560d7349df7f8f848@dist-git>
+From: Eric Blake <eblake@redhat.com>
+Date: Fri, 3 Oct 2014 08:46:25 -0600
+Subject: [PATCH] qemu: support nospace reason in io error event
+
+Aeons ago (commit 34dcbbb4, v0.8.2), we added a new libvirt event
+(VIR_DOMAIN_EVENT_ID_IO_ERROR_REASON) in order to tell the user WHY
+the guest halted.  This is because at least VDSM wants to react
+differently to ENOSPC events (resize the lvm partition to be larger,
+and resume the guest as if nothing had happened) from all other events
+(I/O is hosed, throw up our hands and flag things as broken).  At the
+time this was done, downstream RHEL qemu added a vendor extension
+'__com.redhat_reason', which would be exactly one of these strings:
+"enospc", "eperm", "eio", and "eother".  In our stupidity, we exposed
+those exact strings to clients, rather than an enum, and we also
+return "" if we did not have access to a reason (which was the case
+for upstream qemu).
+
+Fast forward to now: upstream qemu commit c7c2ff0c (will be qemu 2.2)
+FINALLY adds a 'nospace' boolean, after discussion with multiple
+projects determined that VDSM really doesn't care about distinction
+between any other error types.  So this patch converts 'nospace' into
+the string "enospc" for compatibility with RHEL clients that were
+already used to the downstream extension, while leaving the reason
+blank for all other cases (no change from the status quo).
+
+See also https://bugzilla.redhat.com/show_bug.cgi?id=1119784
+
+* src/qemu/qemu_monitor_json.c (qewmuMonitorJSONHandleIOError):
+Parse reason field from modern qemu.
+* include/libvirt/libvirt.h.in
+(virConnectDomainEventIOErrorReasonCallback): Document it.
+
+Signed-off-by: Eric Blake <eblake@redhat.com>
+(cherry picked from commit e9392e48d4e3b29809da7883b697d5caf3a09680)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+
+Conflicts:
+	src/qemu/qemu_monitor_json.c -- RHEL-only addition of
+        __com.redhat_reason
+
+This backport removes the RHEL-only __com.redhat_reason to make the code
+match upstream. The next patch will add the RHEL-only reason back. This
+is to make future rebases easier. We won't have to rework this once
+again, we can just drop the old RHEL-only patch and this backport and
+only keep the new RHEL-only patch.
+---
+ include/libvirt/libvirt.h.in |  6 ++++++
+ src/qemu/qemu_monitor_json.c | 12 ++++++------
+ 2 files changed, 12 insertions(+), 6 deletions(-)
+
+diff --git a/include/libvirt/libvirt.h.in b/include/libvirt/libvirt.h.in
+index 60b3e0b..3ca935e 100644
+--- a/include/libvirt/libvirt.h.in
++++ b/include/libvirt/libvirt.h.in
+@@ -4853,6 +4853,12 @@ typedef void (*virConnectDomainEventIOErrorCallback)(virConnectPtr conn,
+  * The callback signature to use when registering for an event of type
+  * VIR_DOMAIN_EVENT_ID_IO_ERROR_REASON with virConnectDomainEventRegisterAny()
+  *
++ * If the I/O error is known to be caused by an ENOSPC condition in
++ * the host (where resizing the disk to be larger will allow the guest
++ * to be resumed as if nothing happened), @reason will be "enospc".
++ * Otherwise, @reason will be "", although future strings may be added
++ * if determination of other error types becomes possible.
++ *
+  */
+ typedef void (*virConnectDomainEventIOErrorReasonCallback)(virConnectPtr conn,
+                                                            virDomainPtr dom,
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index adf560a..7dcea2e 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -717,11 +717,13 @@ VIR_ENUM_IMPL(qemuMonitorIOErrorAction, VIR_DOMAIN_EVENT_IO_ERROR_LAST,
+               "ignore", "stop", "report");
+ 
+ 
+-static void qemuMonitorJSONHandleIOError(qemuMonitorPtr mon, virJSONValuePtr data)
++static void
++qemuMonitorJSONHandleIOError(qemuMonitorPtr mon, virJSONValuePtr data)
+ {
+     const char *device;
+     const char *action;
+-    const char *reason;
++    const char *reason = "";
++    bool nospc = false;
+     int actionID;
+ 
+     /* Throughout here we try our best to carry on upon errors,
+@@ -737,10 +739,8 @@ static void qemuMonitorJSONHandleIOError(qemuMonitorPtr mon, virJSONValuePtr dat
+         VIR_WARN("missing device in disk io error event");
+     }
+ 
+-    if ((reason = virJSONValueObjectGetString(data, "__com.redhat_reason")) == NULL) {
+-        VIR_WARN("missing __com.redhat_reason in disk io error event");
+-        reason = "";
+-    }
++    if (virJSONValueObjectGetBoolean(data, "nospace", &nospc) == 0 && nospc)
++        reason = "enospc";
+ 
+     if ((actionID = qemuMonitorIOErrorActionTypeFromString(action)) < 0) {
+         VIR_WARN("unknown disk io error action '%s'", action);
+-- 
+2.1.3
+

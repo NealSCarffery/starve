@@ -1,0 +1,148 @@
+From b6d5f5ac3f21362e2e790d3ad3bc3875652b6489 Mon Sep 17 00:00:00 2001
+Message-Id: <b6d5f5ac3f21362e2e790d3ad3bc3875652b6489@dist-git>
+From: Michal Privoznik <mprivozn@redhat.com>
+Date: Thu, 18 Sep 2014 14:39:57 +0200
+Subject: [PATCH] conf: Disallow nonexistent NUMA nodes for hugepages
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1135396
+
+As of 136ad4974 it is possible to specify different huge pages per
+guest NUMA node. However, there's no check if nodeset specified in
+./hugepages/page contains only those guest NUMA nodes that exist.
+In other words with current code it is possible to define meaningless
+combination:
+
+  <memoryBacking>
+    <hugepages>
+      <page size='1048576' unit='KiB' nodeset='0,2-3'/>
+      <page size='2048' unit='KiB' nodeset='1,4'/>
+    </hugepages>
+  </memoryBacking>
+  <vcpu placement='static'>4</vcpu>
+  <cpu>
+    <numa>
+      <cell id='0' cpus='0' memory='1048576'/>
+      <cell id='1' cpus='1' memory='1048576'/>
+      <cell id='2' cpus='2' memory='1048576'/>
+      <cell id='3' cpus='3' memory='1048576'/>
+    </numa>
+  </cpu>
+
+Notice the node 4 in <hugepages/>?
+
+Signed-off-by: Michal Privoznik <mprivozn@redhat.com>
+(cherry picked from commit ec982f6d929f3c2343d4ea9b06e49c23e6c526ba)
+
+Conflicts:
+	tests/qemuxml2argvtest.c: Context as c7abf2c8 is not
+        backported yet.
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_command.c                            | 24 ++++++++++++
+ .../qemuxml2argv-hugepages-pages4.xml              | 45 ++++++++++++++++++++++
+ tests/qemuxml2argvtest.c                           |  2 +
+ 3 files changed, 71 insertions(+)
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-hugepages-pages4.xml
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index 81395a8..45667d9 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -6549,6 +6549,30 @@ qemuBuildNumaArgStr(virQEMUDriverConfigPtr cfg,
+         goto cleanup;
+     }
+ 
++    for (i = 0; i < def->mem.nhugepages; i++) {
++        ssize_t next_bit, pos = 0;
++
++        if (!def->mem.hugepages[i].nodemask) {
++            /* This is the master hugepage to use. Skip it as it has no
++             * nodemask anyway. */
++            continue;
++        }
++
++        if (def->cpu && def->cpu->ncells) {
++            /* Fortunately, we allow only guest NUMA nodes to be continuous
++             * starting from zero. */
++            pos = def->cpu->ncells - 1;
++        }
++
++        next_bit = virBitmapNextSetBit(def->mem.hugepages[i].nodemask, pos);
++        if (next_bit >= 0) {
++            virReportError(VIR_ERR_XML_DETAIL,
++                           _("hugepages: node %zd not found"),
++                           next_bit);
++            goto cleanup;
++        }
++    }
++
+     for (i = 0; i < def->cpu->ncells; i++) {
+         int cellmem = VIR_DIV_UP(def->cpu->cells[i].mem, 1024);
+         def->cpu->cells[i].mem = cellmem * 1024;
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-hugepages-pages4.xml b/tests/qemuxml2argvdata/qemuxml2argv-hugepages-pages4.xml
+new file mode 100644
+index 0000000..a3ed29b
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-hugepages-pages4.xml
+@@ -0,0 +1,45 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory unit='KiB'>4194304</memory>
++  <currentMemory unit='KiB'>4194304</currentMemory>
++  <memoryBacking>
++    <hugepages>
++      <page size='2048' unit='KiB' nodeset='1,4'/>
++      <page size='1048576' unit='KiB' nodeset='0,2-3'/>
++    </hugepages>
++  </memoryBacking>
++  <vcpu placement='static'>4</vcpu>
++  <numatune>
++    <memory mode='strict' nodeset='0-3'/>
++    <memnode cellid='3' mode='strict' nodeset='3'/>
++  </numatune>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <cpu>
++    <numa>
++      <cell id='0' cpus='0' memory='1048576'/>
++      <cell id='1' cpus='1' memory='1048576'/>
++      <cell id='2' cpus='2' memory='1048576'/>
++      <cell id='3' cpus='3' memory='1048576'/>
++    </numa>
++  </cpu>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='block' device='disk'>
++      <source dev='/dev/HostVG/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' target='0' unit='0'/>
++    </disk>
++    <controller type='usb' index='0'/>
++    <controller type='ide' index='0'/>
++    <controller type='pci' index='0' model='pci-root'/>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index 515058e..3b5f31a 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -686,6 +686,8 @@ mymain(void)
+             QEMU_CAPS_OBJECT_MEMORY_FILE);
+     DO_TEST("hugepages-shared", QEMU_CAPS_MEM_PATH, QEMU_CAPS_OBJECT_MEMORY_RAM,
+             QEMU_CAPS_OBJECT_MEMORY_FILE);
++    DO_TEST_FAILURE("hugepages-pages4", QEMU_CAPS_MEM_PATH,
++            QEMU_CAPS_OBJECT_MEMORY_RAM, QEMU_CAPS_OBJECT_MEMORY_FILE);
+     DO_TEST("nosharepages", QEMU_CAPS_MACHINE_OPT, QEMU_CAPS_MEM_MERGE);
+     DO_TEST("disk-cdrom", NONE);
+     DO_TEST("disk-cdrom-network-http", QEMU_CAPS_KVM, QEMU_CAPS_DEVICE,
+-- 
+2.1.0
+

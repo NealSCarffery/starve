@@ -1,0 +1,89 @@
+From 1dee234295fb074de471990fb700c8255a03c263 Mon Sep 17 00:00:00 2001
+Message-Id: <1dee234295fb074de471990fb700c8255a03c263@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Fri, 21 Nov 2014 15:04:04 +0100
+Subject: [PATCH] test: virstoragetest: Add testing of network disk details
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1164528
+
+To be able to fully test parsing of networked storage strings we need to
+add a few fields for: hostname, protocol and auth string.
+
+(cherry picked from commit e650f30b93cb7318406fb0b88a621d8898289800)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ tests/virstoragetest.c | 22 +++++++++++++++++++---
+ 1 file changed, 19 insertions(+), 3 deletions(-)
+
+diff --git a/tests/virstoragetest.c b/tests/virstoragetest.c
+index 05e48f3..ee6f576 100644
+--- a/tests/virstoragetest.c
++++ b/tests/virstoragetest.c
+@@ -279,6 +279,9 @@ struct _testFileData
+     const char *path;
+     int type;
+     int format;
++    const char *secret;
++    const char *hostname;
++    int protocol;
+ };
+ 
+ enum {
+@@ -306,7 +309,10 @@ static const char testStorageChainFormat[] =
+     "encryption: %d\n"
+     "relPath:%s\n"
+     "type:%d\n"
+-    "format:%d\n";
++    "format:%d\n"
++    "protocol:%s\n"
++    "hostname:%s\n"
++    "secret:%s\n";
+ 
+ static int
+ testStorageChain(const void *args)
+@@ -369,7 +375,10 @@ testStorageChain(const void *args)
+                         data->files[i]->expEncrypted,
+                         NULLSTR(data->files[i]->pathRel),
+                         data->files[i]->type,
+-                        data->files[i]->format) < 0 ||
++                        data->files[i]->format,
++                        virStorageNetProtocolTypeToString(data->files[i]->protocol),
++                        NULLSTR(data->files[i]->hostname),
++                        NULLSTR(data->files[i]->secret)) < 0 ||
+             virAsprintf(&actual,
+                         testStorageChainFormat, i,
+                         NULLSTR(elt->path),
+@@ -378,7 +387,10 @@ testStorageChain(const void *args)
+                         !!elt->encryption,
+                         NULLSTR(elt->relPath),
+                         elt->type,
+-                        elt->format) < 0) {
++                        elt->format,
++                        virStorageNetProtocolTypeToString(elt->protocol),
++                        NULLSTR(elt->nhosts ? elt->hosts[0].name : NULL),
++                        NULLSTR(elt->auth ? elt->auth->username : NULL)) < 0) {
+             VIR_FREE(expect);
+             VIR_FREE(actual);
+             goto cleanup;
+@@ -830,6 +842,8 @@ mymain(void)
+         .path = "blah",
+         .type = VIR_STORAGE_TYPE_NETWORK,
+         .format = VIR_STORAGE_FILE_RAW,
++        .protocol = VIR_STORAGE_NET_PROTOCOL_NBD,
++        .hostname = "example.org",
+     };
+     TEST_CHAIN(11, absqcow2, VIR_STORAGE_FILE_QCOW2,
+                (&qcow2, &nbd), EXP_PASS,
+@@ -849,6 +863,8 @@ mymain(void)
+         .path = "blah",
+         .type = VIR_STORAGE_TYPE_NETWORK,
+         .format = VIR_STORAGE_FILE_RAW,
++        .protocol = VIR_STORAGE_NET_PROTOCOL_NBD,
++        .hostname = "example.org",
+     };
+     TEST_CHAIN(12, absqcow2, VIR_STORAGE_FILE_QCOW2,
+                (&qcow2, &nbd2), EXP_PASS,
+-- 
+2.1.3
+

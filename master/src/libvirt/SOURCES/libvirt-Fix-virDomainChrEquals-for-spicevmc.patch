@@ -1,0 +1,49 @@
+From 96f29c80cd0632d69296e8282f2ca7f4d83c0d22 Mon Sep 17 00:00:00 2001
+Message-Id: <96f29c80cd0632d69296e8282f2ca7f4d83c0d22@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Tue, 11 Nov 2014 14:57:27 +0100
+Subject: [PATCH] Fix virDomainChrEquals for spicevmc
+
+virDomainChrSourceDefIsEqual should return 'true' for
+identical SPICEVMC chardevs, and those that have no source
+specification.
+
+After this change, a failed hotplug no longer leaves a stale
+pointer in the domain definition.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1162097
+(cherry picked from commit b987684ff63a20ab1301c48ca4842930be044f6d)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/conf/domain_conf.c | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 8f16d10..0e977fc 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -1588,16 +1588,17 @@ virDomainChrSourceDefIsEqual(const virDomainChrSourceDef *src,
+                               tgt->data.spiceport.channel);
+         break;
+ 
++    case VIR_DOMAIN_CHR_TYPE_SPICEVMC:
++        return src->data.spicevmc == tgt->data.spicevmc;
++
+     case VIR_DOMAIN_CHR_TYPE_NULL:
+     case VIR_DOMAIN_CHR_TYPE_VC:
+     case VIR_DOMAIN_CHR_TYPE_STDIO:
+-    case VIR_DOMAIN_CHR_TYPE_SPICEVMC:
+     case VIR_DOMAIN_CHR_TYPE_LAST:
+-        /* nada */
+         break;
+     }
+ 
+-    return false;
++    return true;
+ }
+ 
+ void virDomainChrDefFree(virDomainChrDefPtr def)
+-- 
+2.1.3
+

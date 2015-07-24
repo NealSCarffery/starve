@@ -1,0 +1,45 @@
+From 2c3dba741df506af7a46f43ddff856a975b794dd Mon Sep 17 00:00:00 2001
+Message-Id: <2c3dba741df506af7a46f43ddff856a975b794dd@dist-git>
+From: Jincheng Miao <jmiao@redhat.com>
+Date: Wed, 15 Oct 2014 12:11:13 +0200
+Subject: [PATCH] nodeinfo: fix nodeGetFreePages when max node is zero
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1145048
+
+In nodeGetFreePages, if startCell is given by '0',
+and the max node number is '0' too. The for-loop
+wouldn't be executed.
+So convert it to while-loop.
+
+Before:
+> virsh freepages --cellno 0 --pagesize 4
+error: internal error: no suitable info found
+
+After:
+> virsh freepages --cellno 0 --pagesize 4
+4KiB: 472637
+
+Signed-off-by: Jincheng Miao <jmiao@redhat.com>
+Signed-off-by: Michal Privoznik <mprivozn@redhat.com>
+(cherry picked from commit 8baf0f025f975267e3f9a3af71f69137130907b7)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/nodeinfo.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/nodeinfo.c b/src/nodeinfo.c
+index 80c723e..dfde085 100644
+--- a/src/nodeinfo.c
++++ b/src/nodeinfo.c
+@@ -2047,7 +2047,7 @@ nodeGetFreePages(unsigned int npages,
+ 
+     lastCell = MIN(lastCell, startCell + cellCount);
+ 
+-    for (cell = startCell; cell < lastCell; cell++) {
++    for (cell = startCell; cell <= lastCell; cell++) {
+         for (i = 0; i < npages; i++) {
+             unsigned int page_size = pages[i];
+             unsigned int page_free;
+-- 
+2.1.3
+

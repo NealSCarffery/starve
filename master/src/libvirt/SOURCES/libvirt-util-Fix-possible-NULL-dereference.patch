@@ -1,0 +1,36 @@
+From da1cfc045a9ac338983e33e0906d9065a7ab9343 Mon Sep 17 00:00:00 2001
+Message-Id: <da1cfc045a9ac338983e33e0906d9065a7ab9343@dist-git>
+From: Martin Kletzander <mkletzan@redhat.com>
+Date: Thu, 15 Jan 2015 15:03:50 +0100
+Subject: [PATCH] util: Fix possible NULL dereference
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1161540
+
+Commit 1a80b97d, which added the virCgroupHasEmptyTasks() function
+forgot that the parameter @cgroup may be NULL and did not check that.
+
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+(cherry picked from commit 3b0f05573fbf385cca554d3383fad0089ed080cf)
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/util/vircgroup.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/src/util/vircgroup.c b/src/util/vircgroup.c
+index dbe7ee7..5df3d7a 100644
+--- a/src/util/vircgroup.c
++++ b/src/util/vircgroup.c
+@@ -3921,6 +3921,9 @@ virCgroupHasEmptyTasks(virCgroupPtr cgroup, int controller)
+     int ret = -1;
+     char *content = NULL;
+ 
++    if (!cgroup)
++        return -1;
++
+     ret = virCgroupGetValueStr(cgroup, controller, "tasks", &content);
+ 
+     if (ret == 0 && content[0] == '\0')
+-- 
+2.2.1
+

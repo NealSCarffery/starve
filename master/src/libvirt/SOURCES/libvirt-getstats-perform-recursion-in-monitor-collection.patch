@@ -1,0 +1,191 @@
+From 7245a00d5adcdd74eb8a5051de2a1d52a4107ae8 Mon Sep 17 00:00:00 2001
+Message-Id: <7245a00d5adcdd74eb8a5051de2a1d52a4107ae8@dist-git>
+From: Eric Blake <eblake@redhat.com>
+Date: Wed, 17 Dec 2014 03:09:05 -0700
+Subject: [PATCH] getstats: perform recursion in monitor collection
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1041569
+
+When requested in a later patch, the QMP command results are now
+examined recursively.  As qemu_driver will eventually have to
+read items out of the hash table as stored by this patch, the
+computation of backing alias string is done in a shared location.
+
+* src/qemu/qemu_domain.h (qemuDomainStorageAlias): New prototype.
+* src/qemu/qemu_domain.c (qemuDomainStorageAlias): Implement it.
+* src/qemu/qemu_monitor_json.c
+(qemuMonitorJSONGetOneBlockStatsInfo)
+(qemuMonitorJSONBlockStatsUpdateCapacityOne): Perform recursion.
+(qemuMonitorJSONGetAllBlockStatsInfo)
+(qemuMonitorJSONBlockStatsUpdateCapacity): Update callers.
+
+Signed-off-by: Eric Blake <eblake@redhat.com>
+(cherry picked from commit b1802714dab51bd5f0214a4d93a2c0b635bc5f14)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_domain.c       | 16 +++++++++++++++
+ src/qemu/qemu_domain.h       |  1 +
+ src/qemu/qemu_monitor_json.c | 48 ++++++++++++++++++++++++++++++++------------
+ 3 files changed, 52 insertions(+), 13 deletions(-)
+
+diff --git a/src/qemu/qemu_domain.c b/src/qemu/qemu_domain.c
+index 01fa3ac..58fcd75 100644
+--- a/src/qemu/qemu_domain.c
++++ b/src/qemu/qemu_domain.c
+@@ -2707,6 +2707,22 @@ qemuDomainStorageFileInit(virQEMUDriverPtr driver,
+ }
+ 
+ 
++char *
++qemuDomainStorageAlias(const char *device, int depth)
++{
++    char *alias;
++
++    if (STRPREFIX(device, QEMU_DRIVE_HOST_PREFIX))
++        device += strlen(QEMU_DRIVE_HOST_PREFIX);
++
++    if (!depth)
++        ignore_value(VIR_STRDUP(alias, device));
++    else
++        ignore_value(virAsprintf(&alias, "%s.%d", device, depth));
++    return alias;
++}
++
++
+ int
+ qemuDomainDetermineDiskChain(virQEMUDriverPtr driver,
+                              virDomainObjPtr vm,
+diff --git a/src/qemu/qemu_domain.h b/src/qemu/qemu_domain.h
+index ebb282a..9c94a65 100644
+--- a/src/qemu/qemu_domain.h
++++ b/src/qemu/qemu_domain.h
+@@ -376,6 +376,7 @@ int qemuDomainDetermineDiskChain(virQEMUDriverPtr driver,
+ int qemuDomainStorageFileInit(virQEMUDriverPtr driver,
+                               virDomainObjPtr vm,
+                               virStorageSourcePtr src);
++char *qemuDomainStorageAlias(const char *device, int depth);
+ 
+ int qemuDomainCleanupAdd(virDomainObjPtr vm,
+                          qemuDomainCleanupCallback cb);
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index 7088409..97151dc 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -1839,13 +1839,18 @@ qemuMonitorJSONDevGetBlockExtent(virJSONValuePtr dev,
+ static int
+ qemuMonitorJSONGetOneBlockStatsInfo(virJSONValuePtr dev,
+                                     const char *dev_name,
++                                    int depth,
+                                     virHashTablePtr hash,
+-                                    bool backingChain ATTRIBUTE_UNUSED)
++                                    bool backingChain)
+ {
+     qemuBlockStatsPtr bstats = NULL;
+     virJSONValuePtr stats;
+     int ret = -1;
++    char *entry_name = qemuDomainStorageAlias(dev_name, depth);
++    virJSONValuePtr backing;
+ 
++    if (!entry_name)
++        goto cleanup;
+     if (VIR_ALLOC(bstats) < 0)
+         goto cleanup;
+ 
+@@ -1921,12 +1926,20 @@ qemuMonitorJSONGetOneBlockStatsInfo(virJSONValuePtr dev,
+     /* it's ok to not have this information here. Just skip silently. */
+     qemuMonitorJSONDevGetBlockExtent(dev, &bstats->wr_highest_offset);
+ 
+-    if (virHashAddEntry(hash, dev_name, bstats) < 0)
++    if (virHashAddEntry(hash, entry_name, bstats) < 0)
+         goto cleanup;
+     bstats = NULL;
++
++    if (backingChain &&
++        (backing = virJSONValueObjectGet(dev, "backing")) &&
++        qemuMonitorJSONGetOneBlockStatsInfo(backing, dev_name, depth + 1,
++                                            hash, true) < 0)
++        goto cleanup;
++
+     ret = 0;
+  cleanup:
+     VIR_FREE(bstats);
++    VIR_FREE(entry_name);
+     return ret;
+ }
+ 
+@@ -1981,10 +1994,7 @@ qemuMonitorJSONGetAllBlockStatsInfo(qemuMonitorPtr mon,
+             goto cleanup;
+         }
+ 
+-        if (STRPREFIX(dev_name, QEMU_DRIVE_HOST_PREFIX))
+-            dev_name += strlen(QEMU_DRIVE_HOST_PREFIX);
+-
+-        if (qemuMonitorJSONGetOneBlockStatsInfo(dev, dev_name, hash,
++        if (qemuMonitorJSONGetOneBlockStatsInfo(dev, dev_name, 0, hash,
+                                                 backingChain) < 0)
+             goto cleanup;
+ 
+@@ -2005,17 +2015,20 @@ qemuMonitorJSONGetAllBlockStatsInfo(qemuMonitorPtr mon,
+ static int
+ qemuMonitorJSONBlockStatsUpdateCapacityOne(virJSONValuePtr image,
+                                            const char *dev_name,
++                                           int depth,
+                                            virHashTablePtr stats,
+-                                           bool backingChain ATTRIBUTE_UNUSED)
++                                           bool backingChain)
+ {
+     qemuBlockStatsPtr bstats;
+     int ret = -1;
++    char *entry_name = qemuDomainStorageAlias(dev_name, depth);
++    virJSONValuePtr backing;
+ 
+-    if (!(bstats = virHashLookup(stats, dev_name))) {
++    if (!(bstats = virHashLookup(stats, entry_name))) {
+         if (VIR_ALLOC(bstats) < 0)
+             goto cleanup;
+ 
+-        if (virHashAddEntry(stats, dev_name, bstats) < 0) {
++        if (virHashAddEntry(stats, entry_name, bstats) < 0) {
+             VIR_FREE(bstats);
+             goto cleanup;
+         }
+@@ -2032,7 +2045,18 @@ qemuMonitorJSONBlockStatsUpdateCapacityOne(virJSONValuePtr image,
+     if (virJSONValueObjectGetNumberUlong(image, "actual-size",
+                                          &bstats->physical) < 0)
+         bstats->physical = bstats->capacity;
++
++    if (backingChain &&
++        (backing = virJSONValueObjectGet(image, "backing-image"))) {
++        ret = qemuMonitorJSONBlockStatsUpdateCapacityOne(backing,
++                                                         dev_name,
++                                                         depth + 1,
++                                                         stats,
++                                                         true);
++    }
++
+  cleanup:
++    VIR_FREE(entry_name);
+     return ret;
+ }
+ 
+@@ -2085,15 +2109,13 @@ qemuMonitorJSONBlockStatsUpdateCapacity(qemuMonitorPtr mon,
+             goto cleanup;
+         }
+ 
+-        if (STRPREFIX(dev_name, QEMU_DRIVE_HOST_PREFIX))
+-            dev_name += strlen(QEMU_DRIVE_HOST_PREFIX);
+-
+         /* drive may be empty */
+         if (!(inserted = virJSONValueObjectGet(dev, "inserted")) ||
+             !(image = virJSONValueObjectGet(inserted, "image")))
+             continue;
+ 
+-        if (qemuMonitorJSONBlockStatsUpdateCapacityOne(image, dev_name, stats,
++        if (qemuMonitorJSONBlockStatsUpdateCapacityOne(image, dev_name, 0,
++                                                       stats,
+                                                        backingChain) < 0)
+             goto cleanup;
+     }
+-- 
+2.2.0
+

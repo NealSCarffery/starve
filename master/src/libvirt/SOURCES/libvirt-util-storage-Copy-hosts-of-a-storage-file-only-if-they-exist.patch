@@ -1,0 +1,64 @@
+From 0e8a4634d26eb2dbad659aa112f0b033ced576de Mon Sep 17 00:00:00 2001
+Message-Id: <0e8a4634d26eb2dbad659aa112f0b033ced576de@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Fri, 21 Nov 2014 15:04:05 +0100
+Subject: [PATCH] util: storage: Copy hosts of a storage file only if they
+ exist
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1164528
+
+If there are no hosts for a storage source virStorageSourceCopy and
+virStorageSourceNewFromBackingRelative would try to copy them anyways.
+As the success of virStorageNetHostDefCopy is determined by returning
+a pointer and malloc of 0 elements might return NULL according to the
+implementation, the result of the copy function may vary.
+
+Fix this by copying the hosts array only if there are hosts defined.
+
+(cherry picked from commit c264ea58e9a34b7202d8041687621dfa68ad8750)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/util/virstoragefile.c | 19 +++++++++++++------
+ 1 file changed, 13 insertions(+), 6 deletions(-)
+
+diff --git a/src/util/virstoragefile.c b/src/util/virstoragefile.c
+index d58f9ed..fa569d8 100644
+--- a/src/util/virstoragefile.c
++++ b/src/util/virstoragefile.c
+@@ -1845,9 +1845,12 @@ virStorageSourceCopy(const virStorageSource *src,
+         VIR_STRDUP(ret->compat, src->compat) < 0)
+         goto error;
+ 
+-    if (!(ret->hosts = virStorageNetHostDefCopy(src->nhosts, src->hosts)))
+-        goto error;
+-    ret->nhosts = src->nhosts;
++    if (src->nhosts) {
++        if (!(ret->hosts = virStorageNetHostDefCopy(src->nhosts, src->hosts)))
++            goto error;
++
++        ret->nhosts = src->nhosts;
++    }
+ 
+     if (src->srcpool &&
+         !(ret->srcpool = virStorageSourcePoolDefCopy(src->srcpool)))
+@@ -2071,9 +2074,13 @@ virStorageSourceNewFromBackingRelative(virStorageSourcePtr parent,
+ 
+         /* copy the host network part */
+         ret->protocol = parent->protocol;
+-        if (!(ret->hosts = virStorageNetHostDefCopy(parent->nhosts, parent->hosts)))
+-            goto error;
+-        ret->nhosts = parent->nhosts;
++        if (parent->nhosts) {
++            if (!(ret->hosts = virStorageNetHostDefCopy(parent->nhosts,
++                                                        parent->hosts)))
++                goto error;
++
++            ret->nhosts = parent->nhosts;
++        }
+ 
+         if (VIR_STRDUP(ret->volume, parent->volume) < 0)
+             goto error;
+-- 
+2.1.3
+

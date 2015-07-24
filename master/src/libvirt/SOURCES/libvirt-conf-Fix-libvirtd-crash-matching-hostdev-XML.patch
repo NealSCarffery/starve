@@ -1,0 +1,54 @@
+From f866045688501547c44e9708f86f11d0f9d5ca8b Mon Sep 17 00:00:00 2001
+Message-Id: <f866045688501547c44e9708f86f11d0f9d5ca8b@dist-git>
+From: Luyao Huang <lhuang@redhat.com>
+Date: Mon, 15 Dec 2014 08:01:01 -0500
+Subject: [PATCH] conf: Fix libvirtd crash matching hostdev XML
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1174053
+
+Introduced by commit id '17bddc46f' - fix a libvirtd crash when
+matching a network iscsi hostdev with a host iscsi hostdev.
+
+When we use attach-device to coldplug a network iscsi hostdev,
+libvirt will check if there is already a device in XML. But if
+the 'b' is a host iscsi hostdev and 'a' is a network iscsi hostdev,
+then libvirtd will crash in virDomainHostdevMatchSubsysSCSIiSCSI
+because 'b' doesn't have a hostname.
+
+Add a check in virDomainHostdevMatchSubsys, if the a's protocol
+and b's protocol is not the same.
+
+Following is the backtrace:
+
+0  0x00007f850d6bc307 in virDomainHostdevMatchSubsysSCSIiSCSI at conf/domain_conf.c:10889
+1  virDomainHostdevMatchSubsys at conf/domain_conf.c:10911
+2  virDomainHostdevMatch at conf/domain_conf.c:10973
+3  virDomainHostdevFind at conf/domain_conf.c:10998
+4  0x00007f84f6a10560 in qemuDomainAttachDeviceConfig at qemu/qemu_driver.c:7223
+5  qemuDomainAttachDeviceFlags at qemu/qemu_driver.c:7554
+
+Signed-off-by: Luyao Huang <lhuang@redhat.com>
+(cherry picked from commit 5fc1c51743643a02c0306d6c17fe86e9013ce342)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/conf/domain_conf.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 09ddc25..25f20f8 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -10900,6 +10900,9 @@ virDomainHostdevMatchSubsys(virDomainHostdevDefPtr a,
+     case VIR_DOMAIN_HOSTDEV_SUBSYS_TYPE_USB:
+         return virDomainHostdevMatchSubsysUSB(a, b);
+     case VIR_DOMAIN_HOSTDEV_SUBSYS_TYPE_SCSI:
++        if (a->source.subsys.u.scsi.protocol !=
++            b->source.subsys.u.scsi.protocol)
++            return 0;
+         if (a->source.subsys.u.scsi.protocol ==
+             VIR_DOMAIN_HOSTDEV_SCSI_PROTOCOL_TYPE_ISCSI)
+             return virDomainHostdevMatchSubsysSCSIiSCSI(a, b);
+-- 
+2.2.0
+

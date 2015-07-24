@@ -1,0 +1,50 @@
+From fb5f9100a7ca6e8d63b1ec2b1c5d3ae12f146d71 Mon Sep 17 00:00:00 2001
+Message-Id: <fb5f9100a7ca6e8d63b1ec2b1c5d3ae12f146d71@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Mon, 15 Sep 2014 15:13:56 -0400
+Subject: [PATCH] daemon: Resolve Coverity RESOURCE_LEAK
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1141209
+
+With eblake's help - adjust the checks for stdinfd/stdoutfd to ensure the
+values are within the range we expect; otherwise the dup2()'s and subsequent
+VIR_CLOSE() calls cause Coverity to believe there's a resource leak.
+
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+(cherry picked from commit c77ac79d6b5a6758f3a980d2edfd0abda9aa7d3e)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ daemon/libvirtd.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/daemon/libvirtd.c b/daemon/libvirtd.c
+index 0503cd0..05ee50e 100644
+--- a/daemon/libvirtd.c
++++ b/daemon/libvirtd.c
+@@ -163,9 +163,9 @@ static int daemonForkIntoBackground(const char *argv0)
+ 
+             VIR_FORCE_CLOSE(statuspipe[0]);
+ 
+-            if ((stdinfd = open("/dev/null", O_RDONLY)) < 0)
++            if ((stdinfd = open("/dev/null", O_RDONLY)) <= STDERR_FILENO)
+                 goto cleanup;
+-            if ((stdoutfd = open("/dev/null", O_WRONLY)) < 0)
++            if ((stdoutfd = open("/dev/null", O_WRONLY)) <= STDERR_FILENO)
+                 goto cleanup;
+             if (dup2(stdinfd, STDIN_FILENO) != STDIN_FILENO)
+                 goto cleanup;
+@@ -173,9 +173,9 @@ static int daemonForkIntoBackground(const char *argv0)
+                 goto cleanup;
+             if (dup2(stdoutfd, STDERR_FILENO) != STDERR_FILENO)
+                 goto cleanup;
+-            if (stdinfd > STDERR_FILENO && VIR_CLOSE(stdinfd) < 0)
++            if (VIR_CLOSE(stdinfd) < 0)
+                 goto cleanup;
+-            if (stdoutfd > STDERR_FILENO && VIR_CLOSE(stdoutfd) < 0)
++            if (VIR_CLOSE(stdoutfd) < 0)
+                 goto cleanup;
+ 
+             if (setsid() < 0)
+-- 
+2.1.0
+

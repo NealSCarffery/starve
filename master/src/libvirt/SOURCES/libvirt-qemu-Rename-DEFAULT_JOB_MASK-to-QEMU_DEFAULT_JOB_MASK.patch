@@ -1,0 +1,93 @@
+From c2e856d8cc824e86a386d1ff01034174cbb3ffbc Mon Sep 17 00:00:00 2001
+Message-Id: <c2e856d8cc824e86a386d1ff01034174cbb3ffbc@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Mon, 8 Sep 2014 13:24:16 +0200
+Subject: [PATCH] qemu: Rename DEFAULT_JOB_MASK to QEMU_DEFAULT_JOB_MASK
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1134154
+
+Be consistent with naming of private defines. Also line up code
+correctly in few places where the macro is used.
+
+(cherry picked from commit 4be88556996c8472d569a611feb6051d05061700)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_domain.c    | 2 +-
+ src/qemu/qemu_domain.h    | 2 +-
+ src/qemu/qemu_driver.c    | 8 ++++----
+ src/qemu/qemu_migration.c | 6 +++---
+ 4 files changed, 9 insertions(+), 9 deletions(-)
+
+diff --git a/src/qemu/qemu_domain.c b/src/qemu/qemu_domain.c
+index e9506e0..306ff10 100644
+--- a/src/qemu/qemu_domain.c
++++ b/src/qemu/qemu_domain.c
+@@ -162,7 +162,7 @@ qemuDomainObjResetAsyncJob(qemuDomainObjPrivatePtr priv)
+     job->asyncJob = QEMU_ASYNC_JOB_NONE;
+     job->asyncOwner = 0;
+     job->phase = 0;
+-    job->mask = DEFAULT_JOB_MASK;
++    job->mask = QEMU_JOB_DEFAULT_MASK;
+     job->start = 0;
+     job->dump_memory_only = false;
+     job->asyncAbort = false;
+diff --git a/src/qemu/qemu_domain.h b/src/qemu/qemu_domain.h
+index 8736889..f353d90 100644
+--- a/src/qemu/qemu_domain.h
++++ b/src/qemu/qemu_domain.h
+@@ -54,7 +54,7 @@
+ # endif
+ 
+ # define JOB_MASK(job)                  (1 << (job - 1))
+-# define DEFAULT_JOB_MASK               \
++# define QEMU_JOB_DEFAULT_MASK          \
+     (JOB_MASK(QEMU_JOB_QUERY) |         \
+      JOB_MASK(QEMU_JOB_DESTROY) |       \
+      JOB_MASK(QEMU_JOB_ABORT))
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index aceddb1..74d0477 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -13215,9 +13215,9 @@ qemuDomainSnapshotCreateActiveExternal(virConnectPtr conn,
+             goto endjob;
+ 
+         /* allow the migration job to be cancelled or the domain to be paused */
+-        qemuDomainObjSetAsyncJobMask(vm, DEFAULT_JOB_MASK |
+-                                     JOB_MASK(QEMU_JOB_SUSPEND) |
+-                                     JOB_MASK(QEMU_JOB_MIGRATION_OP));
++        qemuDomainObjSetAsyncJobMask(vm, (QEMU_JOB_DEFAULT_MASK |
++                                          JOB_MASK(QEMU_JOB_SUSPEND) |
++                                          JOB_MASK(QEMU_JOB_MIGRATION_OP)));
+ 
+         cfg = virQEMUDriverGetConfig(driver);
+         if (cfg->snapshotImageFormat) {
+@@ -13249,7 +13249,7 @@ qemuDomainSnapshotCreateActiveExternal(virConnectPtr conn,
+         memory_unlink = true;
+ 
+         /* forbid any further manipulation */
+-        qemuDomainObjSetAsyncJobMask(vm, DEFAULT_JOB_MASK);
++        qemuDomainObjSetAsyncJobMask(vm, QEMU_JOB_DEFAULT_MASK);
+     }
+ 
+     /* now the domain is now paused if:
+diff --git a/src/qemu/qemu_migration.c b/src/qemu/qemu_migration.c
+index 9cfb77e..a7aeca5 100644
+--- a/src/qemu/qemu_migration.c
++++ b/src/qemu/qemu_migration.c
+@@ -4907,9 +4907,9 @@ qemuMigrationJobStart(virQEMUDriverPtr driver,
+     if (job == QEMU_ASYNC_JOB_MIGRATION_IN) {
+         qemuDomainObjSetAsyncJobMask(vm, QEMU_JOB_NONE);
+     } else {
+-        qemuDomainObjSetAsyncJobMask(vm, DEFAULT_JOB_MASK |
+-                                     JOB_MASK(QEMU_JOB_SUSPEND) |
+-                                     JOB_MASK(QEMU_JOB_MIGRATION_OP));
++        qemuDomainObjSetAsyncJobMask(vm, (QEMU_JOB_DEFAULT_MASK |
++                                          JOB_MASK(QEMU_JOB_SUSPEND) |
++                                          JOB_MASK(QEMU_JOB_MIGRATION_OP)));
+     }
+ 
+     priv->job.info.type = VIR_DOMAIN_JOB_UNBOUNDED;
+-- 
+2.1.0
+

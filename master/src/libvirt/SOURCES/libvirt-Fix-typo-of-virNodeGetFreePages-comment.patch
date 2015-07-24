@@ -1,0 +1,31 @@
+From 708b4ab4a8c7d714c7816a20f03cedbaeda891da Mon Sep 17 00:00:00 2001
+Message-Id: <708b4ab4a8c7d714c7816a20f03cedbaeda891da@dist-git>
+From: Jincheng Miao <jmiao@redhat.com>
+Date: Tue, 23 Sep 2014 10:34:05 +0200
+Subject: [PATCH] Fix typo of virNodeGetFreePages comment
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1145050
+
+Signed-off-by: Jincheng Miao <jmiao@redhat.com>
+(cherry picked from commit c46fa72e4090b7884b8c6edaf63f1638eb8e04f8)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/libvirt.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/libvirt.c b/src/libvirt.c
+index 61d0543..d0fdf11 100644
+--- a/src/libvirt.c
++++ b/src/libvirt.c
+@@ -21266,7 +21266,7 @@ virDomainSetTime(virDomainPtr dom,
+  * @flags: extra flags; not used yet, so callers should always pass 0
+  *
+  * This calls queries the host system on free pages of
+- * specified size. Ont the input, @pages is expected to be
++ * specified size. For the input, @pages is expected to be
+  * filled with pages that caller is interested in (the size
+  * unit is kibibytes, so e.g. pass 2048 for 2MB), then @startcell
+  * refers to the first NUMA node that info should be collected
+-- 
+2.1.1
+

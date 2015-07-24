@@ -1,0 +1,86 @@
+From b80814d0e06895d7dce41eb3c65b88fa4ee604b1 Mon Sep 17 00:00:00 2001
+Message-Id: <b80814d0e06895d7dce41eb3c65b88fa4ee604b1@dist-git>
+From: Eric Blake <eblake@redhat.com>
+Date: Wed, 17 Dec 2014 03:09:01 -0700
+Subject: [PATCH] getstats: start giving offline block stats
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1041569
+
+I noticed that for an offline domain, 'virsh domstats --block $dom'
+was producing just the domain name, with no stats.  But the older
+'virsh domblkinfo' works just fine on offline domains.  This patch
+starts to get us closer, by at least reporting the disk names for
+an offline domain.
+
+With this patch, I now see the following for an offline domain
+with one qcow2 disk and an empty cdrom drive:
+$ virsh domstats --block foo
+Domain: 'foo'
+  block.count=2
+  block.0.name=hda
+  block.1.name=hdc
+
+* src/qemu/qemu_driver.c (qemuDomainGetStatsBlock): Don't short-circuit
+output of block name.
+
+Signed-off-by: Eric Blake <eblake@redhat.com>
+(cherry picked from commit 56b21dfe0c12867fa1dc3715145a61017e6928f1)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c | 30 +++++++++++++++++-------------
+ 1 file changed, 17 insertions(+), 13 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 33a93f1..f0935d6 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -18019,19 +18019,20 @@ qemuDomainGetStatsBlock(virQEMUDriverPtr driver,
+     int rc;
+     virHashTablePtr stats = NULL;
+     qemuDomainObjPrivatePtr priv = dom->privateData;
++    bool abbreviated = false;
+ 
+-    if (!HAVE_JOB(privflags) || !virDomainObjIsActive(dom))
+-        return 0; /* it's ok, just go ahead silently */
++    if (!HAVE_JOB(privflags) || !virDomainObjIsActive(dom)) {
++        abbreviated = true; /* it's ok, just go ahead silently */
++    } else {
++        qemuDomainObjEnterMonitor(driver, dom);
++        rc = qemuMonitorGetAllBlockStatsInfo(priv->mon, &stats);
++        ignore_value(qemuMonitorBlockStatsUpdateCapacity(priv->mon, stats));
++        qemuDomainObjExitMonitor(driver, dom);
+ 
+-    qemuDomainObjEnterMonitor(driver, dom);
+-    rc = qemuMonitorGetAllBlockStatsInfo(priv->mon, &stats);
+-    ignore_value(qemuMonitorBlockStatsUpdateCapacity(priv->mon, stats));
+-    qemuDomainObjExitMonitor(driver, dom);
+-
+-    if (rc < 0) {
+-        virResetLastError();
+-        ret = 0; /* still ok, again go ahead silently */
+-        goto cleanup;
++        if (rc < 0) {
++            virResetLastError();
++            abbreviated = true; /* still ok, again go ahead silently */
++        }
+     }
+ 
+     QEMU_ADD_COUNT_PARAM(record, maxparams, "block", dom->def->ndisks);
+@@ -18042,9 +18043,12 @@ qemuDomainGetStatsBlock(virQEMUDriverPtr driver,
+ 
+         QEMU_ADD_NAME_PARAM(record, maxparams, "block", i, disk->dst);
+ 
+-        if (!disk->info.alias ||
+-            !(entry = virHashLookup(stats, disk->info.alias)))
++        if (abbreviated || !disk->info.alias ||
++            !(entry = virHashLookup(stats, disk->info.alias))) {
++            /* FIXME: we could still look up sizing by sharing code
++             * with qemuDomainGetBlockInfo */
+             continue;
++        }
+ 
+         QEMU_ADD_BLOCK_PARAM_LL(record, maxparams, i,
+                                 "rd.reqs", entry->rd_req);
+-- 
+2.2.0
+

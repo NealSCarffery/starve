@@ -1,0 +1,574 @@
+From 76499cca14e0a71564408618fdd148c6d194606e Mon Sep 17 00:00:00 2001
+Message-Id: <76499cca14e0a71564408618fdd148c6d194606e@dist-git>
+From: Pavel Hrdina <phrdina@redhat.com>
+Date: Tue, 25 Nov 2014 10:53:02 +0100
+Subject: [PATCH] qemu-command: use vram attribute for all video devices
+
+So far we didn't have any option to set video memory size for qemu video
+devices. There was only the vram (ram for QXL) attribute but it was valid
+only for the QXL video device.
+
+To provide this feature to users QEMU has a dedicated device attribute
+called 'vgamem_mb' to set the video memory size. We will use the 'vram'
+attribute for setting video memory size for other QEMU video devices.
+
+For the cirrus device we will ignore the vram value because it has
+hardcoded video size in QEMU.
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1076098
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+(cherry picked from commit 24c6ca860e2cf25aa28b33e19c318296b291e42c)
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_command.c                            | 36 +++++++++++++++++++++-
+ .../qemuxml2argv-video-qxl-device-vgamem.args      |  6 ++++
+ .../qemuxml2argv-video-qxl-device-vgamem.xml       | 29 +++++++++++++++++
+ .../qemuxml2argv-video-qxl-device.args             |  6 ++++
+ .../qemuxml2argv-video-qxl-device.xml              | 29 +++++++++++++++++
+ .../qemuxml2argv-video-qxl-nodevice.args           |  5 +++
+ .../qemuxml2argv-video-qxl-nodevice.xml            | 29 +++++++++++++++++
+ .../qemuxml2argv-video-qxl-sec-device-vgamem.args  |  8 +++++
+ .../qemuxml2argv-video-qxl-sec-device-vgamem.xml   | 32 +++++++++++++++++++
+ .../qemuxml2argv-video-qxl-sec-device.args         |  7 +++++
+ .../qemuxml2argv-video-qxl-sec-device.xml          | 32 +++++++++++++++++++
+ .../qemuxml2argv-video-qxl-sec-nodevice.xml        | 32 +++++++++++++++++++
+ .../qemuxml2argv-video-vga-device-vgamem.args      |  6 ++++
+ .../qemuxml2argv-video-vga-device-vgamem.xml       | 29 +++++++++++++++++
+ .../qemuxml2argv-video-vga-device.args             |  6 ++++
+ .../qemuxml2argv-video-vga-device.xml              | 29 +++++++++++++++++
+ .../qemuxml2argv-video-vga-nodevice.args           |  5 +++
+ .../qemuxml2argv-video-vga-nodevice.xml            | 29 +++++++++++++++++
+ tests/qemuxml2argvtest.c                           | 16 ++++++++++
+ 19 files changed, 370 insertions(+), 1 deletion(-)
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-video-qxl-device-vgamem.args
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-video-qxl-device-vgamem.xml
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-video-qxl-device.args
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-video-qxl-device.xml
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-video-qxl-nodevice.args
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-video-qxl-nodevice.xml
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-device-vgamem.args
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-device-vgamem.xml
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-device.args
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-device.xml
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-nodevice.xml
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-video-vga-device-vgamem.args
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-video-vga-device-vgamem.xml
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-video-vga-device.args
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-video-vga-device.xml
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-video-vga-nodevice.args
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-video-vga-nodevice.xml
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index c75d3b0..e44f114 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -4853,6 +4853,20 @@ qemuBuildDeviceVideoStr(virDomainDefPtr def,
+             /* QEMU accepts bytes for vram_size. */
+             virBufferAsprintf(&buf, ",vram_size=%u", video->vram * 1024);
+         }
++    } else if (video->vram &&
++        ((video->type == VIR_DOMAIN_VIDEO_TYPE_VGA &&
++          virQEMUCapsGet(qemuCaps, QEMU_CAPS_VGA_VGAMEM)) ||
++         (video->type == VIR_DOMAIN_VIDEO_TYPE_VMVGA &&
++          virQEMUCapsGet(qemuCaps, QEMU_CAPS_VMWARE_SVGA_VGAMEM)))) {
++
++        if (video->vram < 1024) {
++            virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                           "%s", _("value for 'vram' must be at least 1 MiB "
++                                   "(1024 KiB)"));
++            goto error;
++        }
++
++        virBufferAsprintf(&buf, ",vgamem_mb=%u", video->vram / 1024);
+     }
+ 
+     if (qemuBuildDeviceAddressStr(&buf, def, &video->info, qemuCaps) < 0)
+@@ -7417,7 +7431,7 @@ qemuBuildShmemDevCmd(virCommandPtr cmd,
+         }
+         if (shmem->size < 1024 * 1024) {
+             virReportError(VIR_ERR_XML_ERROR, "%s",
+-                           _("shmem size must be at least 1 MiB"));
++                           _("shmem size must be at least 1 MiB (1024 KiB)"));
+             goto error;
+         }
+         virBufferAsprintf(&buf, ",size=%llum", shmem->size >> 20);
+@@ -9150,6 +9164,26 @@ qemuBuildCommandLine(virConnectPtr conn,
+                                                dev, vram * 1024);
+                     }
+                 }
++
++                if (virQEMUCapsGet(qemuCaps, QEMU_CAPS_DEVICE) &&
++                    def->videos[0]->vram &&
++                    ((primaryVideoType == VIR_DOMAIN_VIDEO_TYPE_VGA &&
++                      virQEMUCapsGet(qemuCaps, QEMU_CAPS_VGA_VGAMEM)) ||
++                     (primaryVideoType == VIR_DOMAIN_VIDEO_TYPE_VMVGA &&
++                      virQEMUCapsGet(qemuCaps, QEMU_CAPS_VMWARE_SVGA_VGAMEM)))) {
++                    unsigned int vram = def->videos[0]->vram;
++
++                    if (vram < 1024) {
++                        virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                                       "%s", _("value for 'vgamem' must be at "
++                                               "least 1 MiB (1024 KiB)"));
++                        goto error;
++                    }
++
++                    virCommandAddArg(cmd, "-global");
++                    virCommandAddArgFormat(cmd, "%s.vgamem_mb=%u",
++                                           dev, vram / 1024);
++                }
+             }
+ 
+             if (def->nvideos > 1) {
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-device-vgamem.args b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-device-vgamem.args
+new file mode 100644
+index 0000000..c9eb535
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-device-vgamem.args
+@@ -0,0 +1,6 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=none \
++/usr/bin/qemu -S -M pc -m 1024 -smp 1 -nographic -nodefaults \
++-monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -usb \
++-hda /var/lib/libvirt/images/QEMUGuest1 \
++-device qxl-vga,id=video0,ram_size=67108864,vram_size=67108864,bus=pci.0\
++,addr=0x2 -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-device-vgamem.xml b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-device-vgamem.xml
+new file mode 100644
+index 0000000..9fc42af
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-device-vgamem.xml
+@@ -0,0 +1,29 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory unit='KiB'>1048576</memory>
++  <currentMemory unit='KiB'>1048576</currentMemory>
++  <vcpu>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='file' device='disk'>
++      <driver name='qemu' type='qcow2' cache='none'/>
++      <source file='/var/lib/libvirt/images/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' target='0' unit='0'/>
++    </disk>
++    <controller type='ide' index='0'/>
++    <video>
++      <model type='qxl' heads='1'/>
++    </video>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-device.args b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-device.args
+new file mode 100644
+index 0000000..c9eb535
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-device.args
+@@ -0,0 +1,6 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=none \
++/usr/bin/qemu -S -M pc -m 1024 -smp 1 -nographic -nodefaults \
++-monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -usb \
++-hda /var/lib/libvirt/images/QEMUGuest1 \
++-device qxl-vga,id=video0,ram_size=67108864,vram_size=67108864,bus=pci.0\
++,addr=0x2 -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-device.xml b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-device.xml
+new file mode 100644
+index 0000000..9fc42af
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-device.xml
+@@ -0,0 +1,29 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory unit='KiB'>1048576</memory>
++  <currentMemory unit='KiB'>1048576</currentMemory>
++  <vcpu>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='file' device='disk'>
++      <driver name='qemu' type='qcow2' cache='none'/>
++      <source file='/var/lib/libvirt/images/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' target='0' unit='0'/>
++    </disk>
++    <controller type='ide' index='0'/>
++    <video>
++      <model type='qxl' heads='1'/>
++    </video>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-nodevice.args b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-nodevice.args
+new file mode 100644
+index 0000000..a6ac6d8
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-nodevice.args
+@@ -0,0 +1,5 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=none \
++/usr/bin/qemu -S -M pc -m 1024 -smp 1 -nographic \
++-monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -usb \
++-hda /var/lib/libvirt/images/QEMUGuest1 -net none -serial none -parallel none \
++-vga qxl
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-nodevice.xml b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-nodevice.xml
+new file mode 100644
+index 0000000..9fc42af
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-nodevice.xml
+@@ -0,0 +1,29 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory unit='KiB'>1048576</memory>
++  <currentMemory unit='KiB'>1048576</currentMemory>
++  <vcpu>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='file' device='disk'>
++      <driver name='qemu' type='qcow2' cache='none'/>
++      <source file='/var/lib/libvirt/images/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' target='0' unit='0'/>
++    </disk>
++    <controller type='ide' index='0'/>
++    <video>
++      <model type='qxl' heads='1'/>
++    </video>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-device-vgamem.args b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-device-vgamem.args
+new file mode 100644
+index 0000000..5fc41bb
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-device-vgamem.args
+@@ -0,0 +1,8 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=none \
++/usr/bin/qemu -S -M pc -m 1024 -smp 1 -nographic -nodefaults \
++-monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -usb \
++-hda /var/lib/libvirt/images/QEMUGuest1 \
++-device qxl-vga,id=video0,ram_size=67108864,vram_size=67108864,bus=pci.0\
++,addr=0x2 -device qxl,id=video1,ram_size=67108864,vram_size=67108864,bus=pci.0\
++,addr=0x4 \
++-device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-device-vgamem.xml b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-device-vgamem.xml
+new file mode 100644
+index 0000000..0868f39
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-device-vgamem.xml
+@@ -0,0 +1,32 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory unit='KiB'>1048576</memory>
++  <currentMemory unit='KiB'>1048576</currentMemory>
++  <vcpu>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='file' device='disk'>
++      <driver name='qemu' type='qcow2' cache='none'/>
++      <source file='/var/lib/libvirt/images/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' target='0' unit='0'/>
++    </disk>
++    <controller type='ide' index='0'/>
++    <video>
++      <model type='qxl' heads='1'/>
++    </video>
++    <video>
++      <model type='qxl' heads='1'/>
++    </video>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-device.args b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-device.args
+new file mode 100644
+index 0000000..208408e
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-device.args
+@@ -0,0 +1,7 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=none \
++/usr/bin/qemu -S -M pc -m 1024 -smp 1 -nographic -nodefaults \
++-monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -usb \
++-hda /var/lib/libvirt/images/QEMUGuest1 \
++-device qxl-vga,id=video0,ram_size=67108864,vram_size=67108864,bus=pci.0\
++,addr=0x2 -device qxl,id=video1,ram_size=67108864,vram_size=67108864,bus=pci.0\
++,addr=0x4 -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-device.xml b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-device.xml
+new file mode 100644
+index 0000000..0868f39
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-device.xml
+@@ -0,0 +1,32 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory unit='KiB'>1048576</memory>
++  <currentMemory unit='KiB'>1048576</currentMemory>
++  <vcpu>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='file' device='disk'>
++      <driver name='qemu' type='qcow2' cache='none'/>
++      <source file='/var/lib/libvirt/images/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' target='0' unit='0'/>
++    </disk>
++    <controller type='ide' index='0'/>
++    <video>
++      <model type='qxl' heads='1'/>
++    </video>
++    <video>
++      <model type='qxl' heads='1'/>
++    </video>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-nodevice.xml b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-nodevice.xml
+new file mode 100644
+index 0000000..0868f39
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-nodevice.xml
+@@ -0,0 +1,32 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory unit='KiB'>1048576</memory>
++  <currentMemory unit='KiB'>1048576</currentMemory>
++  <vcpu>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='file' device='disk'>
++      <driver name='qemu' type='qcow2' cache='none'/>
++      <source file='/var/lib/libvirt/images/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' target='0' unit='0'/>
++    </disk>
++    <controller type='ide' index='0'/>
++    <video>
++      <model type='qxl' heads='1'/>
++    </video>
++    <video>
++      <model type='qxl' heads='1'/>
++    </video>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-video-vga-device-vgamem.args b/tests/qemuxml2argvdata/qemuxml2argv-video-vga-device-vgamem.args
+new file mode 100644
+index 0000000..81e4aec
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-video-vga-device-vgamem.args
+@@ -0,0 +1,6 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=none \
++/usr/bin/qemu -S -M pc -m 1024 -smp 1 -nographic -nodefaults \
++-monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -usb \
++-hda /var/lib/libvirt/images/QEMUGuest1 \
++-device VGA,id=video0,vgamem_mb=16,bus=pci.0,addr=0x2 \
++-device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-video-vga-device-vgamem.xml b/tests/qemuxml2argvdata/qemuxml2argv-video-vga-device-vgamem.xml
+new file mode 100644
+index 0000000..9b1ddfc
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-video-vga-device-vgamem.xml
+@@ -0,0 +1,29 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory unit='KiB'>1048576</memory>
++  <currentMemory unit='KiB'>1048576</currentMemory>
++  <vcpu>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='file' device='disk'>
++      <driver name='qemu' type='qcow2' cache='none'/>
++      <source file='/var/lib/libvirt/images/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' target='0' unit='0'/>
++    </disk>
++    <controller type='ide' index='0'/>
++    <video>
++      <model type='vga' vram='16384' heads='1'/>
++    </video>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-video-vga-device.args b/tests/qemuxml2argvdata/qemuxml2argv-video-vga-device.args
+new file mode 100644
+index 0000000..f822280
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-video-vga-device.args
+@@ -0,0 +1,6 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=none \
++/usr/bin/qemu -S -M pc -m 1024 -smp 1 -nographic -nodefaults \
++-monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -usb \
++-hda /var/lib/libvirt/images/QEMUGuest1 \
++-device VGA,id=video0,bus=pci.0,addr=0x2 \
++-device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-video-vga-device.xml b/tests/qemuxml2argvdata/qemuxml2argv-video-vga-device.xml
+new file mode 100644
+index 0000000..9b1ddfc
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-video-vga-device.xml
+@@ -0,0 +1,29 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory unit='KiB'>1048576</memory>
++  <currentMemory unit='KiB'>1048576</currentMemory>
++  <vcpu>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='file' device='disk'>
++      <driver name='qemu' type='qcow2' cache='none'/>
++      <source file='/var/lib/libvirt/images/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' target='0' unit='0'/>
++    </disk>
++    <controller type='ide' index='0'/>
++    <video>
++      <model type='vga' vram='16384' heads='1'/>
++    </video>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-video-vga-nodevice.args b/tests/qemuxml2argvdata/qemuxml2argv-video-vga-nodevice.args
+new file mode 100644
+index 0000000..7b5f151
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-video-vga-nodevice.args
+@@ -0,0 +1,5 @@
++LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=none \
++/usr/bin/qemu -S -M pc -m 1024 -smp 1 -nographic \
++-monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -usb \
++-hda /var/lib/libvirt/images/QEMUGuest1 -net none -serial none -parallel none \
++-vga std
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-video-vga-nodevice.xml b/tests/qemuxml2argvdata/qemuxml2argv-video-vga-nodevice.xml
+new file mode 100644
+index 0000000..9b1ddfc
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-video-vga-nodevice.xml
+@@ -0,0 +1,29 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory unit='KiB'>1048576</memory>
++  <currentMemory unit='KiB'>1048576</currentMemory>
++  <vcpu>1</vcpu>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='file' device='disk'>
++      <driver name='qemu' type='qcow2' cache='none'/>
++      <source file='/var/lib/libvirt/images/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' target='0' unit='0'/>
++    </disk>
++    <controller type='ide' index='0'/>
++    <video>
++      <model type='vga' vram='16384' heads='1'/>
++    </video>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index 97af90a..24e9740 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -1322,6 +1322,22 @@ mymain(void)
+             QEMU_CAPS_DEVICE, QEMU_CAPS_DEVICE_VIDEO_PRIMARY,
+             QEMU_CAPS_DEVICE_QXL, QEMU_CAPS_DEVICE_QXL_VGA,
+             QEMU_CAPS_DEVICE_PCI_BRIDGE);
++    DO_TEST("video-vga-nodevice", QEMU_CAPS_VGA);
++    DO_TEST("video-vga-device", QEMU_CAPS_DEVICE, QEMU_CAPS_DEVICE_VGA,
++            QEMU_CAPS_DEVICE_VIDEO_PRIMARY);
++    DO_TEST("video-vga-device-vgamem", QEMU_CAPS_DEVICE, QEMU_CAPS_DEVICE_VGA,
++            QEMU_CAPS_DEVICE_VIDEO_PRIMARY, QEMU_CAPS_VGA_VGAMEM);
++    DO_TEST("video-qxl-nodevice", QEMU_CAPS_VGA, QEMU_CAPS_VGA_QXL);
++    DO_TEST("video-qxl-device", QEMU_CAPS_DEVICE, QEMU_CAPS_DEVICE_QXL_VGA,
++            QEMU_CAPS_DEVICE_VIDEO_PRIMARY);
++    DO_TEST("video-qxl-device-vgamem", QEMU_CAPS_DEVICE,
++            QEMU_CAPS_DEVICE_QXL_VGA, QEMU_CAPS_DEVICE_VIDEO_PRIMARY);
++    DO_TEST_FAILURE("video-qxl-sec-nodevice", QEMU_CAPS_VGA, QEMU_CAPS_VGA_QXL);
++    DO_TEST("video-qxl-sec-device", QEMU_CAPS_DEVICE, QEMU_CAPS_DEVICE_QXL_VGA,
++            QEMU_CAPS_DEVICE_QXL, QEMU_CAPS_DEVICE_VIDEO_PRIMARY);
++    DO_TEST("video-qxl-sec-device-vgamem", QEMU_CAPS_DEVICE,
++            QEMU_CAPS_DEVICE_QXL_VGA, QEMU_CAPS_DEVICE_QXL,
++            QEMU_CAPS_DEVICE_VIDEO_PRIMARY);
+ 
+     DO_TEST("virtio-rng-default", QEMU_CAPS_DEVICE, QEMU_CAPS_DEVICE_VIRTIO_RNG,
+             QEMU_CAPS_OBJECT_RNG_RANDOM);
+-- 
+2.1.3
+

@@ -1,0 +1,109 @@
+From 3eec7952223f0d0277fb6d258806d48d6052aff2 Mon Sep 17 00:00:00 2001
+Message-Id: <3eec7952223f0d0277fb6d258806d48d6052aff2@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Wed, 12 Nov 2014 13:34:49 -0500
+Subject: [PATCH] storage: Introduce virStoragePoolSaveConfig
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1160926
+
+Introduce the ability to save a configuration of a persistent configuration
+that may be changed by storage pool backend activity, such as start or stop
+
+(cherry picked from commit 523c6908f8c21cede0121a8fdac9ad76c01d4d1c)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/conf/storage_conf.c  | 37 ++++++++++++++++++++++---------------
+ src/conf/storage_conf.h  |  2 ++
+ src/libvirt_private.syms |  1 +
+ 3 files changed, 25 insertions(+), 15 deletions(-)
+
+diff --git a/src/conf/storage_conf.c b/src/conf/storage_conf.c
+index 3ceb0b5..71e152f 100644
+--- a/src/conf/storage_conf.c
++++ b/src/conf/storage_conf.c
+@@ -1883,14 +1883,33 @@ virStoragePoolLoadAllConfigs(virStoragePoolObjListPtr pools,
+ }
+ 
+ int
+-virStoragePoolObjSaveDef(virStorageDriverStatePtr driver,
+-                         virStoragePoolObjPtr pool,
++virStoragePoolSaveConfig(const char *configFile,
+                          virStoragePoolDefPtr def)
+ {
+     char uuidstr[VIR_UUID_STRING_BUFLEN];
+     char *xml;
+     int ret = -1;
+ 
++    if (!(xml = virStoragePoolDefFormat(def))) {
++        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                       _("failed to generate XML"));
++        return -1;
++    }
++
++    virUUIDFormat(def->uuid, uuidstr);
++    ret = virXMLSaveFile(configFile,
++                         virXMLPickShellSafeComment(def->name, uuidstr),
++                         "pool-edit", xml);
++    VIR_FREE(xml);
++
++    return ret;
++}
++
++int
++virStoragePoolObjSaveDef(virStorageDriverStatePtr driver,
++                         virStoragePoolObjPtr pool,
++                         virStoragePoolDefPtr def)
++{
+     if (!pool->configFile) {
+         if (virFileMakePath(driver->configDir) < 0) {
+             virReportSystemError(errno,
+@@ -1911,19 +1930,7 @@ virStoragePoolObjSaveDef(virStorageDriverStatePtr driver,
+         }
+     }
+ 
+-    if (!(xml = virStoragePoolDefFormat(def))) {
+-        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+-                       _("failed to generate XML"));
+-        return -1;
+-    }
+-
+-    virUUIDFormat(def->uuid, uuidstr);
+-    ret = virXMLSaveFile(pool->configFile,
+-                         virXMLPickShellSafeComment(def->name, uuidstr),
+-                         "pool-edit", xml);
+-    VIR_FREE(xml);
+-
+-    return ret;
++    return virStoragePoolSaveConfig(pool->configFile, def);
+ }
+ 
+ int
+diff --git a/src/conf/storage_conf.h b/src/conf/storage_conf.h
+index a9b5bdb..67145a0 100644
+--- a/src/conf/storage_conf.h
++++ b/src/conf/storage_conf.h
+@@ -360,6 +360,8 @@ virStoragePoolObjPtr
+ virStoragePoolObjAssignDef(virStoragePoolObjListPtr pools,
+                            virStoragePoolDefPtr def);
+ 
++int virStoragePoolSaveConfig(const char *configDir,
++                             virStoragePoolDefPtr def);
+ int virStoragePoolObjSaveDef(virStorageDriverStatePtr driver,
+                              virStoragePoolObjPtr pool,
+                              virStoragePoolDefPtr def);
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index e7eba7e..de4b128 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -749,6 +749,7 @@ virStoragePoolObjLock;
+ virStoragePoolObjRemove;
+ virStoragePoolObjSaveDef;
+ virStoragePoolObjUnlock;
++virStoragePoolSaveConfig;
+ virStoragePoolSourceAdapterTypeFromString;
+ virStoragePoolSourceAdapterTypeToString;
+ virStoragePoolSourceClear;
+-- 
+2.1.3
+

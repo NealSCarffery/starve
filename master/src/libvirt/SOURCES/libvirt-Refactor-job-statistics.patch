@@ -1,0 +1,620 @@
+From f4a492f7751e066548cd63d2bc56fd0260c7b32b Mon Sep 17 00:00:00 2001
+Message-Id: <f4a492f7751e066548cd63d2bc56fd0260c7b32b@dist-git>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Thu, 21 Aug 2014 15:08:39 +0200
+Subject: [PATCH] Refactor job statistics
+
+Job statistics data were tracked in several structures and variables.
+Let's make a new qemuDomainJobInfo structure which can be used as a
+single source of statistics data as a preparation for storing data about
+completed a job.
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+(cherry picked from commit 6fcddfcd8f25bc23018a1fc2e37ebca375f7f1c3)
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1063724
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_domain.c    | 157 ++++++++++++++++++++++++++++++++++++++++++++--
+ src/qemu/qemu_domain.h    |  28 ++++++++-
+ src/qemu/qemu_driver.c    | 119 ++++-------------------------------
+ src/qemu/qemu_migration.c |  72 ++++++++-------------
+ 4 files changed, 217 insertions(+), 159 deletions(-)
+
+diff --git a/src/qemu/qemu_domain.c b/src/qemu/qemu_domain.c
+index 306ff10..7b54306 100644
+--- a/src/qemu/qemu_domain.c
++++ b/src/qemu/qemu_domain.c
+@@ -163,11 +163,9 @@ qemuDomainObjResetAsyncJob(qemuDomainObjPrivatePtr priv)
+     job->asyncOwner = 0;
+     job->phase = 0;
+     job->mask = QEMU_JOB_DEFAULT_MASK;
+-    job->start = 0;
+     job->dump_memory_only = false;
+     job->asyncAbort = false;
+-    memset(&job->status, 0, sizeof(job->status));
+-    memset(&job->info, 0, sizeof(job->info));
++    VIR_FREE(job->current);
+ }
+ 
+ void
+@@ -200,6 +198,7 @@ qemuDomainObjTransferJob(virDomainObjPtr obj)
+ static void
+ qemuDomainObjFreeJob(qemuDomainObjPrivatePtr priv)
+ {
++    VIR_FREE(priv->job.current);
+     virCondDestroy(&priv->job.cond);
+     virCondDestroy(&priv->job.asyncCond);
+ }
+@@ -211,6 +210,150 @@ qemuDomainTrackJob(qemuDomainJob job)
+ }
+ 
+ 
++int
++qemuDomainJobInfoUpdateTime(qemuDomainJobInfoPtr jobInfo)
++{
++    unsigned long long now;
++
++    if (!jobInfo->started)
++        return 0;
++
++    if (virTimeMillisNow(&now) < 0)
++        return -1;
++
++    jobInfo->timeElapsed = now - jobInfo->started;
++    return 0;
++}
++
++int
++qemuDomainJobInfoToInfo(qemuDomainJobInfoPtr jobInfo,
++                        virDomainJobInfoPtr info)
++{
++    info->timeElapsed = jobInfo->timeElapsed;
++    info->timeRemaining = jobInfo->timeRemaining;
++
++    info->memTotal = jobInfo->status.ram_total;
++    info->memRemaining = jobInfo->status.ram_remaining;
++    info->memProcessed = jobInfo->status.ram_transferred;
++
++    info->fileTotal = jobInfo->status.disk_total;
++    info->fileRemaining = jobInfo->status.disk_remaining;
++    info->fileProcessed = jobInfo->status.disk_transferred;
++
++    info->dataTotal = info->memTotal + info->fileTotal;
++    info->dataRemaining = info->memRemaining + info->fileRemaining;
++    info->dataProcessed = info->memProcessed + info->fileProcessed;
++
++    return 0;
++}
++
++int
++qemuDomainJobInfoToParams(qemuDomainJobInfoPtr jobInfo,
++                          int *type,
++                          virTypedParameterPtr *params,
++                          int *nparams)
++{
++    qemuMonitorMigrationStatus *status = &jobInfo->status;
++    virTypedParameterPtr par = NULL;
++    int maxpar = 0;
++    int npar = 0;
++
++    if (virTypedParamsAddULLong(&par, &npar, &maxpar,
++                                VIR_DOMAIN_JOB_TIME_ELAPSED,
++                                jobInfo->timeElapsed) < 0)
++        goto error;
++
++    if (jobInfo->type == VIR_DOMAIN_JOB_BOUNDED &&
++        virTypedParamsAddULLong(&par, &npar, &maxpar,
++                                VIR_DOMAIN_JOB_TIME_REMAINING,
++                                jobInfo->timeRemaining) < 0)
++        goto error;
++
++    if (status->downtime_set &&
++        virTypedParamsAddULLong(&par, &npar, &maxpar,
++                                VIR_DOMAIN_JOB_DOWNTIME,
++                                status->downtime) < 0)
++        goto error;
++
++    if (virTypedParamsAddULLong(&par, &npar, &maxpar,
++                                VIR_DOMAIN_JOB_DATA_TOTAL,
++                                status->ram_total +
++                                status->disk_total) < 0 ||
++        virTypedParamsAddULLong(&par, &npar, &maxpar,
++                                VIR_DOMAIN_JOB_DATA_PROCESSED,
++                                status->ram_transferred +
++                                status->disk_transferred) < 0 ||
++        virTypedParamsAddULLong(&par, &npar, &maxpar,
++                                VIR_DOMAIN_JOB_DATA_REMAINING,
++                                status->ram_remaining +
++                                status->disk_remaining) < 0)
++        goto error;
++
++    if (virTypedParamsAddULLong(&par, &npar, &maxpar,
++                                VIR_DOMAIN_JOB_MEMORY_TOTAL,
++                                status->ram_total) < 0 ||
++        virTypedParamsAddULLong(&par, &npar, &maxpar,
++                                VIR_DOMAIN_JOB_MEMORY_PROCESSED,
++                                status->ram_transferred) < 0 ||
++        virTypedParamsAddULLong(&par, &npar, &maxpar,
++                                VIR_DOMAIN_JOB_MEMORY_REMAINING,
++                                status->ram_remaining) < 0)
++        goto error;
++
++    if (status->ram_duplicate_set) {
++        if (virTypedParamsAddULLong(&par, &npar, &maxpar,
++                                    VIR_DOMAIN_JOB_MEMORY_CONSTANT,
++                                    status->ram_duplicate) < 0 ||
++            virTypedParamsAddULLong(&par, &npar, &maxpar,
++                                    VIR_DOMAIN_JOB_MEMORY_NORMAL,
++                                    status->ram_normal) < 0 ||
++            virTypedParamsAddULLong(&par, &npar, &maxpar,
++                                    VIR_DOMAIN_JOB_MEMORY_NORMAL_BYTES,
++                                    status->ram_normal_bytes) < 0)
++            goto error;
++    }
++
++    if (virTypedParamsAddULLong(&par, &npar, &maxpar,
++                                VIR_DOMAIN_JOB_DISK_TOTAL,
++                                status->disk_total) < 0 ||
++        virTypedParamsAddULLong(&par, &npar, &maxpar,
++                                VIR_DOMAIN_JOB_DISK_PROCESSED,
++                                status->disk_transferred) < 0 ||
++        virTypedParamsAddULLong(&par, &npar, &maxpar,
++                                VIR_DOMAIN_JOB_DISK_REMAINING,
++                                status->disk_remaining) < 0)
++        goto error;
++
++    if (status->xbzrle_set) {
++        if (virTypedParamsAddULLong(&par, &npar, &maxpar,
++                                    VIR_DOMAIN_JOB_COMPRESSION_CACHE,
++                                    status->xbzrle_cache_size) < 0 ||
++            virTypedParamsAddULLong(&par, &npar, &maxpar,
++                                    VIR_DOMAIN_JOB_COMPRESSION_BYTES,
++                                    status->xbzrle_bytes) < 0 ||
++            virTypedParamsAddULLong(&par, &npar, &maxpar,
++                                    VIR_DOMAIN_JOB_COMPRESSION_PAGES,
++                                    status->xbzrle_pages) < 0 ||
++            virTypedParamsAddULLong(&par, &npar, &maxpar,
++                                    VIR_DOMAIN_JOB_COMPRESSION_CACHE_MISSES,
++                                    status->xbzrle_cache_miss) < 0 ||
++            virTypedParamsAddULLong(&par, &npar, &maxpar,
++                                    VIR_DOMAIN_JOB_COMPRESSION_OVERFLOW,
++                                    status->xbzrle_overflow) < 0)
++            goto error;
++    }
++
++    *type = jobInfo->type;
++    *params = par;
++    *nparams = npar;
++    return 0;
++
++ error:
++    virTypedParamsFree(par, npar);
++    return -1;
++}
++
++
+ static void *
+ qemuDomainObjPrivateAlloc(void)
+ {
+@@ -1071,7 +1214,7 @@ qemuDomainObjBeginJobInternal(virQEMUDriverPtr driver,
+     unsigned long long then;
+     bool nested = job == QEMU_JOB_ASYNC_NESTED;
+     virQEMUDriverConfigPtr cfg = virQEMUDriverGetConfig(driver);
+-    int ret;
++    int ret = -1;
+ 
+     VIR_DEBUG("Starting %s: %s (async=%s vm=%p name=%s)",
+               job == QEMU_JOB_ASYNC ? "async job" : "job",
+@@ -1127,9 +1270,11 @@ qemuDomainObjBeginJobInternal(virQEMUDriverPtr driver,
+                   qemuDomainAsyncJobTypeToString(asyncJob),
+                   obj, obj->def->name);
+         qemuDomainObjResetAsyncJob(priv);
++        if (VIR_ALLOC(priv->job.current) < 0)
++            goto cleanup;
+         priv->job.asyncJob = asyncJob;
+         priv->job.asyncOwner = virThreadSelfID();
+-        priv->job.start = now;
++        priv->job.current->started = now;
+     }
+ 
+     if (qemuDomainTrackJob(job))
+@@ -1163,6 +1308,8 @@ qemuDomainObjBeginJobInternal(virQEMUDriverPtr driver,
+         virReportSystemError(errno,
+                              "%s", _("cannot acquire job mutex"));
+     }
++
++ cleanup:
+     priv->jobs_queued--;
+     virObjectUnref(obj);
+     virObjectUnref(cfg);
+diff --git a/src/qemu/qemu_domain.h b/src/qemu/qemu_domain.h
+index f353d90..99c7d6a 100644
+--- a/src/qemu/qemu_domain.h
++++ b/src/qemu/qemu_domain.h
+@@ -100,6 +100,18 @@ typedef enum {
+ } qemuDomainAsyncJob;
+ VIR_ENUM_DECL(qemuDomainAsyncJob)
+ 
++typedef struct _qemuDomainJobInfo qemuDomainJobInfo;
++typedef qemuDomainJobInfo *qemuDomainJobInfoPtr;
++struct _qemuDomainJobInfo {
++    virDomainJobType type;
++    unsigned long long started; /* When the async job started */
++    /* Computed values */
++    unsigned long long timeElapsed;
++    unsigned long long timeRemaining;
++    /* Raw values from QEMU */
++    qemuMonitorMigrationStatus status;
++};
++
+ struct qemuDomainJobObj {
+     virCond cond;                       /* Use to coordinate jobs */
+     qemuDomainJob active;               /* Currently running job */
+@@ -110,10 +122,8 @@ struct qemuDomainJobObj {
+     unsigned long long asyncOwner;      /* Thread which set current async job */
+     int phase;                          /* Job phase (mainly for migrations) */
+     unsigned long long mask;            /* Jobs allowed during async job */
+-    unsigned long long start;           /* When the async job started */
+     bool dump_memory_only;              /* use dump-guest-memory to do dump */
+-    qemuMonitorMigrationStatus status;  /* Raw async job progress data */
+-    virDomainJobInfo info;              /* Processed async job progress data */
++    qemuDomainJobInfoPtr current;       /* async job progress data */
+     bool asyncAbort;                    /* abort of async job requested */
+ };
+ 
+@@ -378,4 +388,16 @@ bool qemuDomainDefCheckABIStability(virQEMUDriverPtr driver,
+ bool qemuDomainAgentAvailable(qemuDomainObjPrivatePtr priv,
+                               bool reportError);
+ 
++int qemuDomainJobInfoUpdateTime(qemuDomainJobInfoPtr jobInfo)
++    ATTRIBUTE_NONNULL(1);
++int qemuDomainJobInfoToInfo(qemuDomainJobInfoPtr jobInfo,
++                            virDomainJobInfoPtr info)
++    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2);
++int qemuDomainJobInfoToParams(qemuDomainJobInfoPtr jobInfo,
++                              int *type,
++                              virTypedParameterPtr *params,
++                              int *nparams)
++    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2)
++    ATTRIBUTE_NONNULL(3) ATTRIBUTE_NONNULL(4);
++
+ #endif /* __QEMU_DOMAIN_H__ */
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 53baced..6640a29 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -2655,15 +2655,13 @@ qemuDomainGetControlInfo(virDomainPtr dom,
+     if (priv->monError) {
+         info->state = VIR_DOMAIN_CONTROL_ERROR;
+     } else if (priv->job.active) {
+-        if (!priv->monStart) {
++        if (virTimeMillisNow(&info->stateTime) < 0)
++            goto cleanup;
++        if (priv->job.current) {
+             info->state = VIR_DOMAIN_CONTROL_JOB;
+-            if (virTimeMillisNow(&info->stateTime) < 0)
+-                goto cleanup;
+-            info->stateTime -= priv->job.start;
++            info->stateTime -= priv->job.current->started;
+         } else {
+             info->state = VIR_DOMAIN_CONTROL_OCCUPIED;
+-            if (virTimeMillisNow(&info->stateTime) < 0)
+-                goto cleanup;
+             info->stateTime -= priv->monStart;
+         }
+     } else {
+@@ -3110,8 +3108,7 @@ qemuDomainSaveInternal(virQEMUDriverPtr driver, virDomainPtr dom,
+         goto endjob;
+     }
+ 
+-    memset(&priv->job.info, 0, sizeof(priv->job.info));
+-    priv->job.info.type = VIR_DOMAIN_JOB_UNBOUNDED;
++    priv->job.current->type = VIR_DOMAIN_JOB_UNBOUNDED;
+ 
+     /* Pause */
+     if (virDomainObjGetState(vm, NULL) == VIR_DOMAIN_RUNNING) {
+@@ -3460,6 +3457,7 @@ static int qemuDumpToFd(virQEMUDriverPtr driver, virDomainObjPtr vm,
+                                           fd) < 0)
+         return -1;
+ 
++    VIR_FREE(priv->job.current);
+     priv->job.dump_memory_only = true;
+ 
+     if (qemuDomainObjEnterMonitorAsync(driver, vm, asyncJob) < 0)
+@@ -11624,17 +11622,15 @@ static int qemuDomainGetJobInfo(virDomainPtr dom,
+         goto cleanup;
+ 
+     if (virDomainObjIsActive(vm)) {
+-        if (priv->job.asyncJob && !priv->job.dump_memory_only) {
+-            memcpy(info, &priv->job.info, sizeof(*info));
+-
++        if (priv->job.current) {
+             /* Refresh elapsed time again just to ensure it
+              * is fully updated. This is primarily for benefit
+              * of incoming migration which we don't currently
+              * monitor actively in the background thread
+              */
+-            if (virTimeMillisNow(&info->timeElapsed) < 0)
++            if (qemuDomainJobInfoUpdateTime(priv->job.current) < 0 ||
++                qemuDomainJobInfoToInfo(priv->job.current, info) < 0)
+                 goto cleanup;
+-            info->timeElapsed -= priv->job.start;
+         } else {
+             memset(info, 0, sizeof(*info));
+             info->type = VIR_DOMAIN_JOB_NONE;
+@@ -11663,9 +11659,6 @@ qemuDomainGetJobStats(virDomainPtr dom,
+ {
+     virDomainObjPtr vm;
+     qemuDomainObjPrivatePtr priv;
+-    virTypedParameterPtr par = NULL;
+-    int maxpar = 0;
+-    int npar = 0;
+     int ret = -1;
+ 
+     virCheckFlags(0, -1);
+@@ -11684,7 +11677,7 @@ qemuDomainGetJobStats(virDomainPtr dom,
+         goto cleanup;
+     }
+ 
+-    if (!priv->job.asyncJob || priv->job.dump_memory_only) {
++    if (!priv->job.current) {
+         *type = VIR_DOMAIN_JOB_NONE;
+         *params = NULL;
+         *nparams = 0;
+@@ -11697,102 +11690,16 @@ qemuDomainGetJobStats(virDomainPtr dom,
+      * of incoming migration which we don't currently
+      * monitor actively in the background thread
+      */
+-    if (virTimeMillisNow(&priv->job.info.timeElapsed) < 0)
++    if (qemuDomainJobInfoUpdateTime(priv->job.current) < 0 ||
++        qemuDomainJobInfoToParams(priv->job.current,
++                                  type, params, nparams) < 0)
+         goto cleanup;
+-    priv->job.info.timeElapsed -= priv->job.start;
+ 
+-    if (virTypedParamsAddULLong(&par, &npar, &maxpar,
+-                                VIR_DOMAIN_JOB_TIME_ELAPSED,
+-                                priv->job.info.timeElapsed) < 0)
+-        goto cleanup;
+-
+-    if (priv->job.info.type == VIR_DOMAIN_JOB_BOUNDED &&
+-        virTypedParamsAddULLong(&par, &npar, &maxpar,
+-                                VIR_DOMAIN_JOB_TIME_REMAINING,
+-                                priv->job.info.timeRemaining) < 0)
+-        goto cleanup;
+-
+-    if (priv->job.status.downtime_set &&
+-        virTypedParamsAddULLong(&par, &npar, &maxpar,
+-                                VIR_DOMAIN_JOB_DOWNTIME,
+-                                priv->job.status.downtime) < 0)
+-        goto cleanup;
+-
+-    if (virTypedParamsAddULLong(&par, &npar, &maxpar,
+-                                VIR_DOMAIN_JOB_DATA_TOTAL,
+-                                priv->job.info.dataTotal) < 0 ||
+-        virTypedParamsAddULLong(&par, &npar, &maxpar,
+-                                VIR_DOMAIN_JOB_DATA_PROCESSED,
+-                                priv->job.info.dataProcessed) < 0 ||
+-        virTypedParamsAddULLong(&par, &npar, &maxpar,
+-                                VIR_DOMAIN_JOB_DATA_REMAINING,
+-                                priv->job.info.dataRemaining) < 0)
+-        goto cleanup;
+-
+-    if (virTypedParamsAddULLong(&par, &npar, &maxpar,
+-                                VIR_DOMAIN_JOB_MEMORY_TOTAL,
+-                                priv->job.info.memTotal) < 0 ||
+-        virTypedParamsAddULLong(&par, &npar, &maxpar,
+-                                VIR_DOMAIN_JOB_MEMORY_PROCESSED,
+-                                priv->job.info.memProcessed) < 0 ||
+-        virTypedParamsAddULLong(&par, &npar, &maxpar,
+-                                VIR_DOMAIN_JOB_MEMORY_REMAINING,
+-                                priv->job.info.memRemaining) < 0)
+-        goto cleanup;
+-
+-    if (priv->job.status.ram_duplicate_set) {
+-        if (virTypedParamsAddULLong(&par, &npar, &maxpar,
+-                                    VIR_DOMAIN_JOB_MEMORY_CONSTANT,
+-                                    priv->job.status.ram_duplicate) < 0 ||
+-            virTypedParamsAddULLong(&par, &npar, &maxpar,
+-                                    VIR_DOMAIN_JOB_MEMORY_NORMAL,
+-                                    priv->job.status.ram_normal) < 0 ||
+-            virTypedParamsAddULLong(&par, &npar, &maxpar,
+-                                    VIR_DOMAIN_JOB_MEMORY_NORMAL_BYTES,
+-                                    priv->job.status.ram_normal_bytes) < 0)
+-            goto cleanup;
+-    }
+-
+-    if (virTypedParamsAddULLong(&par, &npar, &maxpar,
+-                                VIR_DOMAIN_JOB_DISK_TOTAL,
+-                                priv->job.info.fileTotal) < 0 ||
+-        virTypedParamsAddULLong(&par, &npar, &maxpar,
+-                                VIR_DOMAIN_JOB_DISK_PROCESSED,
+-                                priv->job.info.fileProcessed) < 0 ||
+-        virTypedParamsAddULLong(&par, &npar, &maxpar,
+-                                VIR_DOMAIN_JOB_DISK_REMAINING,
+-                                priv->job.info.fileRemaining) < 0)
+-        goto cleanup;
+-
+-    if (priv->job.status.xbzrle_set) {
+-        if (virTypedParamsAddULLong(&par, &npar, &maxpar,
+-                                    VIR_DOMAIN_JOB_COMPRESSION_CACHE,
+-                                    priv->job.status.xbzrle_cache_size) < 0 ||
+-            virTypedParamsAddULLong(&par, &npar, &maxpar,
+-                                    VIR_DOMAIN_JOB_COMPRESSION_BYTES,
+-                                    priv->job.status.xbzrle_bytes) < 0 ||
+-            virTypedParamsAddULLong(&par, &npar, &maxpar,
+-                                    VIR_DOMAIN_JOB_COMPRESSION_PAGES,
+-                                    priv->job.status.xbzrle_pages) < 0 ||
+-            virTypedParamsAddULLong(&par, &npar, &maxpar,
+-                                    VIR_DOMAIN_JOB_COMPRESSION_CACHE_MISSES,
+-                                    priv->job.status.xbzrle_cache_miss) < 0 ||
+-            virTypedParamsAddULLong(&par, &npar, &maxpar,
+-                                    VIR_DOMAIN_JOB_COMPRESSION_OVERFLOW,
+-                                    priv->job.status.xbzrle_overflow) < 0)
+-            goto cleanup;
+-    }
+-
+-    *type = priv->job.info.type;
+-    *params = par;
+-    *nparams = npar;
+     ret = 0;
+ 
+  cleanup:
+     if (vm)
+         virObjectUnlock(vm);
+-    if (ret < 0)
+-        virTypedParamsFree(par, npar);
+     return ret;
+ }
+ 
+diff --git a/src/qemu/qemu_migration.c b/src/qemu/qemu_migration.c
+index 2726512..066cc97 100644
+--- a/src/qemu/qemu_migration.c
++++ b/src/qemu/qemu_migration.c
+@@ -1723,8 +1723,9 @@ qemuMigrationUpdateJobStatus(virQEMUDriverPtr driver,
+                              qemuDomainAsyncJob asyncJob)
+ {
+     qemuDomainObjPrivatePtr priv = vm->privateData;
+-    int ret;
+     qemuMonitorMigrationStatus status;
++    qemuDomainJobInfoPtr jobInfo;
++    int ret;
+ 
+     memset(&status, 0, sizeof(status));
+ 
+@@ -1738,62 +1739,40 @@ qemuMigrationUpdateJobStatus(virQEMUDriverPtr driver,
+ 
+     qemuDomainObjExitMonitor(driver, vm);
+ 
+-    priv->job.status = status;
+-
+-    if (ret < 0 || virTimeMillisNow(&priv->job.info.timeElapsed) < 0)
++    if (ret < 0 ||
++        qemuDomainJobInfoUpdateTime(priv->job.current) < 0)
+         return -1;
+ 
+-    priv->job.info.timeElapsed -= priv->job.start;
+-
+     ret = -1;
+-    switch (priv->job.status.status) {
+-    case QEMU_MONITOR_MIGRATION_STATUS_INACTIVE:
+-        priv->job.info.type = VIR_DOMAIN_JOB_NONE;
+-        virReportError(VIR_ERR_OPERATION_FAILED,
+-                       _("%s: %s"), job, _("is not active"));
+-        break;
+-
++    jobInfo = priv->job.current;
++    switch (status.status) {
++    case QEMU_MONITOR_MIGRATION_STATUS_COMPLETED:
++        jobInfo->type = VIR_DOMAIN_JOB_COMPLETED;
++        /* fall through */
+     case QEMU_MONITOR_MIGRATION_STATUS_SETUP:
+-        ret = 0;
+-        break;
+-
+     case QEMU_MONITOR_MIGRATION_STATUS_ACTIVE:
+-        priv->job.info.fileTotal = priv->job.status.disk_total;
+-        priv->job.info.fileRemaining = priv->job.status.disk_remaining;
+-        priv->job.info.fileProcessed = priv->job.status.disk_transferred;
+-
+-        priv->job.info.memTotal = priv->job.status.ram_total;
+-        priv->job.info.memRemaining = priv->job.status.ram_remaining;
+-        priv->job.info.memProcessed = priv->job.status.ram_transferred;
+-
+-        priv->job.info.dataTotal =
+-            priv->job.status.ram_total + priv->job.status.disk_total;
+-        priv->job.info.dataRemaining =
+-            priv->job.status.ram_remaining + priv->job.status.disk_remaining;
+-        priv->job.info.dataProcessed =
+-            priv->job.status.ram_transferred +
+-            priv->job.status.disk_transferred;
+-
+         ret = 0;
+         break;
+ 
+-    case QEMU_MONITOR_MIGRATION_STATUS_COMPLETED:
+-        priv->job.info.type = VIR_DOMAIN_JOB_COMPLETED;
+-        ret = 0;
++    case QEMU_MONITOR_MIGRATION_STATUS_INACTIVE:
++        jobInfo->type = VIR_DOMAIN_JOB_NONE;
++        virReportError(VIR_ERR_OPERATION_FAILED,
++                       _("%s: %s"), job, _("is not active"));
+         break;
+ 
+     case QEMU_MONITOR_MIGRATION_STATUS_ERROR:
+-        priv->job.info.type = VIR_DOMAIN_JOB_FAILED;
++        jobInfo->type = VIR_DOMAIN_JOB_FAILED;
+         virReportError(VIR_ERR_OPERATION_FAILED,
+                        _("%s: %s"), job, _("unexpectedly failed"));
+         break;
+ 
+     case QEMU_MONITOR_MIGRATION_STATUS_CANCELLED:
+-        priv->job.info.type = VIR_DOMAIN_JOB_CANCELLED;
++        jobInfo->type = VIR_DOMAIN_JOB_CANCELLED;
+         virReportError(VIR_ERR_OPERATION_ABORTED,
+                        _("%s: %s"), job, _("canceled by client"));
+         break;
+     }
++    jobInfo->status = status;
+ 
+     return ret;
+ }
+@@ -1803,11 +1782,14 @@ qemuMigrationUpdateJobStatus(virQEMUDriverPtr driver,
+  * QEMU reports failed migration.
+  */
+ static int
+-qemuMigrationWaitForCompletion(virQEMUDriverPtr driver, virDomainObjPtr vm,
++qemuMigrationWaitForCompletion(virQEMUDriverPtr driver,
++                               virDomainObjPtr vm,
+                                qemuDomainAsyncJob asyncJob,
+-                               virConnectPtr dconn, bool abort_on_error)
++                               virConnectPtr dconn,
++                               bool abort_on_error)
+ {
+     qemuDomainObjPrivatePtr priv = vm->privateData;
++    qemuDomainJobInfoPtr jobInfo = priv->job.current;
+     const char *job;
+     int pauseReason;
+ 
+@@ -1825,9 +1807,9 @@ qemuMigrationWaitForCompletion(virQEMUDriverPtr driver, virDomainObjPtr vm,
+         job = _("job");
+     }
+ 
+-    priv->job.info.type = VIR_DOMAIN_JOB_UNBOUNDED;
++    jobInfo->type = VIR_DOMAIN_JOB_UNBOUNDED;
+ 
+-    while (priv->job.info.type == VIR_DOMAIN_JOB_UNBOUNDED) {
++    while (jobInfo->type == VIR_DOMAIN_JOB_UNBOUNDED) {
+         /* Poll every 50ms for progress & to allow cancellation */
+         struct timespec ts = { .tv_sec = 0, .tv_nsec = 50 * 1000 * 1000ull };
+ 
+@@ -1856,13 +1838,13 @@ qemuMigrationWaitForCompletion(virQEMUDriverPtr driver, virDomainObjPtr vm,
+         virObjectLock(vm);
+     }
+ 
+-    if (priv->job.info.type == VIR_DOMAIN_JOB_COMPLETED) {
++    if (jobInfo->type == VIR_DOMAIN_JOB_COMPLETED) {
+         return 0;
+-    } else if (priv->job.info.type == VIR_DOMAIN_JOB_UNBOUNDED) {
++    } else if (jobInfo->type == VIR_DOMAIN_JOB_UNBOUNDED) {
+         /* The migration was aborted by us rather than QEMU itself so let's
+          * update the job type and notify the caller to send migrate_cancel.
+          */
+-        priv->job.info.type = VIR_DOMAIN_JOB_FAILED;
++        jobInfo->type = VIR_DOMAIN_JOB_FAILED;
+         return -2;
+     } else {
+         return -1;
+@@ -4914,7 +4896,7 @@ qemuMigrationJobStart(virQEMUDriverPtr driver,
+                                           JOB_MASK(QEMU_JOB_MIGRATION_OP)));
+     }
+ 
+-    priv->job.info.type = VIR_DOMAIN_JOB_UNBOUNDED;
++    priv->job.current->type = VIR_DOMAIN_JOB_UNBOUNDED;
+ 
+     return 0;
+ }
+-- 
+2.1.0
+

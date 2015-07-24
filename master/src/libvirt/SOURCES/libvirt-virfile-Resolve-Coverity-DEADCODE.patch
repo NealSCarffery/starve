@@ -1,0 +1,52 @@
+From 19510519252e120e5eecc47029abce0b99754566 Mon Sep 17 00:00:00 2001
+Message-Id: <19510519252e120e5eecc47029abce0b99754566@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Mon, 15 Sep 2014 15:13:48 -0400
+Subject: [PATCH] virfile: Resolve Coverity DEADCODE
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1141209
+
+Adjust the parentheses in/for the waitpid loops; otherwise, Coverity
+points out:
+
+(1) Event assignment:   Assigning: "waitret" = "waitpid(pid, &status, 0) == -1"
+(2) Event between:      At condition "waitret == -1", the value of "waitret"
+                        must be between 0 and 1.
+(3) Event dead_error_condition:     The condition "waitret == -1" cannot
+                        be true.
+(4) Event dead_error_begin:     Execution cannot reach this statement:
+                        "ret = -*__errno_location();".
+
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+(cherry picked from commit 6825bdad13aff56b1388fa17582595776cf25b52)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/util/virfile.c | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/src/util/virfile.c b/src/util/virfile.c
+index b6f5e3f..fdbb7e3 100644
+--- a/src/util/virfile.c
++++ b/src/util/virfile.c
+@@ -2073,8 +2073,7 @@ virFileOpenForked(const char *path, int openflags, mode_t mode,
+     }
+ 
+     /* wait for child to complete, and retrieve its exit code */
+-    while ((waitret = waitpid(pid, &status, 0) == -1)
+-           && (errno == EINTR));
++    while ((waitret = waitpid(pid, &status, 0)) == -1 && errno == EINTR);
+     if (waitret == -1) {
+         ret = -errno;
+         virReportSystemError(errno,
+@@ -2291,7 +2290,7 @@ virDirCreate(const char *path,
+     if (pid) { /* parent */
+         /* wait for child to complete, and retrieve its exit code */
+         VIR_FREE(groups);
+-        while ((waitret = waitpid(pid, &status, 0) == -1)  && (errno == EINTR));
++        while ((waitret = waitpid(pid, &status, 0)) == -1 && errno == EINTR);
+         if (waitret == -1) {
+             ret = -errno;
+             virReportSystemError(errno,
+-- 
+2.1.0
+

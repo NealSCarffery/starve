@@ -1,0 +1,398 @@
+From 0c854d5840c6c7546628f578f5c9c3595c9eef60 Mon Sep 17 00:00:00 2001
+Message-Id: <0c854d5840c6c7546628f578f5c9c3595c9eef60@dist-git>
+From: Pavel Hrdina <phrdina@redhat.com>
+Date: Tue, 25 Nov 2014 10:53:03 +0100
+Subject: [PATCH] qemu-command: introduce new vgamem attribute for QXL video
+ device
+
+Add attribute to set vgamem_mb parameter of QXL device for QEMU. This
+value sets the size of VGA framebuffer for QXL device. Default value in
+QEMU is 8MB so reuse it also in libvirt to not break things.
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1076098
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+(cherry picked from commit 742d49fa170bf72ec1fee516fda9f6797b1124f9)
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ docs/formatdomain.html.in                          |  5 ++++-
+ docs/schemas/domaincommon.rng                      |  5 +++++
+ src/conf/domain_conf.c                             | 26 ++++++++++++++++++++++
+ src/conf/domain_conf.h                             |  1 +
+ src/qemu/qemu_command.c                            | 22 ++++++++++++++++--
+ src/qemu/qemu_domain.c                             | 19 ++++++++++++++++
+ .../qemuxml2argv-graphics-spice-compression.xml    |  4 ++--
+ .../qemuxml2argv-graphics-spice-qxl-vga.xml        |  4 ++--
+ .../qemuxml2argv-graphics-spice.xml                |  4 ++--
+ .../qemuxml2argv-pcihole64-q35.xml                 |  2 +-
+ tests/qemuxml2argvdata/qemuxml2argv-q35.xml        |  2 +-
+ .../qemuxml2argv-serial-spiceport.xml              |  2 +-
+ .../qemuxml2argv-video-qxl-device-vgamem.args      |  4 ++--
+ .../qemuxml2argv-video-qxl-sec-device-vgamem.args  |  6 ++---
+ tests/qemuxml2argvtest.c                           |  6 +++--
+ tests/qemuxml2xmloutdata/qemuxml2xmlout-q35.xml    |  2 +-
+ 16 files changed, 94 insertions(+), 20 deletions(-)
+
+diff --git a/docs/formatdomain.html.in b/docs/formatdomain.html.in
+index 4755e01..122e21f 100644
+--- a/docs/formatdomain.html.in
++++ b/docs/formatdomain.html.in
+@@ -4689,7 +4689,10 @@ qemu-kvm -net nic,model=? /dev/null
+           only and specifies the size of the primary bar, while the optional
+           attribute <code>vram</code> specifies the secondary bar size.
+           If "ram" or "vram" are not supplied a default value is used. The ram
+-          should also be rounded to power of two as vram.
++          should also be rounded to power of two as vram. There is also optional
++          attribute <code>vgamem</code> (<span class="since">since 1.2.11 (QEMU
++          only)</span>) to set the size of VGA framebuffer for fallback mode of
++          QXL device.
+         </p>
+       </dd>
+ 
+diff --git a/docs/schemas/domaincommon.rng b/docs/schemas/domaincommon.rng
+index 4e917b1..55f49c6 100644
+--- a/docs/schemas/domaincommon.rng
++++ b/docs/schemas/domaincommon.rng
+@@ -2868,6 +2868,11 @@
+                   <ref name="unsignedInt"/>
+                 </attribute>
+               </optional>
++              <optional>
++                <attribute name="vgamem">
++                  <ref name="unsignedInt"/>
++                </attribute>
++              </optional>
+             </group>
+           </choice>
+           <optional>
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index 0b0200b..09ddc25 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -10114,6 +10114,7 @@ virDomainVideoDefParseXML(xmlNodePtr node,
+     char *heads = NULL;
+     char *vram = NULL;
+     char *ram = NULL;
++    char *vgamem = NULL;
+     char *primary = NULL;
+ 
+     if (VIR_ALLOC(def) < 0)
+@@ -10127,6 +10128,7 @@ virDomainVideoDefParseXML(xmlNodePtr node,
+                 type = virXMLPropString(cur, "type");
+                 ram = virXMLPropString(cur, "ram");
+                 vram = virXMLPropString(cur, "vram");
++                vgamem = virXMLPropString(cur, "vgamem");
+                 heads = virXMLPropString(cur, "heads");
+ 
+                 if ((primary = virXMLPropString(cur, "primary")) != NULL) {
+@@ -10180,6 +10182,19 @@ virDomainVideoDefParseXML(xmlNodePtr node,
+         def->vram = virDomainVideoDefaultRAM(dom, def->type);
+     }
+ 
++    if (vgamem) {
++        if (def->type != VIR_DOMAIN_VIDEO_TYPE_QXL) {
++            virReportError(VIR_ERR_XML_ERROR, "%s",
++                           _("vgamem attribute only supported for type of qxl"));
++            goto error;
++        }
++        if (virStrToLong_ui(vgamem, NULL, 10, &def->vgamem) < 0) {
++            virReportError(VIR_ERR_XML_ERROR,
++                           _("cannot parse video vgamem '%s'"), vgamem);
++            goto error;
++        }
++    }
++
+     if (heads) {
+         if (virStrToLong_ui(heads, NULL, 10, &def->heads) < 0) {
+             virReportError(VIR_ERR_INTERNAL_ERROR,
+@@ -10196,6 +10211,7 @@ virDomainVideoDefParseXML(xmlNodePtr node,
+     VIR_FREE(type);
+     VIR_FREE(ram);
+     VIR_FREE(vram);
++    VIR_FREE(vgamem);
+     VIR_FREE(heads);
+ 
+     return def;
+@@ -10205,6 +10221,7 @@ virDomainVideoDefParseXML(xmlNodePtr node,
+     VIR_FREE(type);
+     VIR_FREE(ram);
+     VIR_FREE(vram);
++    VIR_FREE(vgamem);
+     VIR_FREE(heads);
+     return NULL;
+ }
+@@ -14528,6 +14545,13 @@ virDomainVideoDefCheckABIStability(virDomainVideoDefPtr src,
+         return false;
+     }
+ 
++    if (src->vgamem != dst->vgamem) {
++        virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                       _("Target video card vgamem %u does not match source %u"),
++                       dst->vgamem, src->vgamem);
++        return false;
++    }
++
+     if (src->heads != dst->heads) {
+         virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                        _("Target video card heads %u does not match source %u"),
+@@ -17802,6 +17826,8 @@ virDomainVideoDefFormat(virBufferPtr buf,
+         virBufferAsprintf(buf, " ram='%u'", def->ram);
+     if (def->vram)
+         virBufferAsprintf(buf, " vram='%u'", def->vram);
++    if (def->vgamem)
++        virBufferAsprintf(buf, " vgamem='%u'", def->vgamem);
+     if (def->heads)
+         virBufferAsprintf(buf, " heads='%u'", def->heads);
+     if (def->primary)
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index ae46467..04cee80 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -1284,6 +1284,7 @@ struct _virDomainVideoDef {
+     int type;
+     unsigned int ram;  /* kibibytes (multiples of 1024) */
+     unsigned int vram; /* kibibytes (multiples of 1024) */
++    unsigned int vgamem; /* kibibytes (multiples of 1024) */
+     unsigned int heads;
+     bool primary;
+     virDomainVideoAccelDefPtr accel;
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index e44f114..70730ce 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -4853,6 +4853,12 @@ qemuBuildDeviceVideoStr(virDomainDefPtr def,
+             /* QEMU accepts bytes for vram_size. */
+             virBufferAsprintf(&buf, ",vram_size=%u", video->vram * 1024);
+         }
++
++        if ((primary && virQEMUCapsGet(qemuCaps, QEMU_CAPS_QXL_VGA_VGAMEM)) ||
++            (!primary && virQEMUCapsGet(qemuCaps, QEMU_CAPS_QXL_VGAMEM))) {
++            /* QEMU accepts mebibytes for vgamem_mb. */
++            virBufferAsprintf(&buf, ",vgamem_mb=%u", video->vgamem / 1024);
++        }
+     } else if (video->vram &&
+         ((video->type == VIR_DOMAIN_VIDEO_TYPE_VGA &&
+           virQEMUCapsGet(qemuCaps, QEMU_CAPS_VGA_VGAMEM)) ||
+@@ -9139,6 +9145,7 @@ qemuBuildCommandLine(virConnectPtr conn,
+                     virQEMUCapsGet(qemuCaps, QEMU_CAPS_DEVICE)) {
+                     unsigned int ram = def->videos[0]->ram;
+                     unsigned int vram = def->videos[0]->vram;
++                    unsigned int vgamem = def->videos[0]->vgamem;
+ 
+                     if (vram > (UINT_MAX / 1024)) {
+                         virReportError(VIR_ERR_OVERFLOW,
+@@ -9163,6 +9170,12 @@ qemuBuildCommandLine(virConnectPtr conn,
+                         virCommandAddArgFormat(cmd, "%s.vram_size=%u",
+                                                dev, vram * 1024);
+                     }
++                    if (vgamem &&
++                        virQEMUCapsGet(qemuCaps, QEMU_CAPS_QXL_VGA_VGAMEM)) {
++                        virCommandAddArg(cmd, "-global");
++                        virCommandAddArgFormat(cmd, "%s.vgamem_mb=%u",
++                                               dev, vgamem / 1024);
++                    }
+                 }
+ 
+                 if (virQEMUCapsGet(qemuCaps, QEMU_CAPS_DEVICE) &&
+@@ -12169,8 +12182,13 @@ qemuParseCommandLine(virCapsPtr qemuCaps,
+         else
+             vid->type = video;
+         vid->vram = virDomainVideoDefaultRAM(def, vid->type);
+-        vid->ram = vid->type == VIR_DOMAIN_VIDEO_TYPE_QXL ?
+-                       virDomainVideoDefaultRAM(def, vid->type) : 0;
++        if (vid->type == VIR_DOMAIN_VIDEO_TYPE_QXL) {
++            vid->ram = virDomainVideoDefaultRAM(def, vid->type);
++            vid->vgamem = 8 * 1024;
++        } else {
++            vid->ram = 0;
++            vid->vgamem = 0;
++        }
+         vid->heads = 1;
+ 
+         if (VIR_APPEND_ELEMENT(def->videos, def->nvideos, vid) < 0) {
+diff --git a/src/qemu/qemu_domain.c b/src/qemu/qemu_domain.c
+index d166269..f61593b 100644
+--- a/src/qemu/qemu_domain.c
++++ b/src/qemu/qemu_domain.c
+@@ -1176,6 +1176,25 @@ qemuDomainDeviceDefPostParse(virDomainDeviceDefPtr dev,
+         goto cleanup;
+     }
+ 
++    if (dev->type == VIR_DOMAIN_DEVICE_VIDEO &&
++        dev->data.video->type == VIR_DOMAIN_VIDEO_TYPE_QXL) {
++        if (dev->data.video->vgamem) {
++            if (dev->data.video->vgamem < 1024) {
++                virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
++                               _("value for 'vgamem' must be at least 1 MiB "
++                                 "(1024 KiB)"));
++                goto cleanup;
++            }
++            if (dev->data.video->vgamem != VIR_ROUND_UP_POWER_OF_TWO(dev->data.video->vgamem)) {
++                virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
++                               _("value for 'vgamem' must be power of two"));
++                goto cleanup;
++            }
++        } else {
++            dev->data.video->vgamem = 8 * 1024;
++        }
++    }
++
+     ret = 0;
+ 
+  cleanup:
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-compression.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-compression.xml
+index 5c9683f..c13327a 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-compression.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-compression.xml
+@@ -33,10 +33,10 @@
+       <streaming mode='filter'/>
+     </graphics>
+     <video>
+-      <model type='qxl' ram='65536' vram='32768' heads='1'/>
++      <model type='qxl' ram='65536' vram='32768' vgamem='8192' heads='1'/>
+     </video>
+     <video>
+-      <model type='qxl' ram='65536' vram='32768' heads='1'/>
++      <model type='qxl' ram='65536' vram='32768' vgamem='8192' heads='1'/>
+     </video>
+     <memballoon model='virtio'/>
+   </devices>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-qxl-vga.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-qxl-vga.xml
+index acf3019..ac705f3 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-qxl-vga.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice-qxl-vga.xml
+@@ -30,10 +30,10 @@
+       <channel name='inputs' mode='insecure'/>
+     </graphics>
+     <video>
+-      <model type='qxl' ram='65536' vram='32768' heads='1'/>
++      <model type='qxl' ram='65536' vram='32768' vgamem='8192' heads='1'/>
+     </video>
+     <video>
+-      <model type='qxl' ram='65536' vram='65536' heads='1'/>
++      <model type='qxl' ram='65536' vram='65536' vgamem='8192' heads='1'/>
+     </video>
+     <memballoon model='virtio'/>
+   </devices>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice.xml b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice.xml
+index 335ce69..0c61ee5 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-graphics-spice.xml
+@@ -37,10 +37,10 @@
+       <filetransfer enable='no'/>
+     </graphics>
+     <video>
+-      <model type='qxl' ram='65536' vram='32768' heads='1'/>
++      <model type='qxl' ram='65536' vram='32768' vgamem='8192' heads='1'/>
+     </video>
+     <video>
+-      <model type='qxl' ram='65536' vram='32768' heads='1'/>
++      <model type='qxl' ram='65536' vram='32768' vgamem='8192' heads='1'/>
+     </video>
+     <memballoon model='virtio'/>
+   </devices>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-pcihole64-q35.xml b/tests/qemuxml2argvdata/qemuxml2argv-pcihole64-q35.xml
+index 168b2701..ef9cd4f 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-pcihole64-q35.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-pcihole64-q35.xml
+@@ -26,7 +26,7 @@
+     <controller type='pci' index='2' model='pci-bridge'/>
+     <controller type='sata' index='0'/>
+     <video>
+-      <model type='qxl' ram='65536' vram='32768' heads='1'/>
++      <model type='qxl' ram='65536' vram='32768' vgamem='8192' heads='1'/>
+     </video>
+     <memballoon model='none'/>
+   </devices>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-q35.xml b/tests/qemuxml2argvdata/qemuxml2argv-q35.xml
+index 02df713..05967a4 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-q35.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-q35.xml
+@@ -23,7 +23,7 @@
+     <controller type='pci' index='1' model='dmi-to-pci-bridge'/>
+     <controller type='pci' index='2' model='pci-bridge'/>
+     <video>
+-      <model type='qxl' ram='65536' vram='32768' heads='1'/>
++      <model type='qxl' ram='65536' vram='32768' vgamem='8192' heads='1'/>
+     </video>
+     <memballoon model='none'/>
+   </devices>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-serial-spiceport.xml b/tests/qemuxml2argvdata/qemuxml2argv-serial-spiceport.xml
+index 905924e..1127db1 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-serial-spiceport.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-serial-spiceport.xml
+@@ -37,7 +37,7 @@
+       <listen type='address' address='127.0.0.1'/>
+     </graphics>
+     <video>
+-      <model type='qxl' ram='65536' vram='65536' heads='1'/>
++      <model type='qxl' ram='65536' vram='65536' vgamem='8192' heads='1'/>
+     </video>
+     <memballoon model='virtio'/>
+   </devices>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-device-vgamem.args b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-device-vgamem.args
+index c9eb535..5398ffe 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-device-vgamem.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-device-vgamem.args
+@@ -2,5 +2,5 @@ LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=none \
+ /usr/bin/qemu -S -M pc -m 1024 -smp 1 -nographic -nodefaults \
+ -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -usb \
+ -hda /var/lib/libvirt/images/QEMUGuest1 \
+--device qxl-vga,id=video0,ram_size=67108864,vram_size=67108864,bus=pci.0\
+-,addr=0x2 -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
++-device qxl-vga,id=video0,ram_size=67108864,vram_size=67108864,vgamem_mb=8\
++,bus=pci.0,addr=0x2 -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-device-vgamem.args b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-device-vgamem.args
+index 5fc41bb..82aa0a9 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-device-vgamem.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-video-qxl-sec-device-vgamem.args
+@@ -2,7 +2,7 @@ LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=none \
+ /usr/bin/qemu -S -M pc -m 1024 -smp 1 -nographic -nodefaults \
+ -monitor unix:/tmp/test-monitor,server,nowait -no-acpi -boot c -usb \
+ -hda /var/lib/libvirt/images/QEMUGuest1 \
+--device qxl-vga,id=video0,ram_size=67108864,vram_size=67108864,bus=pci.0\
+-,addr=0x2 -device qxl,id=video1,ram_size=67108864,vram_size=67108864,bus=pci.0\
+-,addr=0x4 \
++-device qxl-vga,id=video0,ram_size=67108864,vram_size=67108864,vgamem_mb=8\
++,bus=pci.0,addr=0x2 -device qxl,id=video1,ram_size=67108864,vram_size=67108864\
++,vgamem_mb=8,bus=pci.0,addr=0x4 \
+ -device virtio-balloon-pci,id=balloon0,bus=pci.0,addr=0x3
+diff --git a/tests/qemuxml2argvtest.c b/tests/qemuxml2argvtest.c
+index 24e9740..967760a 100644
+--- a/tests/qemuxml2argvtest.c
++++ b/tests/qemuxml2argvtest.c
+@@ -1331,13 +1331,15 @@ mymain(void)
+     DO_TEST("video-qxl-device", QEMU_CAPS_DEVICE, QEMU_CAPS_DEVICE_QXL_VGA,
+             QEMU_CAPS_DEVICE_VIDEO_PRIMARY);
+     DO_TEST("video-qxl-device-vgamem", QEMU_CAPS_DEVICE,
+-            QEMU_CAPS_DEVICE_QXL_VGA, QEMU_CAPS_DEVICE_VIDEO_PRIMARY);
++            QEMU_CAPS_DEVICE_QXL_VGA, QEMU_CAPS_DEVICE_VIDEO_PRIMARY,
++            QEMU_CAPS_QXL_VGA_VGAMEM);
+     DO_TEST_FAILURE("video-qxl-sec-nodevice", QEMU_CAPS_VGA, QEMU_CAPS_VGA_QXL);
+     DO_TEST("video-qxl-sec-device", QEMU_CAPS_DEVICE, QEMU_CAPS_DEVICE_QXL_VGA,
+             QEMU_CAPS_DEVICE_QXL, QEMU_CAPS_DEVICE_VIDEO_PRIMARY);
+     DO_TEST("video-qxl-sec-device-vgamem", QEMU_CAPS_DEVICE,
+             QEMU_CAPS_DEVICE_QXL_VGA, QEMU_CAPS_DEVICE_QXL,
+-            QEMU_CAPS_DEVICE_VIDEO_PRIMARY);
++            QEMU_CAPS_DEVICE_VIDEO_PRIMARY, QEMU_CAPS_QXL_VGA_VGAMEM,
++            QEMU_CAPS_QXL_VGAMEM);
+ 
+     DO_TEST("virtio-rng-default", QEMU_CAPS_DEVICE, QEMU_CAPS_DEVICE_VIRTIO_RNG,
+             QEMU_CAPS_OBJECT_RNG_RANDOM);
+diff --git a/tests/qemuxml2xmloutdata/qemuxml2xmlout-q35.xml b/tests/qemuxml2xmloutdata/qemuxml2xmlout-q35.xml
+index 752c7d5..9dd4162 100644
+--- a/tests/qemuxml2xmloutdata/qemuxml2xmlout-q35.xml
++++ b/tests/qemuxml2xmloutdata/qemuxml2xmlout-q35.xml
+@@ -24,7 +24,7 @@
+     <controller type='pci' index='2' model='pci-bridge'/>
+     <controller type='sata' index='0'/>
+     <video>
+-      <model type='qxl' ram='65536' vram='32768' heads='1'/>
++      <model type='qxl' ram='65536' vram='32768' vgamem='8192' heads='1'/>
+     </video>
+     <memballoon model='none'/>
+   </devices>
+-- 
+2.1.3
+

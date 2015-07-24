@@ -1,0 +1,46 @@
+From dd17f33dab431a06a7b8b76ac39bcd04d4eca8f2 Mon Sep 17 00:00:00 2001
+Message-Id: <dd17f33dab431a06a7b8b76ac39bcd04d4eca8f2@dist-git>
+From: Luyao Huang <lhuang@redhat.com>
+Date: Tue, 13 Jan 2015 10:36:47 +0100
+Subject: [PATCH] conf: fix crash when hotplug a channel chr device with no
+ target
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1181408
+
+When we try to hotplug a channel chr device with no target, we
+will get success (which should fail) in virDomainChrDefParseXML,
+because we use goto cleanup this place and return an incomplete
+definition (with no target). In qemuDomainAttachChrDevice,
+we add it to the domain definition, but fail to remove it from
+there when chardev-add fails, because virDomainChrRemove
+matches chardevices according to the target name.
+The device definition is then freed in qemuDomainAttachDeviceFlags,
+leaving a stale pointer in the domain definition.
+
+Signed-off-by: Luyao Huang <lhuang@redhat.com>
+Signed-off-by: Ján Tomko <jtomko@redhat.com>
+(cherry picked from commit fba7173f7236c705344aa84bf9715074abdc6ea7)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/conf/domain_conf.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index bbd204a..fed87f0 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -8272,7 +8272,7 @@ virDomainChrDefParseXML(xmlXPathContextPtr ctxt,
+ 
+     if (!seenTarget &&
+         ((def->targetType = virDomainChrDefaultTargetType(def->deviceType)) < 0))
+-        goto cleanup;
++        goto error;
+ 
+     if (virDomainChrSourceDefParseXML(&def->source, node->children, flags, def,
+                                       ctxt, vmSeclabels, nvmSeclabels) < 0)
+-- 
+2.2.1
+

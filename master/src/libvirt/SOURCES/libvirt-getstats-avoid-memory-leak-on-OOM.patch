@@ -1,0 +1,67 @@
+From d5ce6b8bd0ae390ceb6311030d41889b7e6cd9f7 Mon Sep 17 00:00:00 2001
+Message-Id: <d5ce6b8bd0ae390ceb6311030d41889b7e6cd9f7@dist-git>
+From: Eric Blake <eblake@redhat.com>
+Date: Wed, 17 Dec 2014 03:08:59 -0700
+Subject: [PATCH] getstats: avoid memory leak on OOM
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1041569
+
+qemuDomainGetStatsBlock() could leak a stats hash table if it
+encountered OOM while populating the virTypedParameters.
+Oddly, the fix doesn't even touch qemuDomainGetStatsBlock :)
+
+* src/qemu/qemu_driver.c (QEMU_ADD_COUNT_PARAM)
+(QEMU_ADD_NAME_PARAM): Don't return early.
+(qemuDomainGetStatsInterface): Adjust caller.
+
+Signed-off-by: Eric Blake <eblake@redhat.com>
+(cherry picked from commit 2f61602edbc96309116d7c8eff61e6a37ff4d253)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 4498194..33a93f1 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -17895,7 +17895,7 @@ do { \
+                               maxparams, \
+                               param_name, \
+                               count) < 0) \
+-        return -1; \
++        goto cleanup; \
+ } while (0)
+ 
+ #define QEMU_ADD_NAME_PARAM(record, maxparams, type, num, name) \
+@@ -17908,7 +17908,7 @@ do { \
+                                 maxparams, \
+                                 param_name, \
+                                 name) < 0) \
+-        return -1; \
++        goto cleanup; \
+ } while (0)
+ 
+ #define QEMU_ADD_NET_PARAM(record, maxparams, num, name, value) \
+@@ -17933,6 +17933,7 @@ qemuDomainGetStatsInterface(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
+ {
+     size_t i;
+     struct _virDomainInterfaceStats tmp;
++    int ret = -1;
+ 
+     if (!virDomainObjIsActive(dom))
+         return 0;
+@@ -17972,7 +17973,9 @@ qemuDomainGetStatsInterface(virQEMUDriverPtr driver ATTRIBUTE_UNUSED,
+                            "tx.drop", tmp.tx_drop);
+     }
+ 
+-    return 0;
++    ret = 0;
++ cleanup:
++    return ret;
+ }
+ 
+ #undef QEMU_ADD_NET_PARAM
+-- 
+2.2.0
+

@@ -1,0 +1,76 @@
+From d04153f6a23a16505e9263cc0f4e13c32a8db8d2 Mon Sep 17 00:00:00 2001
+Message-Id: <d04153f6a23a16505e9263cc0f4e13c32a8db8d2@dist-git>
+From: Martin Kletzander <mkletzan@redhat.com>
+Date: Thu, 15 Jan 2015 15:03:46 +0100
+Subject: [PATCH] qemu: Remove unnecessary qemuSetupCgroupPostInit function
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1161540
+
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+(cherry picked from commit f801a81208e113782c737f70171cbfe3e1e6f7dd)
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_cgroup.c  | 9 +--------
+ src/qemu/qemu_cgroup.h  | 4 ++--
+ src/qemu/qemu_process.c | 2 +-
+ 3 files changed, 4 insertions(+), 11 deletions(-)
+
+diff --git a/src/qemu/qemu_cgroup.c b/src/qemu/qemu_cgroup.c
+index 7609c0f..ac12f43 100644
+--- a/src/qemu/qemu_cgroup.c
++++ b/src/qemu/qemu_cgroup.c
+@@ -607,7 +607,7 @@ qemuSetupDevicesCgroup(virQEMUDriverPtr driver,
+ }
+ 
+ 
+-static int
++int
+ qemuSetupCpusetMems(virDomainObjPtr vm,
+                     virBitmapPtr nodemask)
+ {
+@@ -863,13 +863,6 @@ qemuSetupCgroup(virQEMUDriverPtr driver,
+ }
+ 
+ int
+-qemuSetupCgroupPostInit(virDomainObjPtr vm,
+-                        virBitmapPtr nodemask)
+-{
+-    return qemuSetupCpusetMems(vm, nodemask);
+-}
+-
+-int
+ qemuSetupCgroupVcpuBW(virCgroupPtr cgroup,
+                       unsigned long long period,
+                       long long quota)
+diff --git a/src/qemu/qemu_cgroup.h b/src/qemu/qemu_cgroup.h
+index 8a2c723..2ae16df 100644
+--- a/src/qemu/qemu_cgroup.h
++++ b/src/qemu/qemu_cgroup.h
+@@ -47,8 +47,8 @@ int qemuConnectCgroup(virQEMUDriverPtr driver,
+ int qemuSetupCgroup(virQEMUDriverPtr driver,
+                     virDomainObjPtr vm,
+                     virBitmapPtr nodemask);
+-int qemuSetupCgroupPostInit(virDomainObjPtr vm,
+-                            virBitmapPtr nodemask);
++int qemuSetupCpusetMems(virDomainObjPtr vm,
++                        virBitmapPtr nodemask);
+ int qemuSetupCgroupVcpuBW(virCgroupPtr cgroup,
+                           unsigned long long period,
+                           long long quota);
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index d965938..c055eb7 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -4796,7 +4796,7 @@ int qemuProcessStart(virConnectPtr conn,
+         goto cleanup;
+ 
+     VIR_DEBUG("Setting up post-init cgroup restrictions");
+-    if (qemuSetupCgroupPostInit(vm, nodemask) < 0)
++    if (qemuSetupCpusetMems(vm, nodemask) < 0)
+         goto cleanup;
+ 
+     VIR_DEBUG("Detecting VCPU PIDs");
+-- 
+2.2.1
+

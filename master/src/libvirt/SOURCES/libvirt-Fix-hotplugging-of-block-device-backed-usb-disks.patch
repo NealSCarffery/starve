@@ -1,0 +1,58 @@
+From 3d445c1a3b55a3b95d8f5c782bfe01335cd66145 Mon Sep 17 00:00:00 2001
+Message-Id: <3d445c1a3b55a3b95d8f5c782bfe01335cd66145@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Thu, 18 Dec 2014 13:20:53 +0100
+Subject: [PATCH] Fix hotplugging of block device-backed usb disks
+
+Commit ca91ba7 moved qemuSetupDiskCgroup into the qemuDomainPrepareDisk
+helper, but failed to call it for usb disks.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1175668`
+(cherry picked from commit 1cddf0001f5f1af10791181229148f36fd6d94c5)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_hotplug.c | 18 ++----------------
+ 1 file changed, 2 insertions(+), 16 deletions(-)
+
+diff --git a/src/qemu/qemu_hotplug.c b/src/qemu/qemu_hotplug.c
+index 84d2218..819b4fd 100644
+--- a/src/qemu/qemu_hotplug.c
++++ b/src/qemu/qemu_hotplug.c
+@@ -679,17 +679,9 @@ qemuDomainAttachUSBMassstorageDevice(virConnectPtr conn,
+         }
+     }
+ 
+-    if (virDomainLockDiskAttach(driver->lockManager, cfg->uri,
+-                                vm, disk) < 0)
++    if (qemuDomainPrepareDisk(driver, vm, disk, NULL, false) < 0)
+         goto cleanup;
+ 
+-    if (virSecurityManagerSetDiskLabel(driver->securityManager,
+-                                       vm->def, disk) < 0) {
+-        if (virDomainLockDiskDetach(driver->lockManager, vm, disk) < 0)
+-            VIR_WARN("Unable to release lock on %s", src);
+-        goto cleanup;
+-    }
+-
+     /* XXX not correct once we allow attaching a USB CDROM */
+     if (!src) {
+         virReportError(VIR_ERR_INTERNAL_ERROR,
+@@ -740,13 +732,7 @@ qemuDomainAttachUSBMassstorageDevice(virConnectPtr conn,
+     return ret;
+ 
+  error:
+-    if (virSecurityManagerRestoreDiskLabel(driver->securityManager,
+-                                           vm->def, disk) < 0)
+-        VIR_WARN("Unable to restore security label on %s", src);
+-
+-    if (virDomainLockDiskDetach(driver->lockManager, vm, disk) < 0)
+-        VIR_WARN("Unable to release lock on %s", src);
+-
++    ignore_value(qemuDomainPrepareDisk(driver, vm, disk, NULL, true));
+     goto cleanup;
+ }
+ 
+-- 
+2.2.1
+

@@ -1,0 +1,69 @@
+From 7567a5cad149ac0ea17e0bfc32f07ada642cd921 Mon Sep 17 00:00:00 2001
+Message-Id: <7567a5cad149ac0ea17e0bfc32f07ada642cd921@dist-git>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Wed, 26 Nov 2014 16:24:27 +0100
+Subject: [PATCH] network: Fix upgrade from libvirt older than 1.2.4
+
+Starting from libvirt-1.2.4, network state XML files moved to another
+directory (see commit b9e95491) and libvirt automatically migrates the
+network state files to a new location. However, the code used
+dirent.d_type which is not supported by all filesystems. Thus, when
+libvirt was upgraded on a host which used such filesystem, network state
+XMLs were not properly moved and running networks disappeared from
+libvirt.
+
+This patch falls back to lstat() whenever dirent.d_type is DT_UNKNOWN to
+fix this issue.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1167145
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+(cherry picked from commit dabb23e6d95dc7d81e7fb2a3f6c942167f4c45af)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/network/bridge_driver.c | 23 +++++++++++++++++++++--
+ 1 file changed, 21 insertions(+), 2 deletions(-)
+
+diff --git a/src/network/bridge_driver.c b/src/network/bridge_driver.c
+index 9746099..488409d 100644
+--- a/src/network/bridge_driver.c
++++ b/src/network/bridge_driver.c
+@@ -508,15 +508,34 @@ networkMigrateStateFiles(virNetworkDriverStatePtr driver)
+     }
+ 
+     while ((direrr = virDirRead(dir, &entry, oldStateDir)) > 0) {
++        if (entry->d_type != DT_UNKNOWN &&
++            entry->d_type != DT_REG)
++            continue;
+ 
+-        if (entry->d_type != DT_REG ||
+-            STREQ(entry->d_name, ".") ||
++        if (STREQ(entry->d_name, ".") ||
+             STREQ(entry->d_name, ".."))
+             continue;
+ 
+         if (virAsprintf(&oldPath, "%s/%s",
+                         oldStateDir, entry->d_name) < 0)
+             goto cleanup;
++
++        if (entry->d_type == DT_UNKNOWN) {
++            struct stat st;
++
++            if (lstat(oldPath, &st) < 0) {
++                virReportSystemError(errno,
++                                     _("failed to stat network status file '%s'"),
++                                     oldPath);
++                goto cleanup;
++            }
++
++            if (!S_ISREG(st.st_mode)) {
++                VIR_FREE(oldPath);
++                continue;
++            }
++        }
++
+         if (virFileReadAll(oldPath, 1024*1024, &contents) < 0)
+             goto cleanup;
+ 
+-- 
+2.1.3
+

@@ -1,0 +1,38 @@
+From cb3fb90aa7a48ef661aeefc858bf1f8ff163f8de Mon Sep 17 00:00:00 2001
+Message-Id: <cb3fb90aa7a48ef661aeefc858bf1f8ff163f8de@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Tue, 28 Oct 2014 22:28:43 -0400
+Subject: [PATCH] virsh: Adjust the text in man page regarding qemu-attach
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1141621
+
+Slight adjustment to the qemu-attach man page to note device hotplug
+and hot unplug may not work and that the environment should be considered
+read-only
+
+(cherry picked from commit c4056d2b45d91097f2d947165ef1fa5142311234)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ tools/virsh.pod | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/tools/virsh.pod b/tools/virsh.pod
+index 7d4e497..0c25d59 100644
+--- a/tools/virsh.pod
++++ b/tools/virsh.pod
+@@ -3667,8 +3667,9 @@ using the UNIX driver. Ideally the process will also have had the
+ 
+ Not all functions of libvirt are expected to work reliably after
+ attaching to an externally launched QEMU process. There may be
+-issues with the guest ABI changing upon migration, and hotunplug
+-may not work.
++issues with the guest ABI changing upon migration and device hotplug
++or hotunplug may not work. The attached environment should be considered
++primarily read-only.
+ 
+ =item B<qemu-monitor-command> I<domain> { [I<--hmp>] | [I<--pretty>] }
+ I<command>...
+-- 
+2.1.3
+

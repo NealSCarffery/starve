@@ -1,0 +1,280 @@
+From 5fe7a27d876a94c77d23b5e846f8af58756125c3 Mon Sep 17 00:00:00 2001
+Message-Id: <5fe7a27d876a94c77d23b5e846f8af58756125c3@dist-git>
+From: Laine Stump <laine@laine.org>
+Date: Mon, 3 Nov 2014 10:00:20 -0500
+Subject: [PATCH] qemu: setup infrastructure to handle NIC_RX_FILTER_CHANGED
+ event
+
+https://bugzilla.redhat.com/show_bug.cgi?id=848199
+
+NIC_RX_FILTER_CHANGED is sent by qemu any time a NIC driver in the
+guest modified the NIC's RX Filter (for example, if the MAC address of
+the NIC is changed by the guest).
+
+This patch doesn't do anything useful with that event; it just sets up
+all the plumbing to get news of the event into a worker thread with
+all proper locking/reference counting, and provide an easy place to
+add in desired functionality.
+
+See src/qemu/EVENTHANDLERS.txt for information/instructions on adding
+a libvirt-internal handler for a qemu event (using
+NIC_RX_FILTER_CHANGED as an example).
+
+(cherry picked from commit b6bdda458ab08353dc2b664d026de6322c7db680)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_domain.h       |  1 +
+ src/qemu/qemu_driver.c       | 55 ++++++++++++++++++++++++++++++++++++++++++++
+ src/qemu/qemu_monitor.c      | 13 +++++++++++
+ src/qemu/qemu_monitor.h      |  7 ++++++
+ src/qemu/qemu_monitor_json.c | 17 ++++++++++++++
+ src/qemu/qemu_process.c      | 42 +++++++++++++++++++++++++++++++++
+ 6 files changed, 135 insertions(+)
+
+diff --git a/src/qemu/qemu_domain.h b/src/qemu/qemu_domain.h
+index 845d3c7..ad45a66 100644
+--- a/src/qemu/qemu_domain.h
++++ b/src/qemu/qemu_domain.h
+@@ -195,6 +195,7 @@ typedef enum {
+     QEMU_PROCESS_EVENT_WATCHDOG = 0,
+     QEMU_PROCESS_EVENT_GUESTPANIC,
+     QEMU_PROCESS_EVENT_DEVICE_DELETED,
++    QEMU_PROCESS_EVENT_NIC_RX_FILTER_CHANGED,
+ 
+     QEMU_PROCESS_EVENT_LAST
+ } qemuProcessEventType;
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index c158f64..29deb76 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -4147,6 +4147,58 @@ processDeviceDeletedEvent(virQEMUDriverPtr driver,
+ }
+ 
+ 
++static void
++processNicRxFilterChangedEvent(virQEMUDriverPtr driver,
++                               virDomainObjPtr vm,
++                               char *devAlias)
++{
++    virQEMUDriverConfigPtr cfg = virQEMUDriverGetConfig(driver);
++    virDomainDeviceDef dev;
++    virDomainNetDefPtr def;
++
++    VIR_DEBUG("Received NIC_RX_FILTER_CHANGED event for device %s "
++              "from domain %p %s",
++              devAlias, vm, vm->def->name);
++
++    if (qemuDomainObjBeginJob(driver, vm, QEMU_JOB_MODIFY) < 0)
++        goto cleanup;
++
++    if (!virDomainObjIsActive(vm)) {
++        VIR_DEBUG("Domain is not running");
++        goto endjob;
++    }
++
++    if (virDomainDefFindDevice(vm->def, devAlias, &dev, true) < 0) {
++        VIR_WARN("NIC_RX_FILTER_CHANGED event received for "
++                 "non-existent device %s in domain %s",
++                 devAlias, vm->def->name);
++        goto endjob;
++    }
++    if (dev.type != VIR_DOMAIN_DEVICE_NET) {
++        VIR_WARN("NIC_RX_FILTER_CHANGED event received for "
++                 "non-network device %s in domain %s",
++                 devAlias, vm->def->name);
++        goto endjob;
++    }
++    def = dev.data.net;
++
++    /* handle the event - send query-rx-filter and respond to it. */
++
++    VIR_DEBUG("process NIC_RX_FILTER_CHANGED event for network "
++              "device %s in domain %s", def->info.alias, vm->def->name);
++
++ endjob:
++    /* We had an extra reference to vm before starting a new job so ending the
++     * job is guaranteed not to remove the last reference.
++     */
++    ignore_value(qemuDomainObjEndJob(driver, vm));
++
++ cleanup:
++    VIR_FREE(devAlias);
++    virObjectUnref(cfg);
++}
++
++
+ static void qemuProcessEventHandler(void *data, void *opaque)
+ {
+     struct qemuProcessEvent *processEvent = data;
+@@ -4167,6 +4219,9 @@ static void qemuProcessEventHandler(void *data, void *opaque)
+     case QEMU_PROCESS_EVENT_DEVICE_DELETED:
+         processDeviceDeletedEvent(driver, vm, processEvent->data);
+         break;
++    case QEMU_PROCESS_EVENT_NIC_RX_FILTER_CHANGED:
++        processNicRxFilterChangedEvent(driver, vm, processEvent->data);
++        break;
+     case QEMU_PROCESS_EVENT_LAST:
+         break;
+     }
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index be8d60b..b516880 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -1391,6 +1391,19 @@ qemuMonitorEmitDeviceDeleted(qemuMonitorPtr mon,
+ }
+ 
+ 
++int
++qemuMonitorEmitNicRxFilterChanged(qemuMonitorPtr mon,
++                                  const char *devAlias)
++{
++    int ret = -1;
++    VIR_DEBUG("mon=%p", mon);
++
++    QEMU_MONITOR_CALLBACK(mon, ret, domainNicRxFilterChanged, mon->vm, devAlias);
++
++    return ret;
++}
++
++
+ int qemuMonitorSetCapabilities(qemuMonitorPtr mon)
+ {
+     int ret;
+diff --git a/src/qemu/qemu_monitor.h b/src/qemu/qemu_monitor.h
+index cfcaf30..69f41bf 100644
+--- a/src/qemu/qemu_monitor.h
++++ b/src/qemu/qemu_monitor.h
+@@ -171,6 +171,10 @@ typedef int (*qemuMonitorDomainDeviceDeletedCallback)(qemuMonitorPtr mon,
+                                                       virDomainObjPtr vm,
+                                                       const char *devAlias,
+                                                       void *opaque);
++typedef int (*qemuMonitorDomainNicRxFilterChangedCallback)(qemuMonitorPtr mon,
++                                                           virDomainObjPtr vm,
++                                                           const char *devAlias,
++                                                           void *opaque);
+ 
+ typedef struct _qemuMonitorCallbacks qemuMonitorCallbacks;
+ typedef qemuMonitorCallbacks *qemuMonitorCallbacksPtr;
+@@ -197,6 +201,7 @@ struct _qemuMonitorCallbacks {
+     qemuMonitorDomainPMSuspendDiskCallback domainPMSuspendDisk;
+     qemuMonitorDomainGuestPanicCallback domainGuestPanic;
+     qemuMonitorDomainDeviceDeletedCallback domainDeviceDeleted;
++    qemuMonitorDomainNicRxFilterChangedCallback domainNicRxFilterChanged;
+ };
+ 
+ char *qemuMonitorEscapeArg(const char *in);
+@@ -285,6 +290,8 @@ int qemuMonitorEmitPMSuspendDisk(qemuMonitorPtr mon);
+ int qemuMonitorEmitGuestPanic(qemuMonitorPtr mon);
+ int qemuMonitorEmitDeviceDeleted(qemuMonitorPtr mon,
+                                  const char *devAlias);
++int qemuMonitorEmitNicRxFilterChanged(qemuMonitorPtr mon,
++                                      const char *devAlias);
+ 
+ int qemuMonitorStartCPUs(qemuMonitorPtr mon,
+                          virConnectPtr conn);
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index 7a6d1e1..4fb1d81 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -81,6 +81,7 @@ static void qemuMonitorJSONHandleBalloonChange(qemuMonitorPtr mon, virJSONValueP
+ static void qemuMonitorJSONHandlePMSuspendDisk(qemuMonitorPtr mon, virJSONValuePtr data);
+ static void qemuMonitorJSONHandleGuestPanic(qemuMonitorPtr mon, virJSONValuePtr data);
+ static void qemuMonitorJSONHandleDeviceDeleted(qemuMonitorPtr mon, virJSONValuePtr data);
++static void qemuMonitorJSONHandleNicRxFilterChanged(qemuMonitorPtr mon, virJSONValuePtr data);
+ 
+ typedef struct {
+     const char *type;
+@@ -96,6 +97,7 @@ static qemuEventHandler eventHandlers[] = {
+     { "DEVICE_DELETED", qemuMonitorJSONHandleDeviceDeleted, },
+     { "DEVICE_TRAY_MOVED", qemuMonitorJSONHandleTrayChange, },
+     { "GUEST_PANICKED", qemuMonitorJSONHandleGuestPanic, },
++    { "NIC_RX_FILTER_CHANGED", qemuMonitorJSONHandleNicRxFilterChanged, },
+     { "POWERDOWN", qemuMonitorJSONHandlePowerdown, },
+     { "RESET", qemuMonitorJSONHandleReset, },
+     { "RESUME", qemuMonitorJSONHandleResume, },
+@@ -1021,6 +1023,21 @@ qemuMonitorJSONHandleDeviceDeleted(qemuMonitorPtr mon, virJSONValuePtr data)
+     qemuMonitorEmitDeviceDeleted(mon, device);
+ }
+ 
++
++static void
++qemuMonitorJSONHandleNicRxFilterChanged(qemuMonitorPtr mon, virJSONValuePtr data)
++{
++    const char *name;
++
++    if (!(name = virJSONValueObjectGetString(data, "name"))) {
++        VIR_WARN("missing device in NIC_RX_FILTER_CHANGED event");
++        return;
++    }
++
++    qemuMonitorEmitNicRxFilterChanged(mon, name);
++}
++
++
+ int
+ qemuMonitorJSONHumanCommandWithFd(qemuMonitorPtr mon,
+                                   const char *cmd_str,
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index e711b5f..7101311 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -1488,6 +1488,47 @@ qemuProcessHandleDeviceDeleted(qemuMonitorPtr mon ATTRIBUTE_UNUSED,
+ }
+ 
+ 
++static int
++qemuProcessHandleNicRxFilterChanged(qemuMonitorPtr mon ATTRIBUTE_UNUSED,
++                                    virDomainObjPtr vm,
++                                    const char *devAlias,
++                                    void *opaque)
++{
++    virQEMUDriverPtr driver = opaque;
++    struct qemuProcessEvent *processEvent = NULL;
++    char *data;
++
++    virObjectLock(vm);
++
++    VIR_DEBUG("Device %s RX Filter changed in domain %p %s",
++              devAlias, vm, vm->def->name);
++
++    if (VIR_ALLOC(processEvent) < 0)
++        goto error;
++
++    processEvent->eventType = QEMU_PROCESS_EVENT_NIC_RX_FILTER_CHANGED;
++    if (VIR_STRDUP(data, devAlias) < 0)
++        goto error;
++    processEvent->data = data;
++    processEvent->vm = vm;
++
++    virObjectRef(vm);
++    if (virThreadPoolSendJob(driver->workerPool, 0, processEvent) < 0) {
++        ignore_value(virObjectUnref(vm));
++        goto error;
++    }
++
++ cleanup:
++    virObjectUnlock(vm);
++    return 0;
++ error:
++    if (processEvent)
++        VIR_FREE(processEvent->data);
++    VIR_FREE(processEvent);
++    goto cleanup;
++}
++
++
+ static qemuMonitorCallbacks monitorCallbacks = {
+     .eofNotify = qemuProcessHandleMonitorEOF,
+     .errorNotify = qemuProcessHandleMonitorError,
+@@ -1509,6 +1550,7 @@ static qemuMonitorCallbacks monitorCallbacks = {
+     .domainPMSuspendDisk = qemuProcessHandlePMSuspendDisk,
+     .domainGuestPanic = qemuProcessHandleGuestPanic,
+     .domainDeviceDeleted = qemuProcessHandleDeviceDeleted,
++    .domainNicRxFilterChanged = qemuProcessHandleNicRxFilterChanged,
+ };
+ 
+ static int
+-- 
+2.1.3
+

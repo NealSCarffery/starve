@@ -1,0 +1,99 @@
+From 32637190ee1024b114635d1b9fd42a9367f7ad2d Mon Sep 17 00:00:00 2001
+Message-Id: <32637190ee1024b114635d1b9fd42a9367f7ad2d@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Fri, 21 Nov 2014 15:04:10 +0100
+Subject: [PATCH] storage: Allow parsing of RBD backing strings when building
+ backing chain
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1164528
+
+As we now have a common function to parse backing store string for RBD
+backing store we can reuse it in the backing store walker so that we
+don't fail on files backed by RBD storage.
+
+This patch also adds a few tests to verify that the parsing works as
+expected.
+
+(cherry picked from commit 930b77598b4a8481ad98c786e77e372dc6b803cc)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/util/virstoragefile.c |  6 +++++-
+ tests/virstoragetest.c    | 43 +++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 48 insertions(+), 1 deletion(-)
+
+diff --git a/src/util/virstoragefile.c b/src/util/virstoragefile.c
+index 94fb3cd..ba4d830 100644
+--- a/src/util/virstoragefile.c
++++ b/src/util/virstoragefile.c
+@@ -2437,8 +2437,12 @@ virStorageSourceParseBackingColon(virStorageSourcePtr src,
+             goto cleanup;
+         break;
+ 
+-    case VIR_STORAGE_NET_PROTOCOL_SHEEPDOG:
+     case VIR_STORAGE_NET_PROTOCOL_RBD:
++        if (virStorageSourceParseRBDColonString(path, src) < 0)
++            goto cleanup;
++        break;
++
++    case VIR_STORAGE_NET_PROTOCOL_SHEEPDOG:
+     case VIR_STORAGE_NET_PROTOCOL_LAST:
+     case VIR_STORAGE_NET_PROTOCOL_NONE:
+         virReportError(VIR_ERR_INTERNAL_ERROR,
+diff --git a/tests/virstoragetest.c b/tests/virstoragetest.c
+index ee6f576..2601edc 100644
+--- a/tests/virstoragetest.c
++++ b/tests/virstoragetest.c
+@@ -972,6 +972,49 @@ mymain(void)
+                (&wrap, &qcow2), EXP_WARN,
+                (&wrap, &qcow2), ALLOW_PROBE | EXP_WARN);
+ 
++    /* Rewrite qcow2 to use an rbd: protocol as backend */
++    virCommandFree(cmd);
++    cmd = virCommandNewArgList(qemuimg, "rebase", "-u", "-f", "qcow2",
++                               "-F", "raw", "-b", "rbd:testshare",
++                               "qcow2", NULL);
++    if (virCommandRun(cmd, NULL) < 0)
++        ret = -1;
++    qcow2.expBackingStoreRaw = "rbd:testshare";
++
++    /* Qcow2 file with backing protocol instead of file */
++    testFileData rbd1 = {
++        .path = "testshare",
++        .type = VIR_STORAGE_TYPE_NETWORK,
++        .format = VIR_STORAGE_FILE_RAW,
++        .protocol = VIR_STORAGE_NET_PROTOCOL_RBD,
++    };
++    TEST_CHAIN(19, absqcow2, VIR_STORAGE_FILE_QCOW2,
++               (&qcow2, &rbd1), EXP_PASS,
++               (&qcow2, &rbd1), ALLOW_PROBE | EXP_PASS);
++
++    /* Rewrite qcow2 to use an rbd: protocol as backend */
++    virCommandFree(cmd);
++    cmd = virCommandNewArgList(qemuimg, "rebase", "-u", "-f", "qcow2",
++                               "-F", "raw", "-b", "rbd:testshare:id=asdf:mon_host=example.com",
++                               "qcow2", NULL);
++    if (virCommandRun(cmd, NULL) < 0)
++        ret = -1;
++    qcow2.expBackingStoreRaw = "rbd:testshare:id=asdf:mon_host=example.com";
++
++    /* Qcow2 file with backing protocol instead of file */
++    testFileData rbd2 = {
++        .path = "testshare",
++        .type = VIR_STORAGE_TYPE_NETWORK,
++        .format = VIR_STORAGE_FILE_RAW,
++        .protocol = VIR_STORAGE_NET_PROTOCOL_RBD,
++        .secret = "asdf",
++        .hostname = "example.com",
++    };
++    TEST_CHAIN(20, absqcow2, VIR_STORAGE_FILE_QCOW2,
++               (&qcow2, &rbd2), EXP_PASS,
++               (&qcow2, &rbd2), ALLOW_PROBE | EXP_PASS);
++
++
+     /* Rewrite wrap and qcow2 back to 3-deep chain, absolute backing */
+     virCommandFree(cmd);
+     cmd = virCommandNewArgList(qemuimg, "rebase", "-u", "-f", "qcow2",
+-- 
+2.1.3
+

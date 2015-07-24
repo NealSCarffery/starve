@@ -1,0 +1,299 @@
+From d5d5ba920d29bfdaff0f92c4eaa12620daac4b5f Mon Sep 17 00:00:00 2001
+Message-Id: <d5d5ba920d29bfdaff0f92c4eaa12620daac4b5f@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Thu, 18 Sep 2014 09:29:50 -0400
+Subject: [PATCH] qemu: Issue query-iothreads and to get list of active
+ IOThreads
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1101574
+
+Generate infrastructure and test to handle fetching the QMP
+IOThreads data.
+
+(cherry picked from commit 4cf6bfab4cb9e47478e5e36f65bb3f3b9dd16fb8)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_monitor.c      | 41 ++++++++++++++++++++
+ src/qemu/qemu_monitor.h      | 12 ++++++
+ src/qemu/qemu_monitor_json.c | 91 ++++++++++++++++++++++++++++++++++++++++++++
+ src/qemu/qemu_monitor_json.h |  4 ++
+ tests/qemumonitorjsontest.c  | 71 ++++++++++++++++++++++++++++++++++
+ 5 files changed, 219 insertions(+)
+
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index 78f2a20..00f1d38 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -4088,3 +4088,44 @@ qemuMonitorRTCResetReinjection(qemuMonitorPtr mon)
+ 
+     return qemuMonitorJSONRTCResetReinjection(mon);
+ }
++
++/**
++ * qemuMonitorGetIOThreads:
++ * @mon: Pointer to the monitor
++ * @iothreads: Location to return array of IOThreadInfo data
++ *
++ * Issue query-iothreads command.
++ * Retrieve the list of iothreads defined/running for the machine
++ *
++ * Returns count of IOThreadInfo structures on success
++ *        -1 on error.
++ */
++int
++qemuMonitorGetIOThreads(qemuMonitorPtr mon,
++                        qemuMonitorIOThreadsInfoPtr **iothreads)
++{
++
++    VIR_DEBUG("mon=%p iothreads=%p", mon, iothreads);
++
++    if (!mon) {
++        virReportError(VIR_ERR_INVALID_ARG, "%s",
++                       _("monitor must not be NULL"));
++        return -1;
++    }
++
++    if (!mon->json) {
++        virReportError(VIR_ERR_OPERATION_UNSUPPORTED, "%s",
++                       _("JSON monitor is required"));
++        return -1;
++    }
++
++    return qemuMonitorJSONGetIOThreads(mon, iothreads);
++}
++
++void qemuMonitorIOThreadsInfoFree(qemuMonitorIOThreadsInfoPtr iothread)
++{
++    if (!iothread)
++        return;
++    VIR_FREE(iothread->name);
++    VIR_FREE(iothread);
++}
+diff --git a/src/qemu/qemu_monitor.h b/src/qemu/qemu_monitor.h
+index ecba7e1..15aa1d4 100644
+--- a/src/qemu/qemu_monitor.h
++++ b/src/qemu/qemu_monitor.h
+@@ -793,6 +793,18 @@ int qemuMonitorGetGuestCPU(qemuMonitorPtr mon,
+ 
+ int qemuMonitorRTCResetReinjection(qemuMonitorPtr mon);
+ 
++typedef struct _qemuMonitorIOThreadsInfo qemuMonitorIOThreadsInfo;
++typedef qemuMonitorIOThreadsInfo *qemuMonitorIOThreadsInfoPtr;
++
++struct _qemuMonitorIOThreadsInfo {
++    char *name;
++    int thread_id;
++};
++int qemuMonitorGetIOThreads(qemuMonitorPtr mon,
++                            qemuMonitorIOThreadsInfoPtr **iothreads);
++
++void qemuMonitorIOThreadsInfoFree(qemuMonitorIOThreadsInfoPtr iothread);
++
+ /**
+  * When running two dd process and using <> redirection, we need a
+  * shell that will not truncate files.  These two strings serve that
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index 106d807..53e324e 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -5974,3 +5974,94 @@ qemuMonitorJSONRTCResetReinjection(qemuMonitorPtr mon)
+     virJSONValueFree(reply);
+     return ret;
+ }
++
++/**
++ * Query and parse returned array of data such as:
++ *
++ *  {u'return': [{u'id': u'iothread1', u'thread-id': 30992}, \
++ *               {u'id': u'iothread2', u'thread-id': 30993}]}
++ */
++int
++qemuMonitorJSONGetIOThreads(qemuMonitorPtr mon,
++                            qemuMonitorIOThreadsInfoPtr **iothreads)
++{
++    int ret = -1;
++    virJSONValuePtr cmd;
++    virJSONValuePtr reply = NULL;
++    virJSONValuePtr data;
++    qemuMonitorIOThreadsInfoPtr *infolist = NULL;
++    int n = 0;
++    size_t i;
++
++    *iothreads = NULL;
++
++    if (!(cmd = qemuMonitorJSONMakeCommand("query-iothreads", NULL)))
++        return ret;
++
++    ret = qemuMonitorJSONCommand(mon, cmd, &reply);
++
++    if (ret == 0)
++        ret = qemuMonitorJSONCheckError(cmd, reply);
++
++    if (ret < 0)
++        goto cleanup;
++
++    ret = -1;
++
++    if (!(data = virJSONValueObjectGet(reply, "return"))) {
++        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                       _("query-iothreads reply was missing return data"));
++        goto cleanup;
++    }
++
++    if ((n = virJSONValueArraySize(data)) < 0) {
++        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                       _("query-iothreads reply data was not an array"));
++        goto cleanup;
++    }
++
++    /* null-terminated list */
++    if (VIR_ALLOC_N(infolist, n + 1) < 0)
++        goto cleanup;
++
++    for (i = 0; i < n; i++) {
++        virJSONValuePtr child = virJSONValueArrayGet(data, i);
++        const char *tmp;
++        qemuMonitorIOThreadsInfoPtr info;
++
++        if (VIR_ALLOC(info) < 0)
++            goto cleanup;
++
++        infolist[i] = info;
++
++        if (!(tmp = virJSONValueObjectGetString(child, "id"))) {
++            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                           _("query-iothreads reply data was missing 'id'"));
++            goto cleanup;
++        }
++
++        if (VIR_STRDUP(info->name, tmp) < 0)
++            goto cleanup;
++
++        if (virJSONValueObjectGetNumberInt(child, "thread-id",
++                                           &info->thread_id) < 0) {
++            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
++                           _("query-iothreads reply has malformed "
++                             "'thread-id' data"));
++            goto cleanup;
++        }
++    }
++
++    ret = n;
++    *iothreads = infolist;
++
++ cleanup:
++    if (ret < 0 && infolist) {
++        for (i = 0; i < n; i++)
++            qemuMonitorIOThreadsInfoFree(infolist[i]);
++        VIR_FREE(infolist);
++    }
++    virJSONValueFree(cmd);
++    virJSONValueFree(reply);
++    return ret;
++}
+diff --git a/src/qemu/qemu_monitor_json.h b/src/qemu/qemu_monitor_json.h
+index efa2330..dc5a059 100644
+--- a/src/qemu/qemu_monitor_json.h
++++ b/src/qemu/qemu_monitor_json.h
+@@ -443,4 +443,8 @@ int qemuMonitorJSONGetGuestCPU(qemuMonitorPtr mon,
+                                virCPUDataPtr *data);
+ 
+ int qemuMonitorJSONRTCResetReinjection(qemuMonitorPtr mon);
++
++int qemuMonitorJSONGetIOThreads(qemuMonitorPtr mon,
++                                qemuMonitorIOThreadsInfoPtr **iothreads)
++    ATTRIBUTE_NONNULL(2);
+ #endif /* QEMU_MONITOR_JSON_H */
+diff --git a/tests/qemumonitorjsontest.c b/tests/qemumonitorjsontest.c
+index e3fb4f7..d53ab05 100644
+--- a/tests/qemumonitorjsontest.c
++++ b/tests/qemumonitorjsontest.c
+@@ -2217,6 +2217,76 @@ testQemuMonitorJSONGetNonExistingCPUData(const void *opaque)
+ }
+ 
+ static int
++testQemuMonitorJSONGetIOThreads(const void *data)
++{
++    virDomainXMLOptionPtr xmlopt = (virDomainXMLOptionPtr)data;
++    qemuMonitorTestPtr test = qemuMonitorTestNewSimple(true, xmlopt);
++    qemuMonitorIOThreadsInfoPtr *info;
++    int ninfo = 0;
++    int ret = -1;
++    size_t i;
++
++    if (!test)
++        return -1;
++
++    if (qemuMonitorTestAddItem(test, "query-iothreads",
++                               "{ "
++                               "  \"return\": [ "
++                               "   { "
++                               "     \"id\": \"iothread1\", "
++                               "     \"thread-id\": 30992 "
++                               "   }, "
++                               "   { "
++                               "     \"id\": \"iothread2\", "
++                               "     \"thread-id\": 30993 "
++                               "   } "
++                               "  ]"
++                               "}") < 0)
++        goto cleanup;
++
++    if ((ninfo = qemuMonitorGetIOThreads(qemuMonitorTestGetMonitor(test),
++                                         &info)) < 0)
++        goto cleanup;
++
++    if (ninfo != 2) {
++        virReportError(VIR_ERR_INTERNAL_ERROR,
++                       "ninfo %d is not 2", ninfo);
++        goto cleanup;
++    }
++
++#define CHECK(i, wantname, wantthread_id)                               \
++    do {                                                                \
++        if (STRNEQ(info[i]->name, (wantname))) {                        \
++            virReportError(VIR_ERR_INTERNAL_ERROR,                      \
++                           "name %s is not %s",                         \
++                           info[i]->name, (wantname));                  \
++            goto cleanup;                                               \
++        }                                                               \
++        if (info[i]->thread_id != (wantthread_id)) {                    \
++            virReportError(VIR_ERR_INTERNAL_ERROR,                      \
++                           "thread_id %d is not %d",                    \
++                           info[i]->thread_id, (wantthread_id));        \
++            goto cleanup;                                               \
++        }                                                               \
++    } while (0)
++
++    CHECK(0, "iothread1", 30992);
++    CHECK(1, "iothread2", 30993);
++
++#undef CHECK
++
++    ret = 0;
++
++ cleanup:
++    qemuMonitorTestFree(test);
++    for (i = 0; i < ninfo; i++)
++        qemuMonitorIOThreadsInfoFree(info[i]);
++    VIR_FREE(info);
++
++    return ret;
++}
++
++static int
+ mymain(void)
+ {
+     int ret = 0;
+@@ -2272,6 +2342,7 @@ mymain(void)
+     DO_TEST(GetDeviceAliases);
+     DO_TEST(CPU);
+     DO_TEST(GetNonExistingCPUData);
++    DO_TEST(GetIOThreads);
+     DO_TEST_SIMPLE("qmp_capabilities", qemuMonitorJSONSetCapabilities);
+     DO_TEST_SIMPLE("system_powerdown", qemuMonitorJSONSystemPowerdown);
+     DO_TEST_SIMPLE("system_reset", qemuMonitorJSONSystemReset);
+-- 
+2.1.0
+

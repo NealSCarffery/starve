@@ -1,0 +1,94 @@
+From e64cbebf99fab42662b0e72a44f3a5bdef69bf8d Mon Sep 17 00:00:00 2001
+Message-Id: <e64cbebf99fab42662b0e72a44f3a5bdef69bf8d@dist-git>
+From: Martin Kletzander <mkletzan@redhat.com>
+Date: Thu, 15 Jan 2015 15:03:44 +0100
+Subject: [PATCH] util: Add function virCgroupHasEmptyTasks
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1161540
+
+That function helps checking whether there's a task in that cgroup.
+
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+(cherry picked from commit 1a80b97ddfb096a21af60d63a42d1af280fb6886)
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/libvirt_private.syms |  1 +
+ src/util/vircgroup.c     | 23 +++++++++++++++++++++++
+ src/util/vircgroup.h     |  4 +++-
+ 3 files changed, 27 insertions(+), 1 deletion(-)
+
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index cf3c842..62f4f08 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -1087,6 +1087,7 @@ virCgroupGetMemSwapHardLimit;
+ virCgroupGetMemSwapUsage;
+ virCgroupGetPercpuStats;
+ virCgroupHasController;
++virCgroupHasEmptyTasks;
+ virCgroupIsolateMount;
+ virCgroupKill;
+ virCgroupKillPainfully;
+diff --git a/src/util/vircgroup.c b/src/util/vircgroup.c
+index 152ef96..dbe7ee7 100644
+--- a/src/util/vircgroup.c
++++ b/src/util/vircgroup.c
+@@ -3915,6 +3915,20 @@ virCgroupSupportsCpuBW(virCgroupPtr cgroup)
+     return ret;
+ }
+ 
++int
++virCgroupHasEmptyTasks(virCgroupPtr cgroup, int controller)
++{
++    int ret = -1;
++    char *content = NULL;
++
++    ret = virCgroupGetValueStr(cgroup, controller, "tasks", &content);
++
++    if (ret == 0 && content[0] == '\0')
++        ret = 1;
++
++    VIR_FREE(content);
++    return ret;
++}
+ 
+ #else /* !VIR_CGROUP_SUPPORTED */
+ 
+@@ -4633,4 +4647,13 @@ virCgroupSetOwner(virCgroupPtr cgroup ATTRIBUTE_UNUSED,
+     return -1;
+ }
+ 
++int
++virCgroupHasEmptyTasks(virCgroupPtr cgroup ATTRIBUTE_UNUSED,
++                       int controller ATTRIBUTE_UNUSED)
++{
++    virReportSystemError(ENOSYS, "%s",
++                         _("Control groups not supported on this platform"));
++    return -1;
++}
++
+ #endif /* !VIR_CGROUP_SUPPORTED */
+diff --git a/src/util/vircgroup.h b/src/util/vircgroup.h
+index 19e82d1..3dbae12 100644
+--- a/src/util/vircgroup.h
++++ b/src/util/vircgroup.h
+@@ -1,7 +1,7 @@
+ /*
+  * vircgroup.h: methods for managing control cgroups
+  *
+- * Copyright (C) 2011-2013 Red Hat, Inc.
++ * Copyright (C) 2011-2014 Red Hat, Inc.
+  * Copyright IBM Corp. 2008
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -265,4 +265,6 @@ int virCgroupSetOwner(virCgroupPtr cgroup,
+                       gid_t gid,
+                       int controllers);
+ 
++int virCgroupHasEmptyTasks(virCgroupPtr cgroup, int controller);
++
+ #endif /* __VIR_CGROUP_H__ */
+-- 
+2.2.1
+

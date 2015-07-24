@@ -1,0 +1,48 @@
+From 22e3737a8ba5750ecbd5d96f2679b11ef6f125af Mon Sep 17 00:00:00 2001
+Message-Id: <22e3737a8ba5750ecbd5d96f2679b11ef6f125af@dist-git>
+From: Michal Privoznik <mprivozn@redhat.com>
+Date: Wed, 19 Nov 2014 09:37:02 +0100
+Subject: [PATCH] docs: Document NVRAM behavior on transient domains
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1026772
+
+Since 1.2.8 it's possible to use OVMF on domains. Moreover, it's
+possible to have libvirt create NVRAM file per domain. Later,
+when domain is undefined, the file is removed too. However,
+things are a bit complicated when domain's transient. There's no
+undefine to transient domains. There are two options: 1) leave
+the file behind and let mgmt app remove it. 2) remove it
+automatically as domain dies.
+But, in some scenarios mgmt app may want to preserve the file,
+copy it somewhere safe, and then copy it back when the domain is
+starting again. And this wouldn't be possible with case 2). So,
+even though case 1) leaves some files behind (possibly undeleted
+for a long time), the files themselves are small (128K each). And
+data loss is worse than full disk, isn't it?
+
+Signed-off-by: Michal Privoznik <mprivozn@redhat.com>
+(cherry picked from commit 401702d92eb28faffbb7a8b63baca67ef7d9a5b5)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ docs/formatdomain.html.in | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/docs/formatdomain.html.in b/docs/formatdomain.html.in
+index 80af7fa..138b5e1 100644
+--- a/docs/formatdomain.html.in
++++ b/docs/formatdomain.html.in
+@@ -147,7 +147,10 @@
+         started up libvirt copies so called master NVRAM store file defined
+         in <code>qemu.conf</code>. If needed, the <code>template</code>
+         attribute can be used to per domain override map of master NVRAM stores
+-        from the config file. <span class="since">Since 1.2.8</span></dd>
++        from the config file. Note, that for transient domains if the NVRAM file
++        has been created by libvirt it is left behind and it is management
++        application's responsibility to save and remove file (if needed to be
++        persistent). <span class="since">Since 1.2.8</span></dd>
+       <dt><code>boot</code></dt>
+       <dd>The <code>dev</code> attribute takes one of the values "fd", "hd",
+         "cdrom" or "network" and is used to specify the next boot device
+-- 
+2.1.3
+

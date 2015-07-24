@@ -1,0 +1,76 @@
+From b9dbdee2b7d35cb6d338e6f24c7a8fd09409b80e Mon Sep 17 00:00:00 2001
+Message-Id: <b9dbdee2b7d35cb6d338e6f24c7a8fd09409b80e@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Wed, 22 Oct 2014 18:29:45 +0200
+Subject: [PATCH] util: string: Add helper to check whether string is empty
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1142693
+
+The helper checks whether a string contains only whitespace or is NULL.
+This will be helpful to skip cases where a user string is optional, but
+may be provided empty with the same meaning.
+
+(cherry picked from commit 0eeafeedebe4469fce33d7942551957853856619)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/libvirt_private.syms |  1 +
+ src/util/virstring.c     | 16 ++++++++++++++++
+ src/util/virstring.h     |  2 ++
+ 3 files changed, 19 insertions(+)
+
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index 138d84f..f569417 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -1964,6 +1964,7 @@ virStrdup;
+ virStringArrayHasString;
+ virStringFreeList;
+ virStringFreeListCount;
++virStringIsEmpty;
+ virStringJoin;
+ virStringListLength;
+ virStringReplace;
+diff --git a/src/util/virstring.c b/src/util/virstring.c
+index b14f785..583ffd0 100644
+--- a/src/util/virstring.c
++++ b/src/util/virstring.c
+@@ -616,6 +616,22 @@ virSkipSpacesBackwards(const char *str, char **endp)
+         *endp = NULL;
+ }
+ 
++/**
++ * virStringIsEmpty:
++ * @str: string to check
++ *
++ * Returns true if string is empty (may contain only whitespace) or NULL.
++ */
++bool
++virStringIsEmpty(const char *str)
++{
++    if (!str)
++        return true;
++
++    virSkipSpaces(&str);
++    return str[0] == '\0';
++}
++
+ char *
+ virArgvToString(const char *const *argv)
+ {
+diff --git a/src/util/virstring.h b/src/util/virstring.h
+index 267fbd0..2ec9a4d 100644
+--- a/src/util/virstring.h
++++ b/src/util/virstring.h
+@@ -105,6 +105,8 @@ void virTrimSpaces(char *str, char **endp) ATTRIBUTE_NONNULL(1);
+ void virSkipSpacesBackwards(const char *str, char **endp)
+     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2);
+ 
++bool virStringIsEmpty(const char *str);
++
+ char *virStrncpy(char *dest, const char *src, size_t n, size_t destbytes)
+     ATTRIBUTE_RETURN_CHECK;
+ char *virStrcpy(char *dest, const char *src, size_t destbytes)
+-- 
+2.1.3
+

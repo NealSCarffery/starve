@@ -1,0 +1,283 @@
+From 37b4578539091288a7e7851799ebf4289272706e Mon Sep 17 00:00:00 2001
+Message-Id: <37b4578539091288a7e7851799ebf4289272706e@dist-git>
+From: Martin Kletzander <mkletzan@redhat.com>
+Date: Wed, 17 Sep 2014 16:17:56 +0200
+Subject: [PATCH] docs, conf, schema: add support for shared memory mapping
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1133144
+
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+(cherry picked from commit def6b35989362cc7ce8474256e19d877ff07a711)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ docs/formatdomain.html.in                          |  7 +++-
+ docs/schemas/domaincommon.rng                      |  8 ++++
+ src/conf/cpu_conf.c                                | 30 ++++++++++++++-
+ src/conf/cpu_conf.h                                | 17 ++++++--
+ .../qemuxml2argv-cpu-numa-memshared.xml            | 28 ++++++++++++++
+ .../qemuxml2argv-hugepages-shared.xml              | 45 ++++++++++++++++++++++
+ tests/qemuxml2xmltest.c                            |  2 +
+ 7 files changed, 131 insertions(+), 6 deletions(-)
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-cpu-numa-memshared.xml
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-hugepages-shared.xml
+
+diff --git a/docs/formatdomain.html.in b/docs/formatdomain.html.in
+index a2ea758..ade40f3 100644
+--- a/docs/formatdomain.html.in
++++ b/docs/formatdomain.html.in
+@@ -1123,7 +1123,7 @@
+     ...
+     &lt;numa&gt;
+       &lt;cell id='0' cpus='0-3' memory='512000'/&gt;
+-      &lt;cell id='1' cpus='4-7' memory='512000'/&gt;
++      &lt;cell id='1' cpus='4-7' memory='512000' memAccess='shared'/&gt;
+     &lt;/numa&gt;
+     ...
+   &lt;/cpu&gt;
+@@ -1140,6 +1140,11 @@
+       assigned <code>id</code>s in the increasing order starting from
+       0.  Mixing cells with and without the <code>id</code> attribute
+       is not recommended as it may result in unwanted behaviour.
++
++      <span class='since'>Since 1.2.9</span> the optional attribute
++      <code>memAccess</code> can control whether the memory is to be
++      mapped as "shared" or "private".  This is valid only for
++      hugepages-backed memory.
+     </p>
+ 
+     <p>
+diff --git a/docs/schemas/domaincommon.rng b/docs/schemas/domaincommon.rng
+index 6ae940a..75006f5 100644
+--- a/docs/schemas/domaincommon.rng
++++ b/docs/schemas/domaincommon.rng
+@@ -4092,6 +4092,14 @@
+       <attribute name="memory">
+         <ref name="memoryKB"/>
+       </attribute>
++      <optional>
++        <attribute name="memAccess">
++          <choice>
++            <value>shared</value>
++            <value>private</value>
++          </choice>
++        </attribute>
++      </optional>
+     </element>
+   </define>
+ 
+diff --git a/src/conf/cpu_conf.c b/src/conf/cpu_conf.c
+index 5003cf1..e190641 100644
+--- a/src/conf/cpu_conf.c
++++ b/src/conf/cpu_conf.c
+@@ -56,6 +56,11 @@ VIR_ENUM_IMPL(virCPUFeaturePolicy, VIR_CPU_FEATURE_LAST,
+               "disable",
+               "forbid")
+ 
++VIR_ENUM_IMPL(virMemAccess, VIR_MEM_ACCESS_LAST,
++              "default",
++              "shared",
++              "private")
++
+ 
+ void ATTRIBUTE_NONNULL(1)
+ virCPUDefFreeModel(virCPUDefPtr def)
+@@ -435,7 +440,7 @@ virCPUDefParseXML(xmlNodePtr node,
+         def->ncells = n;
+ 
+         for (i = 0; i < n; i++) {
+-            char *cpus, *memory;
++            char *cpus, *memory, *memAccessStr;
+             int ret, ncpus = 0;
+             unsigned int cur_cell;
+             char *tmp = NULL;
+@@ -491,7 +496,7 @@ virCPUDefParseXML(xmlNodePtr node,
+                 goto error;
+             }
+ 
+-            ret  = virStrToLong_ui(memory, NULL, 10, &def->cells[cur_cell].mem);
++            ret = virStrToLong_ui(memory, NULL, 10, &def->cells[cur_cell].mem);
+             if (ret == -1) {
+                 virReportError(VIR_ERR_XML_ERROR, "%s",
+                                _("Invalid 'memory' attribute in NUMA cell"));
+@@ -499,6 +504,22 @@ virCPUDefParseXML(xmlNodePtr node,
+                 goto error;
+             }
+             VIR_FREE(memory);
++
++            memAccessStr = virXMLPropString(nodes[i], "memAccess");
++            if (memAccessStr) {
++                def->cells[cur_cell].memAccess =
++                    virMemAccessTypeFromString(memAccessStr);
++
++                if (def->cells[cur_cell].memAccess <= 0) {
++                    virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
++                                   _("Invalid 'memAccess' attribute "
++                                     "value '%s'"),
++                                   memAccessStr);
++                    VIR_FREE(memAccessStr);
++                    goto cleanup;
++                }
++                VIR_FREE(memAccessStr);
++            }
+         }
+     }
+ 
+@@ -674,10 +695,15 @@ virCPUDefFormatBuf(virBufferPtr buf,
+         virBufferAddLit(buf, "<numa>\n");
+         virBufferAdjustIndent(buf, 2);
+         for (i = 0; i < def->ncells; i++) {
++            virMemAccess memAccess = def->cells[i].memAccess;
++
+             virBufferAddLit(buf, "<cell");
+             virBufferAsprintf(buf, " id='%zu'", i);
+             virBufferAsprintf(buf, " cpus='%s'", def->cells[i].cpustr);
+             virBufferAsprintf(buf, " memory='%d'", def->cells[i].mem);
++            if (memAccess)
++                virBufferAsprintf(buf, " memAccess='%s'",
++                                  virMemAccessTypeToString(memAccess));
+             virBufferAddLit(buf, "/>\n");
+         }
+         virBufferAdjustIndent(buf, -2);
+diff --git a/src/conf/cpu_conf.h b/src/conf/cpu_conf.h
+index 2d538db..d45210b 100644
+--- a/src/conf/cpu_conf.h
++++ b/src/conf/cpu_conf.h
+@@ -83,6 +83,16 @@ typedef enum {
+ 
+ VIR_ENUM_DECL(virCPUFeaturePolicy)
+ 
++typedef enum {
++    VIR_MEM_ACCESS_DEFAULT,
++    VIR_MEM_ACCESS_SHARED,
++    VIR_MEM_ACCESS_PRIVATE,
++
++    VIR_MEM_ACCESS_LAST,
++} virMemAccess;
++
++VIR_ENUM_DECL(virMemAccess)
++
+ typedef struct _virCPUFeatureDef virCPUFeatureDef;
+ typedef virCPUFeatureDef *virCPUFeatureDefPtr;
+ struct _virCPUFeatureDef {
+@@ -93,9 +103,10 @@ struct _virCPUFeatureDef {
+ typedef struct _virCellDef virCellDef;
+ typedef virCellDef *virCellDefPtr;
+ struct _virCellDef {
+-   virBitmapPtr cpumask;	/* CPUs that are part of this node */
+-   char *cpustr;	/* CPUs stored in string form for dumpxml */
+-   unsigned int mem;	/* Node memory in kB */
++    virBitmapPtr cpumask; /* CPUs that are part of this node */
++    char *cpustr;         /* CPUs stored in string form for dumpxml */
++    unsigned int mem;     /* Node memory in kB */
++    virMemAccess memAccess;
+ };
+ 
+ typedef struct _virCPUDef virCPUDef;
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-cpu-numa-memshared.xml b/tests/qemuxml2argvdata/qemuxml2argv-cpu-numa-memshared.xml
+new file mode 100644
+index 0000000..cf7c040
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-cpu-numa-memshared.xml
+@@ -0,0 +1,28 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory unit='KiB'>219100</memory>
++  <currentMemory unit='KiB'>219100</currentMemory>
++  <vcpu placement='static'>16</vcpu>
++  <os>
++    <type arch='x86_64' machine='pc'>hvm</type>
++    <boot dev='network'/>
++  </os>
++  <cpu>
++    <topology sockets='2' cores='4' threads='2'/>
++    <numa>
++      <cell id='0' cpus='0-7' memory='109550' memAccess='shared'/>
++      <cell id='1' cpus='8-15' memory='109550' memAccess='private'/>
++    </numa>
++  </cpu>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <controller type='usb' index='0'/>
++    <controller type='pci' index='0' model='pci-root'/>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-hugepages-shared.xml b/tests/qemuxml2argvdata/qemuxml2argv-hugepages-shared.xml
+new file mode 100644
+index 0000000..e7db69c
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-hugepages-shared.xml
+@@ -0,0 +1,45 @@
++<domain type='qemu'>
++  <name>QEMUGuest1</name>
++  <uuid>c7a5fdbd-edaf-9455-926a-d65c16db1809</uuid>
++  <memory unit='KiB'>4194304</memory>
++  <currentMemory unit='KiB'>4194304</currentMemory>
++  <memoryBacking>
++    <hugepages>
++      <page size='2048' unit='KiB' nodeset='1'/>
++      <page size='1048576' unit='KiB' nodeset='0,2-3'/>
++    </hugepages>
++  </memoryBacking>
++  <vcpu placement='static'>4</vcpu>
++  <numatune>
++    <memory mode='strict' nodeset='0-3'/>
++    <memnode cellid='3' mode='strict' nodeset='3'/>
++  </numatune>
++  <os>
++    <type arch='i686' machine='pc'>hvm</type>
++    <boot dev='hd'/>
++  </os>
++  <cpu>
++    <numa>
++      <cell id='0' cpus='0' memory='1048576'/>
++      <cell id='1' cpus='1' memory='1048576' memAccess='shared'/>
++      <cell id='2' cpus='2' memory='1048576' memAccess='private'/>
++      <cell id='3' cpus='3' memory='1048576'/>
++    </numa>
++  </cpu>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>destroy</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='block' device='disk'>
++      <source dev='/dev/HostVG/QEMUGuest1'/>
++      <target dev='hda' bus='ide'/>
++      <address type='drive' controller='0' bus='0' target='0' unit='0'/>
++    </disk>
++    <controller type='usb' index='0'/>
++    <controller type='ide' index='0'/>
++    <controller type='pci' index='0' model='pci-root'/>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2xmltest.c b/tests/qemuxml2xmltest.c
+index 1835fe6..180665b 100644
+--- a/tests/qemuxml2xmltest.c
++++ b/tests/qemuxml2xmltest.c
+@@ -205,6 +205,7 @@ mymain(void)
+     DO_TEST("hugepages-pages");
+     DO_TEST("hugepages-pages2");
+     DO_TEST("hugepages-pages3");
++    DO_TEST("hugepages-shared");
+     DO_TEST("nosharepages");
+     DO_TEST("disk-aio");
+     DO_TEST("disk-cdrom");
+@@ -390,6 +391,7 @@ mymain(void)
+     DO_TEST_DIFFERENT("cpu-numa1");
+     DO_TEST_DIFFERENT("cpu-numa2");
+     DO_TEST("cpu-numa-disjoint");
++    DO_TEST("cpu-numa-memshared");
+ 
+     DO_TEST_DIFFERENT("numatune-auto-prefer");
+     DO_TEST_DIFFERENT("numatune-memnode");
+-- 
+2.1.0
+

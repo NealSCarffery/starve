@@ -1,0 +1,287 @@
+From e646797b59c759839d3f0b97223d5cb67ef5ea04 Mon Sep 17 00:00:00 2001
+Message-Id: <e646797b59c759839d3f0b97223d5cb67ef5ea04@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Mon, 24 Nov 2014 17:51:15 +0100
+Subject: [PATCH] qemu: Add handling for VSERPORT_CHANGE event
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1146944
+
+New qemu added a new event that is emitted when a virtio serial channel
+is opened in the guest OS. This allows us to update the state of the
+port in the output-only XML element.
+
+This patch implements the monitor callbacks and necessary handlers to
+update the state in the definition.
+
+(cherry picked from commit 15bbaaf014d0eb524a941be2b924d7768ef7c269)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_domain.h       |  1 +
+ src/qemu/qemu_driver.c       | 57 ++++++++++++++++++++++++++++++++++++++++++++
+ src/qemu/qemu_monitor.c      | 14 +++++++++++
+ src/qemu/qemu_monitor.h      | 10 ++++++++
+ src/qemu/qemu_monitor_json.c | 23 ++++++++++++++++++
+ src/qemu/qemu_process.c      | 44 ++++++++++++++++++++++++++++++++++
+ 6 files changed, 149 insertions(+)
+
+diff --git a/src/qemu/qemu_domain.h b/src/qemu/qemu_domain.h
+index ad45a66..e4ea4ce 100644
+--- a/src/qemu/qemu_domain.h
++++ b/src/qemu/qemu_domain.h
+@@ -196,6 +196,7 @@ typedef enum {
+     QEMU_PROCESS_EVENT_GUESTPANIC,
+     QEMU_PROCESS_EVENT_DEVICE_DELETED,
+     QEMU_PROCESS_EVENT_NIC_RX_FILTER_CHANGED,
++    QEMU_PROCESS_EVENT_SERIAL_CHANGED,
+ 
+     QEMU_PROCESS_EVENT_LAST
+ } qemuProcessEventType;
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index 5d2a335..fe498b9 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -4339,6 +4339,60 @@ processNicRxFilterChangedEvent(virQEMUDriverPtr driver,
+ }
+ 
+ 
++static void
++processSerialChangedEvent(virQEMUDriverPtr driver,
++                          virDomainObjPtr vm,
++                          char *devAlias,
++                          bool connected)
++{
++    virQEMUDriverConfigPtr cfg = virQEMUDriverGetConfig(driver);
++    virDomainChrDeviceState newstate;
++    virDomainDeviceDef dev;
++
++    if (connected)
++        newstate = VIR_DOMAIN_CHR_DEVICE_STATE_CONNECTED;
++    else
++        newstate = VIR_DOMAIN_CHR_DEVICE_STATE_DISCONNECTED;
++
++    VIR_DEBUG("Changing serial port state %s in domain %p %s",
++              devAlias, vm, vm->def->name);
++
++    if (qemuDomainObjBeginJob(driver, vm, QEMU_JOB_MODIFY) < 0)
++        goto cleanup;
++
++    if (!virDomainObjIsActive(vm)) {
++        VIR_DEBUG("Domain is not running");
++        goto endjob;
++    }
++
++    if (virDomainDefFindDevice(vm->def, devAlias, &dev, true) < 0)
++        goto endjob;
++
++    /* we care only about certain devices */
++    if (dev.type != VIR_DOMAIN_DEVICE_CHR ||
++        dev.data.chr->deviceType != VIR_DOMAIN_CHR_DEVICE_TYPE_CHANNEL ||
++        dev.data.chr->targetType != VIR_DOMAIN_CHR_CHANNEL_TARGET_TYPE_VIRTIO)
++        goto endjob;
++
++    dev.data.chr->state = newstate;
++
++    if (virDomainSaveStatus(driver->xmlopt, cfg->stateDir, vm) < 0)
++        VIR_WARN("unable to save status of domain %s after updating state of "
++                 "channel %s", vm->def->name, devAlias);
++
++ endjob:
++    /* We had an extra reference to vm before starting a new job so ending the
++     * job is guaranteed not to remove the last reference.
++     */
++    ignore_value(qemuDomainObjEndJob(driver, vm));
++
++ cleanup:
++    VIR_FREE(devAlias);
++    virObjectUnref(cfg);
++
++}
++
++
+ static void qemuProcessEventHandler(void *data, void *opaque)
+ {
+     struct qemuProcessEvent *processEvent = data;
+@@ -4362,6 +4416,9 @@ static void qemuProcessEventHandler(void *data, void *opaque)
+     case QEMU_PROCESS_EVENT_NIC_RX_FILTER_CHANGED:
+         processNicRxFilterChangedEvent(driver, vm, processEvent->data);
+         break;
++    case QEMU_PROCESS_EVENT_SERIAL_CHANGED:
++        processSerialChangedEvent(driver, vm, processEvent->data,
++                                  processEvent->action);
+     case QEMU_PROCESS_EVENT_LAST:
+         break;
+     }
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index 09935f5..55a0542 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -1404,6 +1404,20 @@ qemuMonitorEmitNicRxFilterChanged(qemuMonitorPtr mon,
+ }
+ 
+ 
++int
++qemuMonitorEmitSerialChange(qemuMonitorPtr mon,
++                            const char *devAlias,
++                            bool connected)
++{
++    int ret = -1;
++    VIR_DEBUG("mon=%p, devAlias='%s', connected=%d", mon, devAlias, connected);
++
++    QEMU_MONITOR_CALLBACK(mon, ret, domainSerialChange, mon->vm, devAlias, connected);
++
++    return ret;
++}
++
++
+ int qemuMonitorSetCapabilities(qemuMonitorPtr mon)
+ {
+     int ret;
+diff --git a/src/qemu/qemu_monitor.h b/src/qemu/qemu_monitor.h
+index b63799b..8ae0dbe 100644
+--- a/src/qemu/qemu_monitor.h
++++ b/src/qemu/qemu_monitor.h
+@@ -176,6 +176,12 @@ typedef int (*qemuMonitorDomainNicRxFilterChangedCallback)(qemuMonitorPtr mon,
+                                                            const char *devAlias,
+                                                            void *opaque);
+ 
++typedef int (*qemuMonitorDomainSerialChangeCallback)(qemuMonitorPtr mon,
++                                                     virDomainObjPtr vm,
++                                                     const char *devAlias,
++                                                     bool connected,
++                                                     void *opaque);
++
+ typedef struct _qemuMonitorCallbacks qemuMonitorCallbacks;
+ typedef qemuMonitorCallbacks *qemuMonitorCallbacksPtr;
+ struct _qemuMonitorCallbacks {
+@@ -202,6 +208,7 @@ struct _qemuMonitorCallbacks {
+     qemuMonitorDomainGuestPanicCallback domainGuestPanic;
+     qemuMonitorDomainDeviceDeletedCallback domainDeviceDeleted;
+     qemuMonitorDomainNicRxFilterChangedCallback domainNicRxFilterChanged;
++    qemuMonitorDomainSerialChangeCallback domainSerialChange;
+ };
+ 
+ char *qemuMonitorEscapeArg(const char *in);
+@@ -292,6 +299,9 @@ int qemuMonitorEmitDeviceDeleted(qemuMonitorPtr mon,
+                                  const char *devAlias);
+ int qemuMonitorEmitNicRxFilterChanged(qemuMonitorPtr mon,
+                                       const char *devAlias);
++int qemuMonitorEmitSerialChange(qemuMonitorPtr mon,
++                                const char *devAlias,
++                                bool connected);
+ 
+ int qemuMonitorStartCPUs(qemuMonitorPtr mon,
+                          virConnectPtr conn);
+diff --git a/src/qemu/qemu_monitor_json.c b/src/qemu/qemu_monitor_json.c
+index bf28832..e5f49ef 100644
+--- a/src/qemu/qemu_monitor_json.c
++++ b/src/qemu/qemu_monitor_json.c
+@@ -82,6 +82,7 @@ static void qemuMonitorJSONHandlePMSuspendDisk(qemuMonitorPtr mon, virJSONValueP
+ static void qemuMonitorJSONHandleGuestPanic(qemuMonitorPtr mon, virJSONValuePtr data);
+ static void qemuMonitorJSONHandleDeviceDeleted(qemuMonitorPtr mon, virJSONValuePtr data);
+ static void qemuMonitorJSONHandleNicRxFilterChanged(qemuMonitorPtr mon, virJSONValuePtr data);
++static void qemuMonitorJSONHandleSerialChange(qemuMonitorPtr mon, virJSONValuePtr data);
+ 
+ typedef struct {
+     const char *type;
+@@ -112,6 +113,7 @@ static qemuEventHandler eventHandlers[] = {
+     { "VNC_CONNECTED", qemuMonitorJSONHandleVNCConnect, },
+     { "VNC_DISCONNECTED", qemuMonitorJSONHandleVNCDisconnect, },
+     { "VNC_INITIALIZED", qemuMonitorJSONHandleVNCInitialize, },
++    { "VSERPORT_CHANGE", qemuMonitorJSONHandleSerialChange, },
+     { "WAKEUP", qemuMonitorJSONHandlePMWakeup, },
+     { "WATCHDOG", qemuMonitorJSONHandleWatchdog, },
+     /* We use bsearch, so keep this list sorted.  */
+@@ -1038,6 +1040,27 @@ qemuMonitorJSONHandleNicRxFilterChanged(qemuMonitorPtr mon, virJSONValuePtr data
+ }
+ 
+ 
++static void
++qemuMonitorJSONHandleSerialChange(qemuMonitorPtr mon,
++                                  virJSONValuePtr data)
++{
++    const char *name;
++    bool connected;
++
++    if (!(name = virJSONValueObjectGetString(data, "id"))) {
++        VIR_WARN("missing device alias in VSERPORT_CHANGE event");
++        return;
++    }
++
++    if (virJSONValueObjectGetBoolean(data, "open", &connected) < 0) {
++        VIR_WARN("missing port state for '%s' in VSERPORT_CHANGE event", name);
++        return;
++    }
++
++    qemuMonitorEmitSerialChange(mon, name, connected);
++}
++
++
+ int
+ qemuMonitorJSONHumanCommandWithFd(qemuMonitorPtr mon,
+                                   const char *cmd_str,
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index b7b2d80..7e1b9a2 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -1539,6 +1539,49 @@ qemuProcessHandleNicRxFilterChanged(qemuMonitorPtr mon ATTRIBUTE_UNUSED,
+ }
+ 
+ 
++static int
++qemuProcessHandleSerialChanged(qemuMonitorPtr mon ATTRIBUTE_UNUSED,
++                               virDomainObjPtr vm,
++                               const char *devAlias,
++                               bool connected,
++                               void *opaque)
++{
++    virQEMUDriverPtr driver = opaque;
++    struct qemuProcessEvent *processEvent = NULL;
++    char *data;
++
++    virObjectLock(vm);
++
++    VIR_DEBUG("Serial port %s state changed to '%d' in domain %p %s",
++              devAlias, connected, vm, vm->def->name);
++
++    if (VIR_ALLOC(processEvent) < 0)
++        goto error;
++
++    processEvent->eventType = QEMU_PROCESS_EVENT_SERIAL_CHANGED;
++    if (VIR_STRDUP(data, devAlias) < 0)
++        goto error;
++    processEvent->data = data;
++    processEvent->action = connected;
++    processEvent->vm = vm;
++
++    virObjectRef(vm);
++    if (virThreadPoolSendJob(driver->workerPool, 0, processEvent) < 0) {
++        ignore_value(virObjectUnref(vm));
++        goto error;
++    }
++
++ cleanup:
++    virObjectUnlock(vm);
++    return 0;
++ error:
++    if (processEvent)
++        VIR_FREE(processEvent->data);
++    VIR_FREE(processEvent);
++    goto cleanup;
++}
++
++
+ static qemuMonitorCallbacks monitorCallbacks = {
+     .eofNotify = qemuProcessHandleMonitorEOF,
+     .errorNotify = qemuProcessHandleMonitorError,
+@@ -1561,6 +1604,7 @@ static qemuMonitorCallbacks monitorCallbacks = {
+     .domainGuestPanic = qemuProcessHandleGuestPanic,
+     .domainDeviceDeleted = qemuProcessHandleDeviceDeleted,
+     .domainNicRxFilterChanged = qemuProcessHandleNicRxFilterChanged,
++    .domainSerialChange = qemuProcessHandleSerialChanged,
+ };
+ 
+ static int
+-- 
+2.1.3
+

@@ -1,0 +1,54 @@
+From f600e269cc7f2330dba96e5c89d68bde89063beb Mon Sep 17 00:00:00 2001
+Message-Id: <f600e269cc7f2330dba96e5c89d68bde89063beb@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Mon, 29 Sep 2014 14:01:40 +0200
+Subject: [PATCH] Fix crash cpu_shares change event crash on domain startup
+
+Introduced by commit 0dce260.
+
+qemuDomainEventQueue was called with qemuDomainObjPrivatePtr instead
+of virQEMUDriverPtr.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1147494
+(cherry picked from commit e26bbf49cc051b5d5c2a86c572f55953e617e872)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_cgroup.c | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/src/qemu/qemu_cgroup.c b/src/qemu/qemu_cgroup.c
+index 8819943..bd22b7f 100644
+--- a/src/qemu/qemu_cgroup.c
++++ b/src/qemu/qemu_cgroup.c
+@@ -674,7 +674,8 @@ qemuSetupCpusetCgroup(virDomainObjPtr vm,
+ 
+ 
+ static int
+-qemuSetupCpuCgroup(virDomainObjPtr vm)
++qemuSetupCpuCgroup(virQEMUDriverPtr driver,
++                   virDomainObjPtr vm)
+ {
+     qemuDomainObjPrivatePtr priv = vm->privateData;
+     virObjectEventPtr event = NULL;
+@@ -711,7 +712,7 @@ qemuSetupCpuCgroup(virDomainObjPtr vm)
+         }
+ 
+         if (event)
+-            qemuDomainEventQueue(vm->privateData, event);
++            qemuDomainEventQueue(driver, event);
+     }
+ 
+     return 0;
+@@ -845,7 +846,7 @@ qemuSetupCgroup(virQEMUDriverPtr driver,
+     if (qemuSetupMemoryCgroup(vm) < 0)
+         goto cleanup;
+ 
+-    if (qemuSetupCpuCgroup(vm) < 0)
++    if (qemuSetupCpuCgroup(driver, vm) < 0)
+         goto cleanup;
+ 
+     if (qemuSetupCpusetCgroup(vm, nodemask, caps) < 0)
+-- 
+2.1.2
+

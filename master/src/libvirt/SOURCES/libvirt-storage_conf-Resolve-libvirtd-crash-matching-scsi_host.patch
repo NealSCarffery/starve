@@ -1,0 +1,132 @@
+From 1d70a81c71b2e09219377496f22ceabc22c89078 Mon Sep 17 00:00:00 2001
+Message-Id: <1d70a81c71b2e09219377496f22ceabc22c89078@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Tue, 28 Oct 2014 22:13:33 -0400
+Subject: [PATCH] storage_conf: Resolve libvirtd crash matching scsi_host
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1146837
+
+Resolve a crash in libvirtd resulting from commit id 'a4bd62ad' (1.0.6)
+which added parentaddr and unique_id to allow unique identification of
+a scsi_host, but assumed that all the pool entries and the incoming
+definition would be similarly defined. If the existing pool uses the
+'name' attribute and an incoming pool is using the parentaddr/unique_id,
+then the code will attempt to compare the existing name string against
+the incoming name string which doesn't exist (is NULL) and results in
+a core (STREQ).
+
+Conversely, if the existing pool used the parentaddr/unique_id and the
+to be defined pool used the name, then the comparison would be against
+the parentaddr, but since the incoming pool doesn't have one - that would
+leave the comparison against a parentaddr of all 0's and a unique_id of 0,
+which will always comparison to fail. This means someone could define the
+same source adapter for two pools
+
+In order to resolve this, adjust the code to get the 'host#' to be used
+by the storage scsi backend in order to check/start the pool and make sure
+the incoming definition doesn't match any of the existing pool defs.
+
+(cherry picked from commit 3f99d64db8a64675eefed9485fad720c630a816e)
+Signed-off-by: John Ferlan <jferlan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/conf/storage_conf.c | 67 ++++++++++++++++++++++++++++++-------------------
+ 1 file changed, 41 insertions(+), 26 deletions(-)
+
+diff --git a/src/conf/storage_conf.c b/src/conf/storage_conf.c
+index d42cde7..7fa3dbf 100644
+--- a/src/conf/storage_conf.c
++++ b/src/conf/storage_conf.c
+@@ -2061,26 +2061,37 @@ virStoragePoolObjIsDuplicate(virStoragePoolObjListPtr pools,
+     return ret;
+ }
+ 
+-static bool
+-matchSCSIAdapterParent(virStoragePoolObjPtr pool,
+-                       virStoragePoolDefPtr def)
++static int
++getSCSIHostNumber(virStoragePoolSourceAdapter adapter,
++                  unsigned int *hostnum)
+ {
+-    virDevicePCIAddressPtr pooladdr =
+-        &pool->def->source.adapter.data.scsi_host.parentaddr;
+-    virDevicePCIAddressPtr defaddr =
+-        &def->source.adapter.data.scsi_host.parentaddr;
+-    int pool_unique_id =
+-        pool->def->source.adapter.data.scsi_host.unique_id;
+-    int def_unique_id =
+-        def->source.adapter.data.scsi_host.unique_id;
+-    if (pooladdr->domain == defaddr->domain &&
+-        pooladdr->bus == defaddr->bus &&
+-        pooladdr->slot == defaddr->slot &&
+-        pooladdr->function == defaddr->function &&
+-        pool_unique_id == def_unique_id) {
+-        return true;
++    int ret = -1;
++    unsigned int num;
++    char *name = NULL;
++
++    if (adapter.data.scsi_host.has_parent) {
++        virDevicePCIAddress addr = adapter.data.scsi_host.parentaddr;
++        unsigned int unique_id = adapter.data.scsi_host.unique_id;
++
++        if (!(name = virGetSCSIHostNameByParentaddr(addr.domain,
++                                                    addr.bus,
++                                                    addr.slot,
++                                                    addr.function,
++                                                    unique_id)))
++            goto cleanup;
++        if (virGetSCSIHostNumber(name, &num) < 0)
++            goto cleanup;
++    } else {
++        if (virGetSCSIHostNumber(adapter.data.scsi_host.name, &num) < 0)
++            goto cleanup;
+     }
+-    return false;
++
++    *hostnum = num;
++    ret = 0;
++
++ cleanup:
++    VIR_FREE(name);
++    return ret;
+ }
+ 
+ int
+@@ -2129,14 +2140,14 @@ virStoragePoolSourceFindDuplicate(virStoragePoolObjListPtr pools,
+                        VIR_STORAGE_POOL_SOURCE_ADAPTER_TYPE_SCSI_HOST &&
+                        def->source.adapter.type ==
+                        VIR_STORAGE_POOL_SOURCE_ADAPTER_TYPE_SCSI_HOST) {
+-                if (pool->def->source.adapter.data.scsi_host.name) {
+-                    if (STREQ(pool->def->source.adapter.data.scsi_host.name,
+-                              def->source.adapter.data.scsi_host.name))
+-                        matchpool = pool;
+-                } else {
+-                    if (matchSCSIAdapterParent(pool, def))
+-                        matchpool = pool;
+-                }
++                unsigned int pool_hostnum, def_hostnum;
++
++                if (getSCSIHostNumber(pool->def->source.adapter,
++                                      &pool_hostnum) < 0 ||
++                    getSCSIHostNumber(def->source.adapter, &def_hostnum) < 0)
++                    goto error;
++                if (pool_hostnum == def_hostnum)
++                    matchpool = pool;
+             }
+             break;
+         case VIR_STORAGE_POOL_ISCSI:
+@@ -2176,6 +2187,10 @@ virStoragePoolSourceFindDuplicate(virStoragePoolObjListPtr pools,
+         ret = -1;
+     }
+     return ret;
++
++ error:
++    virStoragePoolObjUnlock(pool);
++    return -1;
+ }
+ 
+ void
+-- 
+2.1.3
+

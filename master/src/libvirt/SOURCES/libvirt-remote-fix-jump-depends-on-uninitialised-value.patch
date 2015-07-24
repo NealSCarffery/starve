@@ -1,0 +1,51 @@
+From 0e09eeb1a38ce91c021b82df59a8e34cc586c35f Mon Sep 17 00:00:00 2001
+Message-Id: <0e09eeb1a38ce91c021b82df59a8e34cc586c35f@dist-git>
+From: Jincheng Miao <jmiao@redhat.com>
+Date: Thu, 30 Oct 2014 07:10:46 +0100
+Subject: [PATCH] remote: fix jump depends on uninitialised value
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1158715
+
+Currently remote driver only initializes partial fields of
+remote_connect_get_all_domain_stats_args. But xdr_array()
+will check the uninitialised field 'doms_val'.
+For safty reason, memset all fields of args is better.
+
+Fix the following error from valgrind, like:
+==30515== 1 errors in context 1 of 3:
+==30515== Conditional jump or move depends on uninitialised value(s)
+==30515==    at 0x85E9402: xdr_array (xdr_array.c:88)
+==30515==    by 0x4FD8FC9: xdr_remote_connect_get_all_domain_stats_args (remote_protocol.c:6473)
+==30515==    by 0x4FE72F2: virNetMessageEncodePayload (virnetmessage.c:350)
+==30515==    by 0x4FDD21C: virNetClientProgramCall (virnetclientprogram.c:326)
+==30515==    by 0x4FB4D01: callFull.isra.2 (remote_driver.c:6667)
+==30515==    by 0x4FCBD45: call (remote_driver.c:6689)
+==30515==    by 0x4FCBD45: remoteConnectGetAllDomainStats (remote_driver.c:7793)
+==30515==    by 0x4FA0E75: virConnectGetAllDomainStats (libvirt.c:21678)
+==30515==    by 0x147FD1: cmdDomstats (virsh-domain-monitor.c:2148)
+==30515==    by 0x13006B: vshCommandRun (virsh.c:1915)
+==30515==    by 0x12A9E1: main (virsh.c:3699)
+
+Signed-off-by: Jincheng Miao <jmiao@redhat.com>
+(cherry picked from commit 28b7601dc7acf99d06277267afb63fff4167b755)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/remote/remote_driver.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/src/remote/remote_driver.c b/src/remote/remote_driver.c
+index 6cf1aae..de021d4 100644
+--- a/src/remote/remote_driver.c
++++ b/src/remote/remote_driver.c
+@@ -7775,6 +7775,8 @@ remoteConnectGetAllDomainStats(virConnectPtr conn,
+     virDomainStatsRecordPtr elem = NULL;
+     virDomainStatsRecordPtr *tmpret = NULL;
+ 
++    memset(&args, 0, sizeof(args));
++
+     if (ndoms) {
+         if (VIR_ALLOC_N(args.doms.doms_val, ndoms) < 0)
+             goto cleanup;
+-- 
+2.1.3
+

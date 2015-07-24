@@ -1,0 +1,81 @@
+From 3266c173fd4fab80e0fbd80c66cb99fb92c10b73 Mon Sep 17 00:00:00 2001
+Message-Id: <3266c173fd4fab80e0fbd80c66cb99fb92c10b73@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Wed, 24 Sep 2014 11:01:26 +0200
+Subject: [PATCH] util: Add function to check if a virStorageSource is "empty"
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1138231
+
+To express empty drive we historically use storage source with empty
+path. Unfortunately NBD disks may be declared without a path.
+
+Add a helper to wrap this logic.
+
+(cherry picked from commit 5e3e9919288511964afb0a7937bd1dcc497b8c17)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/libvirt_private.syms  |  1 +
+ src/util/virstoragefile.c | 21 +++++++++++++++++++++
+ src/util/virstoragefile.h |  1 +
+ 3 files changed, 23 insertions(+)
+
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index 55fff46..ab81ba2 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -1941,6 +1941,7 @@ virStorageSourceFree;
+ virStorageSourceGetActualType;
+ virStorageSourceGetSecurityLabelDef;
+ virStorageSourceInitChainElement;
++virStorageSourceIsEmpty;
+ virStorageSourceIsLocalStorage;
+ virStorageSourceNewFromBacking;
+ virStorageSourcePoolDefFree;
+diff --git a/src/util/virstoragefile.c b/src/util/virstoragefile.c
+index 79f4adb..fdf14c0 100644
+--- a/src/util/virstoragefile.c
++++ b/src/util/virstoragefile.c
+@@ -1965,6 +1965,27 @@ virStorageSourceIsLocalStorage(virStorageSourcePtr src)
+ 
+ 
+ /**
++ * virStorageSourceIsEmpty:
++ *
++ * @src: disk source to check
++ *
++ * Returns true if the guest disk has no associated host storage source
++ * (such as an empty cdrom drive).
++ */
++bool
++virStorageSourceIsEmpty(virStorageSourcePtr src)
++{
++    if (virStorageSourceIsLocalStorage(src) && !src->path)
++        return true;
++
++    if (src->type == VIR_STORAGE_TYPE_NONE)
++        return true;
++
++    return false;
++}
++
++
++/**
+  * virStorageSourceBackingStoreClear:
+  *
+  * @src: disk source to clear
+diff --git a/src/util/virstoragefile.h b/src/util/virstoragefile.h
+index eccbf4e..2583e10 100644
+--- a/src/util/virstoragefile.h
++++ b/src/util/virstoragefile.h
+@@ -353,6 +353,7 @@ void virStorageSourcePoolDefFree(virStorageSourcePoolDefPtr def);
+ void virStorageSourceClear(virStorageSourcePtr def);
+ int virStorageSourceGetActualType(virStorageSourcePtr def);
+ bool virStorageSourceIsLocalStorage(virStorageSourcePtr src);
++bool virStorageSourceIsEmpty(virStorageSourcePtr src);
+ void virStorageSourceFree(virStorageSourcePtr def);
+ void virStorageSourceBackingStoreClear(virStorageSourcePtr def);
+ virStorageSourcePtr virStorageSourceNewFromBacking(virStorageSourcePtr parent);
+-- 
+2.1.1
+

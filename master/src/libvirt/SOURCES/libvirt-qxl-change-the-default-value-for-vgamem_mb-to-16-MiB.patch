@@ -1,0 +1,72 @@
+From 0e5c56e4aa3a08035f835b26dddfbb2be01880e2 Mon Sep 17 00:00:00 2001
+Message-Id: <0e5c56e4aa3a08035f835b26dddfbb2be01880e2@dist-git>
+From: Pavel Hrdina <phrdina@redhat.com>
+Date: Mon, 12 Jan 2015 15:00:41 +0100
+Subject: [PATCH] qxl: change the default value for vgamem_mb to 16 MiB
+
+The default value should be 16 MiB instead of 8 MiB. Only really old
+version of upstream QEMU used the 8 MiB as default for vga framebuffer.
+
+Without this change if you update your libvirt where we introduced the
+"vgamem" attribute for QXL video device the value will be set to 8 MiB,
+but previously your guest had 16 MiB because we didn't pass any value to
+QEMU command line which means QEMU used its own 16 MiB as default.
+
+This will affect all users with guest's display resolution higher than
+1920x1080.
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+(cherry picked from commit 0e502466acb84aa05dead1cbe23e6debf58f4ff1)
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1181052
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_command.c | 2 +-
+ src/qemu/qemu_command.h | 2 ++
+ src/qemu/qemu_domain.c  | 2 +-
+ 3 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index d3eb43b..db0c324 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -12203,7 +12203,7 @@ qemuParseCommandLine(virCapsPtr qemuCaps,
+         vid->vram = virDomainVideoDefaultRAM(def, vid->type);
+         if (vid->type == VIR_DOMAIN_VIDEO_TYPE_QXL) {
+             vid->ram = virDomainVideoDefaultRAM(def, vid->type);
+-            vid->vgamem = 8 * 1024;
++            vid->vgamem = QEMU_QXL_VGAMEM_DEFAULT;
+         } else {
+             vid->ram = 0;
+             vid->vgamem = 0;
+diff --git a/src/qemu/qemu_command.h b/src/qemu/qemu_command.h
+index f7d3c2d..6246a85 100644
+--- a/src/qemu/qemu_command.h
++++ b/src/qemu/qemu_command.h
+@@ -55,6 +55,8 @@
+ # define QEMU_MIGRATION_PORT_MIN 49152
+ # define QEMU_MIGRATION_PORT_MAX 49215
+ 
++# define QEMU_QXL_VGAMEM_DEFAULT 16 * 1024
++
+ typedef struct _qemuBuildCommandLineCallbacks qemuBuildCommandLineCallbacks;
+ typedef qemuBuildCommandLineCallbacks *qemuBuildCommandLineCallbacksPtr;
+ struct _qemuBuildCommandLineCallbacks {
+diff --git a/src/qemu/qemu_domain.c b/src/qemu/qemu_domain.c
+index 58fcd75..0cfc603 100644
+--- a/src/qemu/qemu_domain.c
++++ b/src/qemu/qemu_domain.c
+@@ -1187,7 +1187,7 @@ qemuDomainDeviceDefPostParse(virDomainDeviceDefPtr dev,
+                 goto cleanup;
+             }
+         } else {
+-            dev->data.video->vgamem = 8 * 1024;
++            dev->data.video->vgamem = QEMU_QXL_VGAMEM_DEFAULT;
+         }
+     }
+ 
+-- 
+2.2.1
+

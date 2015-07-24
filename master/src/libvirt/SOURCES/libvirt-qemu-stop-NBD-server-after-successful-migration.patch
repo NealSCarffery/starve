@@ -1,0 +1,42 @@
+From 8af0eae29dac349052a5d2cfd78198074a50af89 Mon Sep 17 00:00:00 2001
+Message-Id: <8af0eae29dac349052a5d2cfd78198074a50af89@dist-git>
+From: Weiwei Li <nuonuoli@tencent.com>
+Date: Tue, 4 Nov 2014 12:08:37 +0100
+Subject: [PATCH] qemu: stop NBD server after successful migration
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1160212
+
+In qemuMigrationFinish mig->nbd can not be initialized by
+qemuMigrationEatCookie without the QEMU_MIGRATION_COOKIE_NBD flag.
+That causes qemuMigrationStopNBDServer to return early without
+stopping the NBD server properly.
+
+Signed-off-by: Weiwei Li <nuonuoli@tencent.com>
+Signed-off-by: Ján Tomko <jtomko@redhat.com>
+(cherry picked from commit c3012a023f2ae5763027cafc1cf2881a3c7c4b45)
+Signed-off-by: Ján Tomko <jtomko@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_migration.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/qemu/qemu_migration.c b/src/qemu/qemu_migration.c
+index 1998bc9..cc245f6 100644
+--- a/src/qemu/qemu_migration.c
++++ b/src/qemu/qemu_migration.c
+@@ -4823,7 +4823,8 @@ qemuMigrationFinish(virQEMUDriverPtr driver,
+     VIR_FREE(priv->job.completed);
+ 
+     cookie_flags = QEMU_MIGRATION_COOKIE_NETWORK |
+-                   QEMU_MIGRATION_COOKIE_STATS;
++                   QEMU_MIGRATION_COOKIE_STATS |
++                   QEMU_MIGRATION_COOKIE_NBD;
+     if (flags & VIR_MIGRATE_PERSIST_DEST)
+         cookie_flags |= QEMU_MIGRATION_COOKIE_PERSISTENT;
+ 
+-- 
+2.1.3
+

@@ -1,0 +1,166 @@
+From 01a7d6da44bbfe7719fbfe37dec840e05338dcc6 Mon Sep 17 00:00:00 2001
+Message-Id: <01a7d6da44bbfe7719fbfe37dec840e05338dcc6@dist-git>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Tue, 23 Sep 2014 15:47:55 +0200
+Subject: [PATCH] qemu: Prepare support for arbitrary migration protocol
+
+Currently we only support TCP protocol for native QEMU migration but
+this is going to be changed. Let's make the code more general and remove
+hardcoded TCP protocol from several places.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1013055
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+(cherry picked from commit e16a39fcd3bda4021e953c817bfb62307785ab61)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_migration.c | 36 ++++++++++++++++++++++++------------
+ src/qemu/qemu_monitor.c   |  3 ++-
+ src/qemu/qemu_monitor.h   |  1 +
+ 3 files changed, 27 insertions(+), 13 deletions(-)
+
+diff --git a/src/qemu/qemu_migration.c b/src/qemu/qemu_migration.c
+index a66ea54..6b690b8 100644
+--- a/src/qemu/qemu_migration.c
++++ b/src/qemu/qemu_migration.c
+@@ -2457,6 +2457,7 @@ qemuMigrationPrepareAny(virQEMUDriverPtr driver,
+                         virDomainDefPtr *def,
+                         const char *origname,
+                         virStreamPtr st,
++                        const char *protocol,
+                         unsigned short port,
+                         bool autoPort,
+                         const char *listenAddress,
+@@ -2569,6 +2570,7 @@ qemuMigrationPrepareAny(virQEMUDriverPtr driver,
+         struct addrinfo *info = NULL;
+         struct addrinfo hints = { .ai_flags = AI_ADDRCONFIG,
+                                   .ai_socktype = SOCK_STREAM };
++        const char *incFormat;
+ 
+         if (getaddrinfo("::", NULL, &hints, &info) == 0) {
+             freeaddrinfo(info);
+@@ -2605,21 +2607,27 @@ qemuMigrationPrepareAny(virQEMUDriverPtr driver,
+             } else {
+                 /* listenAddress is a hostname */
+             }
+-        } else {
++        } else if (qemuIPv6Capable && hostIPv6Capable) {
+             /* Listen on :: instead of 0.0.0.0 if QEMU understands it
+              * and there is at least one IPv6 address configured
+              */
+-            listenAddress = qemuIPv6Capable && hostIPv6Capable ?
+-                encloseAddress = true, "::" : "0.0.0.0";
++            listenAddress = "::";
++            encloseAddress = true;
++        } else {
++            listenAddress = "0.0.0.0";
+         }
+ 
+-        /* QEMU will be started with -incoming [<IPv6 addr>]:port,
+-         * -incoming <IPv4 addr>:port or -incoming <hostname>:port
++        /* QEMU will be started with
++         *   -incoming protocol:[<IPv6 addr>]:port,
++         *   -incoming protocol:<IPv4 addr>:port, or
++         *   -incoming protocol:<hostname>:port
+          */
+-        if ((encloseAddress &&
+-             virAsprintf(&migrateFrom, "tcp:[%s]:%d", listenAddress, port) < 0) ||
+-            (!encloseAddress &&
+-             virAsprintf(&migrateFrom, "tcp:%s:%d", listenAddress, port) < 0))
++        if (encloseAddress)
++            incFormat = "%s:[%s]:%d";
++        else
++            incFormat = "%s:%s:%d";
++        if (virAsprintf(&migrateFrom, incFormat,
++                        protocol, listenAddress, port) < 0)
+             goto cleanup;
+     }
+ 
+@@ -2812,7 +2820,7 @@ qemuMigrationPrepareTunnel(virQEMUDriverPtr driver,
+ 
+     ret = qemuMigrationPrepareAny(driver, dconn, cookiein, cookieinlen,
+                                   cookieout, cookieoutlen, def, origname,
+-                                  st, 0, false, NULL, flags);
++                                  st, NULL, 0, false, NULL, flags);
+     return ret;
+ }
+ 
+@@ -2955,7 +2963,8 @@ qemuMigrationPrepareDirect(virQEMUDriverPtr driver,
+ 
+     ret = qemuMigrationPrepareAny(driver, dconn, cookiein, cookieinlen,
+                                   cookieout, cookieoutlen, def, origname,
+-                                  NULL, port, autoPort, listenAddress, flags);
++                                  NULL, uri ? uri->scheme : "tcp",
++                                  port, autoPort, listenAddress, flags);
+  cleanup:
+     virURIFree(uri);
+     VIR_FREE(hostname);
+@@ -3171,6 +3180,7 @@ struct _qemuMigrationSpec {
+     enum qemuMigrationDestinationType destType;
+     union {
+         struct {
++            const char *protocol;
+             const char *name;
+             int port;
+         } host;
+@@ -3538,6 +3548,7 @@ qemuMigrationRun(virQEMUDriverPtr driver,
+     switch (spec->destType) {
+     case MIGRATION_DEST_HOST:
+         ret = qemuMonitorMigrateToHost(priv->mon, migrate_flags,
++                                       spec->dest.host.protocol,
+                                        spec->dest.host.name,
+                                        spec->dest.host.port);
+         break;
+@@ -3678,7 +3689,7 @@ qemuMigrationRun(virQEMUDriverPtr driver,
+     goto cleanup;
+ }
+ 
+-/* Perform migration using QEMU's native TCP migrate support,
++/* Perform migration using QEMU's native migrate support,
+  * not encrypted obviously
+  */
+ static int doNativeMigrate(virQEMUDriverPtr driver,
+@@ -3712,6 +3723,7 @@ static int doNativeMigrate(virQEMUDriverPtr driver,
+         spec.destType = MIGRATION_DEST_CONNECT_HOST;
+     else
+         spec.destType = MIGRATION_DEST_HOST;
++    spec.dest.host.protocol = uribits->scheme;
+     spec.dest.host.name = uribits->server;
+     spec.dest.host.port = uribits->port;
+     spec.fwdType = MIGRATION_FWD_DIRECT;
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index db2fe71..ab252fd 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -2209,6 +2209,7 @@ int qemuMonitorMigrateToFd(qemuMonitorPtr mon,
+ 
+ int qemuMonitorMigrateToHost(qemuMonitorPtr mon,
+                              unsigned int flags,
++                             const char *protocol,
+                              const char *hostname,
+                              int port)
+ {
+@@ -2224,7 +2225,7 @@ int qemuMonitorMigrateToHost(qemuMonitorPtr mon,
+     }
+ 
+ 
+-    if (virAsprintf(&uri, "tcp:%s:%d", hostname, port) < 0)
++    if (virAsprintf(&uri, "%s:%s:%d", protocol, hostname, port) < 0)
+         return -1;
+ 
+     if (mon->json)
+diff --git a/src/qemu/qemu_monitor.h b/src/qemu/qemu_monitor.h
+index ed2cf71..ed96011 100644
+--- a/src/qemu/qemu_monitor.h
++++ b/src/qemu/qemu_monitor.h
+@@ -485,6 +485,7 @@ int qemuMonitorMigrateToFd(qemuMonitorPtr mon,
+ 
+ int qemuMonitorMigrateToHost(qemuMonitorPtr mon,
+                              unsigned int flags,
++                             const char *protocol,
+                              const char *hostname,
+                              int port);
+ 
+-- 
+2.1.1
+

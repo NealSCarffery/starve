@@ -1,0 +1,349 @@
+From 8d86aac0104f3a7a1f5c26ab04ac480b05b3921f Mon Sep 17 00:00:00 2001
+Message-Id: <8d86aac0104f3a7a1f5c26ab04ac480b05b3921f@dist-git>
+From: Laine Stump <laine@laine.org>
+Date: Mon, 15 Dec 2014 10:51:25 -0500
+Subject: [PATCH] util: new functions for setting bridge and bridge port
+ attributes
+
+This is part of the fix for:
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=1099210
+
+These functions all set/get items in the sysfs for a bridge device.
+
+(cherry picked from commit 100b7a72a4cf209f2146610f1860b87331f1d9ad)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/libvirt_private.syms   |   6 ++
+ src/util/virnetdevbridge.c | 235 ++++++++++++++++++++++++++++++++++++++++++++-
+ src/util/virnetdevbridge.h |  28 +++++-
+ 3 files changed, 266 insertions(+), 3 deletions(-)
+
+diff --git a/src/libvirt_private.syms b/src/libvirt_private.syms
+index 6353d9c..2b7526a 100644
+--- a/src/libvirt_private.syms
++++ b/src/libvirt_private.syms
+@@ -1632,9 +1632,15 @@ virNetDevBridgeCreate;
+ virNetDevBridgeDelete;
+ virNetDevBridgeGetSTP;
+ virNetDevBridgeGetSTPDelay;
++virNetDevBridgeGetVlanFiltering;
++virNetDevBridgePortGetLearning;
++virNetDevBridgePortGetUnicastFlood;
++virNetDevBridgePortSetLearning;
++virNetDevBridgePortSetUnicastFlood;
+ virNetDevBridgeRemovePort;
+ virNetDevBridgeSetSTP;
+ virNetDevBridgeSetSTPDelay;
++virNetDevBridgeSetVlanFiltering;
+ 
+ 
+ # util/virnetdevmacvlan.h
+diff --git a/src/util/virnetdevbridge.c b/src/util/virnetdevbridge.c
+index d388358..1f3f221 100644
+--- a/src/util/virnetdevbridge.c
++++ b/src/util/virnetdevbridge.c
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (C) 2007-2013 Red Hat, Inc.
++ * Copyright (C) 2007-2014 Red Hat, Inc.
+  *
+  * This library is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU Lesser General Public
+@@ -219,6 +219,170 @@ static int virNetDevBridgeGet(const char *brname,
+ }
+ #endif /* __linux__ */
+ 
++#if defined(__linux__)
++static int
++virNetDevBridgePortSet(const char *brname,
++                       const char *ifname,
++                       const char *paramname,
++                       unsigned long value)
++{
++    char *path = NULL;
++    char valuestr[INT_BUFSIZE_BOUND(value)];
++    int ret = -1;
++
++    snprintf(valuestr, sizeof(valuestr), "%lu", value);
++
++    if (virAsprintf(&path, "%s/%s/brif/%s/%s",
++                    SYSFS_NET_DIR, brname, ifname, paramname) < 0)
++        return -1;
++
++    if (!virFileExists(path))
++        errno = EINVAL;
++    else
++        ret = virFileWriteStr(path, valuestr, 0);
++
++    if (ret < 0) {
++        virReportSystemError(errno,
++                             _("Unable to set bridge %s port %s %s to %s"),
++                             brname, ifname, paramname, valuestr);
++    }
++
++    VIR_FREE(path);
++    return ret;
++}
++
++
++static int
++virNetDevBridgePortGet(const char *brname,
++                       const char *ifname,
++                       const char *paramname,
++                       unsigned long *value)
++{
++    char *path = NULL;
++    char *valuestr = NULL;
++    int ret = -1;
++
++    if (virAsprintf(&path, "%s/%s/brif/%s/%s",
++                    SYSFS_NET_DIR, brname, ifname, paramname) < 0)
++        return -1;
++
++    if (virFileReadAll(path, INT_BUFSIZE_BOUND(unsigned long), &valuestr) < 0)
++        goto cleanup;
++
++    if (virStrToLong_ul(valuestr, NULL, 10, value) < 0) {
++        virReportSystemError(EINVAL,
++                             _("Unable to get bridge %s port %s %s"),
++                             brname, ifname, paramname);
++        goto cleanup;
++    }
++
++    ret = 0;
++ cleanup:
++    VIR_FREE(path);
++    VIR_FREE(valuestr);
++    return ret;
++}
++
++
++int
++virNetDevBridgePortGetLearning(const char *brname,
++                               const char *ifname,
++                               bool *enable)
++{
++    int ret = -1;
++    unsigned long value;
++
++    if (virNetDevBridgePortGet(brname, ifname, "learning", &value) < 0)
++       goto cleanup;
++
++    *enable = !!value;
++    ret = 0;
++ cleanup:
++    return ret;
++}
++
++
++int
++virNetDevBridgePortSetLearning(const char *brname,
++                               const char *ifname,
++                               bool enable)
++{
++    return virNetDevBridgePortSet(brname, ifname, "learning", enable ? 1 : 0);
++}
++
++
++int
++virNetDevBridgePortGetUnicastFlood(const char *brname,
++                                   const char *ifname,
++                                   bool *enable)
++{
++    int ret = -1;
++    unsigned long value;
++
++    if (virNetDevBridgePortGet(brname, ifname, "unicast_flood", &value) < 0)
++       goto cleanup;
++
++    *enable = !!value;
++    ret = 0;
++ cleanup:
++    return ret;
++}
++
++
++int
++virNetDevBridgePortSetUnicastFlood(const char *brname,
++                                   const char *ifname,
++                                   bool enable)
++{
++    return virNetDevBridgePortSet(brname, ifname, "unicast_flood", enable ? 1 : 0);
++}
++
++
++#else
++int
++virNetDevBridgePortGetLearning(const char *brname ATTRIBUTE_UNUSED,
++                               const char *ifname ATTRIBUTE_UNUSED,
++                               bool *enable ATTRIBUTE_UNUSED)
++{
++    virReportSystemError(ENOSYS, "%s",
++                         _("Unable to get bridge port learning on this platform"));
++    return -1;
++}
++
++
++int
++virNetDevBridgePortSetLearning(const char *brname ATTRIBUTE_UNUSED,
++                               const char *ifname ATTRIBUTE_UNUSED,
++                               bool enable)
++{
++    virReportSystemError(ENOSYS, "%s",
++                         _("Unable to set bridge port learning on this platform"));
++    return -1;
++}
++
++
++int
++virNetDevBridgePortGetUnicastFlood(const char *brname ATTRIBUTE_UNUSED,
++                                   const char *ifname ATTRIBUTE_UNUSED,
++                                   bool *enable ATTRIBUTE_UNUSED)
++{
++    virReportSystemError(ENOSYS, "%s",
++                         _("Unable to get bridge port unicast_flood on this platform"));
++    return -1;
++}
++
++
++int
++virNetDevBridgePortSetUnicastFlood(const char *brname ATTRIBUTE_UNUSED,
++                                   const char *ifname ATTRIBUTE_UNUSED,
++                                   bool enable ATTRIBUTE_UNUSED)
++{
++    virReportSystemError(ENOSYS, "%s",
++                         _("Unable to set bridge port unicast_flood on this platform"));
++    return -1;
++}
++#endif
++
+ 
+ /**
+  * virNetDevBridgeCreate:
+@@ -518,7 +682,7 @@ int virNetDevBridgeSetSTPDelay(const char *brname,
+  * @brname: the bridge device name
+  * @delayms: the forward delay in milliseconds
+  *
+- * Retrives the forward delay for the bridge device @brname
++ * Retrieves the forward delay for the bridge device @brname
+  * storing it in @delayms. The forward delay is only meaningful
+  * if STP is enabled
+  *
+@@ -683,3 +847,70 @@ int virNetDevBridgeGetSTP(const char *brname,
+     return -1;
+ }
+ #endif
++
++#if defined(HAVE_STRUCT_IFREQ) && defined(__linux__)
++/**
++ * virNetDevBridgeGetVlanFiltering:
++ * @brname: the bridge device name
++ * @enable: true or false
++ *
++ * Retrieves the vlan_filtering setting for the bridge device @brname
++ * storing it in @enable.
++ *
++ * Returns 0 on success, -1 on error
++ */
++int
++virNetDevBridgeGetVlanFiltering(const char *brname,
++                                bool *enable)
++{
++    int ret = -1;
++    unsigned long value;
++
++    if (virNetDevBridgeGet(brname, "vlan_filtering", &value, -1, NULL) < 0)
++        goto cleanup;
++
++    *enable = !!value;
++    ret = 0;
++ cleanup:
++    return ret;
++}
++
++
++/**
++ * virNetDevBridgeSetVlanFiltering:
++ * @brname: the bridge name
++ * @enable: true or false
++ *
++ * Set the bridge vlan_filtering mode
++ *
++ * Returns 0 in case of success or -1 on failure
++ */
++
++int
++virNetDevBridgeSetVlanFiltering(const char *brname,
++                                bool enable)
++{
++    return virNetDevBridgeSet(brname, "vlan_filtering", enable ? 1 : 0, -1, NULL);
++}
++
++
++#else
++int
++virNetDevBridgeGetVlanFiltering(const char *brname ATTRIBUTE_UNUSED,
++                                bool *enable ATTRIBUTE_UNUSED)
++{
++    virReportSystemError(ENOSYS, "%s",
++                         _("Unable to get bridge vlan_filtering on this platform"));
++    return -1;
++}
++
++
++int
++virNetDevBridgeSetVlanFiltering(const char *brname ATTRIBUTE_UNUSED,
++                                bool enable ATTRIBUTE_UNUSED)
++{
++    virReportSystemError(ENOSYS, "%s",
++                         _("Unable to set bridge vlan_filtering on this platform"));
++    return -1;
++}
++#endif
+diff --git a/src/util/virnetdevbridge.h b/src/util/virnetdevbridge.h
+index 13776d2..8188a2f 100644
+--- a/src/util/virnetdevbridge.h
++++ b/src/util/virnetdevbridge.h
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (C) 2007-2011 Red Hat, Inc.
++ * Copyright (C) 2007-2012, 2014 Red Hat, Inc.
+  *
+  * This library is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU Lesser General Public
+@@ -51,4 +51,30 @@ int virNetDevBridgeGetSTP(const char *brname,
+                           bool *enable)
+     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_RETURN_CHECK;
+ 
++int virNetDevBridgeSetVlanFiltering(const char *brname,
++                                    bool enable)
++    ATTRIBUTE_NONNULL(1) ATTRIBUTE_RETURN_CHECK;
++int virNetDevBridgeGetVlanFiltering(const char *brname,
++                                    bool *enable)
++    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_RETURN_CHECK;
++
++int virNetDevBridgePortGetLearning(const char *brname,
++                                   const char *ifname,
++                                   bool *enable)
++    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_NONNULL(3)
++    ATTRIBUTE_RETURN_CHECK;
++int virNetDevBridgePortSetLearning(const char *brname,
++                                   const char *ifname,
++                                   bool enable)
++    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_RETURN_CHECK;
++int virNetDevBridgePortGetUnicastFlood(const char *brname,
++                                       const char *ifname,
++                                       bool *enable)
++    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_NONNULL(3)
++    ATTRIBUTE_RETURN_CHECK;
++int virNetDevBridgePortSetUnicastFlood(const char *brname,
++                                       const char *ifname,
++                                       bool enable)
++    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_RETURN_CHECK;
++
+ #endif /* __VIR_NETDEV_BRIDGE_H__ */
+-- 
+2.2.0
+

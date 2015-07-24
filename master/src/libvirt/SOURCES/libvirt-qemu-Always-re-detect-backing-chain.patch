@@ -1,0 +1,41 @@
+From 03adce7ea2b92a0650652fe9f12279207459a860 Mon Sep 17 00:00:00 2001
+Message-Id: <03adce7ea2b92a0650652fe9f12279207459a860@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Fri, 26 Sep 2014 09:47:01 +0200
+Subject: [PATCH] qemu: Always re-detect backing chain
+
+Since 363e9a68 we track backing chain metadata when creating snapshots
+the right way even for the inactive configuration. As we did not yet
+update other code paths that modify the backing chain (blockpull) the
+newDef backing chain gets out of sync.
+
+After stopping of a VM the new definition gets copied to the next start
+one. The new VM then has incorrect backing chain info. This patch
+switches the backing chain detector to always purge the existing backing
+chain and forces re-detection to avoid this issue until we'll have full
+backing chain tracking support.
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1144922
+(cherry picked from commit fe7ef7b112b3b4d6f9c9edf499a79683fb0b7edb)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_domain.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/qemu/qemu_domain.c b/src/qemu/qemu_domain.c
+index ac70f62..72d7279 100644
+--- a/src/qemu/qemu_domain.c
++++ b/src/qemu/qemu_domain.c
+@@ -2544,7 +2544,7 @@ qemuDomainCheckDiskPresence(virQEMUDriverPtr driver,
+             virFileExists(path))
+             continue;
+ 
+-        if (qemuDomainDetermineDiskChain(driver, vm, disk, false, true) >= 0)
++        if (qemuDomainDetermineDiskChain(driver, vm, disk, true, true) >= 0)
+             continue;
+ 
+         if (disk->startupPolicy &&
+-- 
+2.1.1
+

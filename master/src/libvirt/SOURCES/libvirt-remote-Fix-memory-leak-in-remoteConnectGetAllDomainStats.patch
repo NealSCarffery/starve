@@ -1,0 +1,45 @@
+From ef895aea24b07fc419496a3e2780629380d061b5 Mon Sep 17 00:00:00 2001
+Message-Id: <ef895aea24b07fc419496a3e2780629380d061b5@dist-git>
+From: Peter Krempa <pkrempa@redhat.com>
+Date: Wed, 5 Nov 2014 16:32:38 +0100
+Subject: [PATCH] remote: Fix memory leak in remoteConnectGetAllDomainStats
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1158715
+
+The remote call actually doesn't free the arguments array so we leak
+memory in case a domain list is specified. As the remote domain list
+array consists only of stolen pointers from the actual domain objects
+it's sufficient just to free the array.
+
+Valgrind message:
+==1081452== 64 bytes in 1 blocks are definitely lost in loss record 632 of 726
+==1081452==    at 0x4C296D0: calloc (vg_replace_malloc.c:618)
+==1081452==    by 0x4EA5CB4: virAllocN (viralloc.c:191)
+==1081452==    by 0x505D21E: remoteConnectGetAllDomainStats (remote_driver.c:7785)
+==1081452==    by 0x50081AA: virDomainListGetStats (libvirt-domain.c:11080)
+==1081452==    by 0x155249: cmdDomstats (virsh-domain-monitor.c:2147)
+==1081452==    by 0x12FB73: vshCommandRun (virsh.c:1935)
+==1081452==    by 0x133FEB: main (virsh.c:3719)
+
+(cherry picked from commit bf1f8e280c330f51833189d40a99dc894205a129)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/remote/remote_driver.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/remote/remote_driver.c b/src/remote/remote_driver.c
+index de021d4..6f7c894 100644
+--- a/src/remote/remote_driver.c
++++ b/src/remote/remote_driver.c
+@@ -7842,6 +7842,7 @@ remoteConnectGetAllDomainStats(virConnectPtr conn,
+         VIR_FREE(elem);
+     }
+     virDomainStatsRecordListFree(tmpret);
++    VIR_FREE(args.doms.doms_val);
+     xdr_free((xdrproc_t)xdr_remote_connect_get_all_domain_stats_ret,
+              (char *) &ret);
+ 
+-- 
+2.1.3
+

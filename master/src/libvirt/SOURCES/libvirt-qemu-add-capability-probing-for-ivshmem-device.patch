@@ -1,0 +1,186 @@
+From c6b22fdc32c38b487b4d8748251f697d30e1fe48 Mon Sep 17 00:00:00 2001
+Message-Id: <c6b22fdc32c38b487b4d8748251f697d30e1fe48@dist-git>
+From: Maxime Leroy <maxime.leroy@6wind.com>
+Date: Fri, 3 Oct 2014 22:54:56 +0200
+Subject: [PATCH] qemu: add capability probing for ivshmem device
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1126991
+
+Ivshmem is supported by QEMU since 0.13 release.
+
+Signed-off-by: Maxime Leroy <maxime.leroy@6wind.com>
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+(cherry picked from commit e3d478eb51c1a60a2f52392a81031b477098e2bc)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_capabilities.c                  |  2 ++
+ src/qemu/qemu_capabilities.h                  |  1 +
+ tests/qemucapabilitiesdata/caps_1.2.2-1.caps  |  1 +
+ tests/qemucapabilitiesdata/caps_1.3.1-1.caps  |  1 +
+ tests/qemucapabilitiesdata/caps_1.4.2-1.caps  |  1 +
+ tests/qemucapabilitiesdata/caps_1.5.3-1.caps  |  1 +
+ tests/qemucapabilitiesdata/caps_1.6.0-1.caps  |  1 +
+ tests/qemucapabilitiesdata/caps_1.6.50-1.caps |  1 +
+ tests/qemucapabilitiesdata/caps_2.1.1-1.caps  |  1 +
+ tests/qemuhelptest.c                          | 15 ++++++++++-----
+ 10 files changed, 20 insertions(+), 5 deletions(-)
+
+diff --git a/src/qemu/qemu_capabilities.c b/src/qemu/qemu_capabilities.c
+index ca112e9..ea1250d 100644
+--- a/src/qemu/qemu_capabilities.c
++++ b/src/qemu/qemu_capabilities.c
+@@ -270,6 +270,7 @@ VIR_ENUM_IMPL(virQEMUCaps, QEMU_CAPS_LAST,
+               "splash-timeout", /* 175 */
+               "iothread",
+               "migrate-rdma",
++              "ivshmem",
+     );
+ 
+ 
+@@ -1500,6 +1501,7 @@ struct virQEMUCapsStringFlags virQEMUCapsObjectTypes[] = {
+     { "memory-backend-file", QEMU_CAPS_OBJECT_MEMORY_FILE },
+     { "usb-audio", QEMU_CAPS_OBJECT_USB_AUDIO },
+     { "iothread", QEMU_CAPS_OBJECT_IOTHREAD},
++    { "ivshmem", QEMU_CAPS_DEVICE_IVSHMEM },
+ };
+ 
+ static struct virQEMUCapsStringFlags virQEMUCapsObjectPropsVirtioBlk[] = {
+diff --git a/src/qemu/qemu_capabilities.h b/src/qemu/qemu_capabilities.h
+index b15b9f1..d3a9a0a 100644
+--- a/src/qemu/qemu_capabilities.h
++++ b/src/qemu/qemu_capabilities.h
+@@ -217,6 +217,7 @@ typedef enum {
+     QEMU_CAPS_SPLASH_TIMEOUT     = 175, /* -boot splash-time */
+     QEMU_CAPS_OBJECT_IOTHREAD    = 176, /* -object iothread */
+     QEMU_CAPS_MIGRATE_RDMA       = 177, /* have rdma migration */
++    QEMU_CAPS_DEVICE_IVSHMEM     = 178, /* -device ivshmem */
+ 
+     QEMU_CAPS_LAST,                   /* this must always be the last item */
+ } virQEMUCapsFlags;
+diff --git a/tests/qemucapabilitiesdata/caps_1.2.2-1.caps b/tests/qemucapabilitiesdata/caps_1.2.2-1.caps
+index 3b1b699..fc8dfc1 100644
+--- a/tests/qemucapabilitiesdata/caps_1.2.2-1.caps
++++ b/tests/qemucapabilitiesdata/caps_1.2.2-1.caps
+@@ -115,4 +115,5 @@
+     <flag name='usb-kbd'/>
+     <flag name='host-pci-multidomain'/>
+     <flag name='usb-audio'/>
++    <flag name='ivshmem'/>
+   </qemuCaps>
+diff --git a/tests/qemucapabilitiesdata/caps_1.3.1-1.caps b/tests/qemucapabilitiesdata/caps_1.3.1-1.caps
+index 4b7651e..f4f0397 100644
+--- a/tests/qemucapabilitiesdata/caps_1.3.1-1.caps
++++ b/tests/qemucapabilitiesdata/caps_1.3.1-1.caps
+@@ -129,4 +129,5 @@
+     <flag name='usb-kbd'/>
+     <flag name='host-pci-multidomain'/>
+     <flag name='usb-audio'/>
++    <flag name='ivshmem'/>
+   </qemuCaps>
+diff --git a/tests/qemucapabilitiesdata/caps_1.4.2-1.caps b/tests/qemucapabilitiesdata/caps_1.4.2-1.caps
+index d146bf9..e6659e4 100644
+--- a/tests/qemucapabilitiesdata/caps_1.4.2-1.caps
++++ b/tests/qemucapabilitiesdata/caps_1.4.2-1.caps
+@@ -130,4 +130,5 @@
+     <flag name='usb-kbd'/>
+     <flag name='host-pci-multidomain'/>
+     <flag name='usb-audio'/>
++    <flag name='ivshmem'/>
+   </qemuCaps>
+diff --git a/tests/qemucapabilitiesdata/caps_1.5.3-1.caps b/tests/qemucapabilitiesdata/caps_1.5.3-1.caps
+index c220b46..9716cf5 100644
+--- a/tests/qemucapabilitiesdata/caps_1.5.3-1.caps
++++ b/tests/qemucapabilitiesdata/caps_1.5.3-1.caps
+@@ -139,4 +139,5 @@
+     <flag name='host-pci-multidomain'/>
+     <flag name='usb-audio'/>
+     <flag name='splash-timeout'/>
++    <flag name='ivshmem'/>
+   </qemuCaps>
+diff --git a/tests/qemucapabilitiesdata/caps_1.6.0-1.caps b/tests/qemucapabilitiesdata/caps_1.6.0-1.caps
+index 21d4320..a820cd4 100644
+--- a/tests/qemucapabilitiesdata/caps_1.6.0-1.caps
++++ b/tests/qemucapabilitiesdata/caps_1.6.0-1.caps
+@@ -145,4 +145,5 @@
+     <flag name='msg-timestamp'/>
+     <flag name='usb-audio'/>
+     <flag name='splash-timeout'/>
++    <flag name='ivshmem'/>
+   </qemuCaps>
+diff --git a/tests/qemucapabilitiesdata/caps_1.6.50-1.caps b/tests/qemucapabilitiesdata/caps_1.6.50-1.caps
+index 44f7b0c..f65b3f4 100644
+--- a/tests/qemucapabilitiesdata/caps_1.6.50-1.caps
++++ b/tests/qemucapabilitiesdata/caps_1.6.50-1.caps
+@@ -145,4 +145,5 @@
+     <flag name='numa'/>
+     <flag name='usb-audio'/>
+     <flag name='splash-timeout'/>
++    <flag name='ivshmem'/>
+   </qemuCaps>
+diff --git a/tests/qemucapabilitiesdata/caps_2.1.1-1.caps b/tests/qemucapabilitiesdata/caps_2.1.1-1.caps
+index 71d2459..7fc654d 100644
+--- a/tests/qemucapabilitiesdata/caps_2.1.1-1.caps
++++ b/tests/qemucapabilitiesdata/caps_2.1.1-1.caps
+@@ -159,4 +159,5 @@
+     <flag name='splash-timeout'/>
+     <flag name='iothread'/>
+     <flag name='migrate-rdma'/>
++    <flag name='ivshmem'/>
+   </qemuCaps>
+diff --git a/tests/qemuhelptest.c b/tests/qemuhelptest.c
+index 975edf3..7e62a50 100644
+--- a/tests/qemuhelptest.c
++++ b/tests/qemuhelptest.c
+@@ -518,7 +518,8 @@ mymain(void)
+             QEMU_CAPS_DEVICE_SCSI_GENERIC,
+             QEMU_CAPS_DEVICE_USB_KBD,
+             QEMU_CAPS_DEVICE_USB_STORAGE,
+-            QEMU_CAPS_HOST_PCI_MULTIDOMAIN);
++            QEMU_CAPS_HOST_PCI_MULTIDOMAIN,
++            QEMU_CAPS_DEVICE_IVSHMEM);
+     DO_TEST("qemu-kvm-0.12.1.2-rhel61", 12001, 1, 0,
+             QEMU_CAPS_VNC_COLON,
+             QEMU_CAPS_NO_REBOOT,
+@@ -746,7 +747,8 @@ mymain(void)
+             QEMU_CAPS_DEVICE_SCSI_GENERIC_BOOTINDEX,
+             QEMU_CAPS_DEVICE_USB_KBD,
+             QEMU_CAPS_DEVICE_USB_STORAGE,
+-            QEMU_CAPS_SPLASH_TIMEOUT);
++            QEMU_CAPS_SPLASH_TIMEOUT,
++            QEMU_CAPS_DEVICE_IVSHMEM);
+     DO_TEST("qemu-1.1.0", 1001000, 0, 0,
+             QEMU_CAPS_VNC_COLON,
+             QEMU_CAPS_NO_REBOOT,
+@@ -845,7 +847,8 @@ mymain(void)
+             QEMU_CAPS_DEVICE_USB_KBD,
+             QEMU_CAPS_DEVICE_USB_STORAGE,
+             QEMU_CAPS_OBJECT_USB_AUDIO,
+-            QEMU_CAPS_SPLASH_TIMEOUT);
++            QEMU_CAPS_SPLASH_TIMEOUT,
++            QEMU_CAPS_DEVICE_IVSHMEM);
+     DO_TEST("qemu-1.2.0", 1002000, 0, 0,
+             QEMU_CAPS_VNC_COLON,
+             QEMU_CAPS_NO_REBOOT,
+@@ -956,7 +959,8 @@ mymain(void)
+             QEMU_CAPS_DEVICE_USB_KBD,
+             QEMU_CAPS_USB_STORAGE_REMOVABLE,
+             QEMU_CAPS_OBJECT_USB_AUDIO,
+-            QEMU_CAPS_SPLASH_TIMEOUT);
++            QEMU_CAPS_SPLASH_TIMEOUT,
++            QEMU_CAPS_DEVICE_IVSHMEM);
+     DO_TEST("qemu-kvm-1.2.0", 1002000, 1, 0,
+             QEMU_CAPS_VNC_COLON,
+             QEMU_CAPS_NO_REBOOT,
+@@ -1072,7 +1076,8 @@ mymain(void)
+             QEMU_CAPS_DEVICE_USB_KBD,
+             QEMU_CAPS_USB_STORAGE_REMOVABLE,
+             QEMU_CAPS_OBJECT_USB_AUDIO,
+-            QEMU_CAPS_SPLASH_TIMEOUT);
++            QEMU_CAPS_SPLASH_TIMEOUT,
++            QEMU_CAPS_DEVICE_IVSHMEM);
+ 
+     return ret == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+ }
+-- 
+2.1.2
+

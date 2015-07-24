@@ -1,0 +1,103 @@
+From 6b3269813159a2651bddee7113ba08eab948c7ff Mon Sep 17 00:00:00 2001
+Message-Id: <6b3269813159a2651bddee7113ba08eab948c7ff@dist-git>
+From: Jiri Denemark <jdenemar@redhat.com>
+Date: Sat, 6 Sep 2014 01:16:20 +0200
+Subject: [PATCH] qemu: Propagate QEMU errors during incoming migrations
+
+When QEMU fails during incoming migration after we successfully started
+it (i.e., during Perform or Finish phase), we report a rather unhelpful
+message
+
+    Unable to read from monitor: Connection reset by peer
+
+We already have a code that takes error messages from QEMU's error
+output but we disable it once QEMU successfully starts. This patch
+postpones this until the end of Finish phase during incoming migration
+so that we can report a much better error message:
+
+    internal error: early end of file from monitor: possible problem:
+    Unknown savevm section or instance '0000:00:05.0/virtio-balloon' 0
+    load of migration failed
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1090093
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+(cherry picked from commit 03890605dc981f46ac72d17e4ac7db0da1b88e97)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_migration.c |  2 ++
+ src/qemu/qemu_monitor.c   | 12 +++++++++---
+ src/qemu/qemu_process.c   |  6 ++++--
+ 3 files changed, 15 insertions(+), 5 deletions(-)
+
+diff --git a/src/qemu/qemu_migration.c b/src/qemu/qemu_migration.c
+index a7aeca5..2726512 100644
+--- a/src/qemu/qemu_migration.c
++++ b/src/qemu/qemu_migration.c
+@@ -4689,6 +4689,8 @@ qemuMigrationFinish(virQEMUDriverPtr driver,
+  cleanup:
+     virPortAllocatorRelease(driver->migrationPorts, port);
+     if (vm) {
++        if (priv->mon)
++            qemuMonitorSetDomainLog(priv->mon, -1);
+         VIR_FREE(priv->origname);
+         virObjectUnlock(vm);
+     }
+diff --git a/src/qemu/qemu_monitor.c b/src/qemu/qemu_monitor.c
+index 2edc19b..78f2a20 100644
+--- a/src/qemu/qemu_monitor.c
++++ b/src/qemu/qemu_monitor.c
+@@ -631,8 +631,11 @@ qemuMonitorIO(int watch, int fd, int events, void *opaque)
+         error = true;
+     } else {
+         if (events & VIR_EVENT_HANDLE_WRITABLE) {
+-            if (qemuMonitorIOWrite(mon) < 0)
++            if (qemuMonitorIOWrite(mon) < 0) {
+                 error = true;
++                if (errno == ECONNRESET)
++                    hangup = true;
++            }
+             events &= ~VIR_EVENT_HANDLE_WRITABLE;
+         }
+ 
+@@ -642,6 +645,8 @@ qemuMonitorIO(int watch, int fd, int events, void *opaque)
+             events &= ~VIR_EVENT_HANDLE_READABLE;
+             if (got < 0) {
+                 error = true;
++                if (errno == ECONNRESET)
++                    hangup = true;
+             } else if (got == 0) {
+                 eof = true;
+             } else {
+@@ -683,8 +688,9 @@ qemuMonitorIO(int watch, int fd, int events, void *opaque)
+         if (hangup) {
+             /* Check if an error message from qemu is available and if so, use
+              * it to overwrite the actual message. It's done only in early
+-             * startup phases where the message from qemu is certainly more
+-             * interesting than a "connection reset by peer" message.
++             * startup phases or during incoming migration when the message
++             * from qemu is certainly more interesting than a
++             * "connection reset by peer" message.
+              */
+             char *qemuMessage;
+ 
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index f68dfbe..9395af1 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -4377,8 +4377,10 @@ int qemuProcessStart(virConnectPtr conn,
+             goto cleanup;
+     }
+ 
+-    /* unset reporting errors from qemu log */
+-    qemuMonitorSetDomainLog(priv->mon, -1);
++    /* Keep watching qemu log for errors during incoming migration, otherwise
++     * unset reporting errors from qemu log. */
++    if (!migrateFrom)
++        qemuMonitorSetDomainLog(priv->mon, -1);
+ 
+     virCommandFree(cmd);
+     VIR_FORCE_CLOSE(logfile);
+-- 
+2.1.0
+

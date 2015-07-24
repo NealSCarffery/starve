@@ -1,0 +1,84 @@
+From b514fee67a81636d71e4598ab8a1bcc64459f7b2 Mon Sep 17 00:00:00 2001
+Message-Id: <b514fee67a81636d71e4598ab8a1bcc64459f7b2@dist-git>
+From: Eric Blake <eblake@redhat.com>
+Date: Wed, 29 Oct 2014 15:15:23 -0600
+Subject: [PATCH] qemu: better error message when block job can't succeed
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1140981 reports that
+the qemu-kvm shipped as part of RHEL 7.0 intentionally[1] cripples
+block jobs by removing the 'block-stream' QMP command, while still
+leaving 'block-job-cancel' as an unusable no-op.  Meanwhile, we
+already had existing code that checked whether block jobs were
+completely missing (such as qemu 0.15), old style (cancel is
+synchronous, and all commands spelled with '_'), or new style
+(cancel is asynchronous, and all commands spelled with '-'), and
+used that three-way probe to give decent error messages.  At the
+time that code was added, all existing qemu versions fell in one
+of three buckets, and the code was using the presence of
+'block-job-cancel' as the witness of which of the three buckets.
+But now that RHEL qemu has shipped with intentionally crippled
+'block-stream', we have a fourth bucket, which results in ugly
+error messages when trying 'virsh blockpull':
+
+ error: Requested operation is not valid: Command 'block-stream' is not found
+
+In reality, the fourth bucket should be treated the same as the
+first bucket (no block job support); we can do that by realizing
+that no existing build of qemu has working block-stream while
+lacking block-job-cancel, so it is easiest to change our witness
+to the command that starts a job rather than ends one.  We still
+act correctly regarding command spelling and whether cancel is
+asynchronous.  And on crippled RHEL builds, we now get the desired:
+
+ error: unsupported configuration: block jobs not supported with this qemu binary
+
+[1] The intentional cripple is limited to qemu-kvm of RHEL; when using
+qemu-kvm-rhev of RHEV, block job functionality is supported.  Don't ask
+me to explain the "why" behind it all - I'm just dealing with fallout
+from someone else's decision.
+
+* src/qemu/qemu_capabilities.h (QEMU_CAPS_BLOCKJOB_SYNC): Tweak comment.
+* src/qemu/qemu_capabilities.c (virQEMUCapsCommands): Look for stream
+rather than cancel when determining the flavor of block jobs supported.
+
+Signed-off-by: Eric Blake <eblake@redhat.com>
+(cherry picked from commit 00331bfbc9626ee9e94352453087b521943236ca)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_capabilities.c | 4 ++--
+ src/qemu/qemu_capabilities.h | 4 ++--
+ 2 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/src/qemu/qemu_capabilities.c b/src/qemu/qemu_capabilities.c
+index bb804d3..683b882 100644
+--- a/src/qemu/qemu_capabilities.c
++++ b/src/qemu/qemu_capabilities.c
+@@ -1422,8 +1422,8 @@ struct virQEMUCapsStringFlags {
+ struct virQEMUCapsStringFlags virQEMUCapsCommands[] = {
+     { "system_wakeup", QEMU_CAPS_WAKEUP },
+     { "transaction", QEMU_CAPS_TRANSACTION },
+-    { "block_job_cancel", QEMU_CAPS_BLOCKJOB_SYNC },
+-    { "block-job-cancel", QEMU_CAPS_BLOCKJOB_ASYNC },
++    { "block_stream", QEMU_CAPS_BLOCKJOB_SYNC },
++    { "block-stream", QEMU_CAPS_BLOCKJOB_ASYNC },
+     { "dump-guest-memory", QEMU_CAPS_DUMP_GUEST_MEMORY },
+     { "query-spice", QEMU_CAPS_SPICE },
+     { "query-kvm", QEMU_CAPS_KVM },
+diff --git a/src/qemu/qemu_capabilities.h b/src/qemu/qemu_capabilities.h
+index d3a9a0a..08c531d 100644
+--- a/src/qemu/qemu_capabilities.h
++++ b/src/qemu/qemu_capabilities.h
+@@ -127,8 +127,8 @@ typedef enum {
+     QEMU_CAPS_SCSI_DISK_CHANNEL  = 87, /* Is scsi-disk.channel available? */
+     QEMU_CAPS_SCSI_BLOCK         = 88, /* -device scsi-block */
+     QEMU_CAPS_TRANSACTION        = 89, /* transaction monitor command */
+-    QEMU_CAPS_BLOCKJOB_SYNC      = 90, /* RHEL 6.2 block_job_cancel */
+-    QEMU_CAPS_BLOCKJOB_ASYNC     = 91, /* qemu 1.1 block-job-cancel */
++    QEMU_CAPS_BLOCKJOB_SYNC      = 90, /* old block_job_cancel, block_stream */
++    QEMU_CAPS_BLOCKJOB_ASYNC     = 91, /* new block-job-cancel, block-stream */
+     QEMU_CAPS_SCSI_CD            = 92, /* -device scsi-cd */
+     QEMU_CAPS_IDE_CD             = 93, /* -device ide-cd */
+     QEMU_CAPS_NO_USER_CONFIG     = 94, /* -no-user-config */
+-- 
+2.1.3
+

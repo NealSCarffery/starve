@@ -1,0 +1,81 @@
+From f454878890e760257de9e59daecf875b5645ec05 Mon Sep 17 00:00:00 2001
+Message-Id: <f454878890e760257de9e59daecf875b5645ec05@dist-git>
+From: Maxime Leroy <maxime.leroy@6wind.com>
+Date: Wed, 22 Oct 2014 10:58:14 +0200
+Subject: [PATCH] conf: tests: fix virDomainNetDefFormat for vhost-user in
+ client mode
+
+The mode attribute is required for the source element of vhost-user.
+Thus virDomainNetDefFormat should always generate a xml with it and not
+only when the mode is server.
+
+The commit fixes the issue. And it adds a vhostuser interface in
+'client' mode to qemuxml2argv-net-vhostuser.(args|xml) to test this
+usecase.
+
+Signed-off-by: Maxime Leroy <maxime.leroy@6wind.com>
+(cherry picked from commit 302720742f6e159af45631475d720cf807e905b9)
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1155458
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/conf/domain_conf.c                                 | 5 +++--
+ tests/qemuxml2argvdata/qemuxml2argv-net-vhostuser.args | 7 +++++--
+ tests/qemuxml2argvdata/qemuxml2argv-net-vhostuser.xml  | 7 ++++++-
+ 3 files changed, 14 insertions(+), 5 deletions(-)
+
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index d1d816d..58d5b80 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -16900,8 +16900,9 @@ virDomainNetDefFormat(virBufferPtr buf,
+                 virBufferAddLit(buf, "<source type='unix'");
+                 virBufferEscapeString(buf, " path='%s'",
+                                       def->data.vhostuser->data.nix.path);
+-                if (def->data.vhostuser->data.nix.listen)
+-                    virBufferAddLit(buf, " mode='server'");
++                virBufferAsprintf(buf, " mode='%s'",
++                                  def->data.vhostuser->data.nix.listen ?
++                                  "server"  : "client");
+                 virBufferAddLit(buf, "/>\n");
+             }
+             break;
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-net-vhostuser.args b/tests/qemuxml2argvdata/qemuxml2argv-net-vhostuser.args
+index cc66ec3..26daac3 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-net-vhostuser.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-net-vhostuser.args
+@@ -2,6 +2,9 @@ LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=none \
+ /usr/bin/qemu -S -M \
+ pc -m 214 -smp 1 -nographic -nodefaults -monitor unix:/tmp/test-monitor,server,nowait \
+ -no-acpi -boot c -usb -hda /dev/HostVG/QEMUGuest1 \
+--chardev socket,id=charnet0,path=/tmp/vhost.sock,server \
++-chardev socket,id=charnet0,path=/tmp/vhost0.sock,server \
+ -netdev type=vhost-user,id=hostnet0,chardev=charnet0 \
+--device virtio-net-pci,netdev=hostnet0,id=net0,mac=52:54:00:ee:96:6b,bus=pci.0,addr=0x3
++-device virtio-net-pci,netdev=hostnet0,id=net0,mac=52:54:00:ee:96:6b,bus=pci.0,addr=0x3 \
++-chardev socket,id=charnet1,path=/tmp/vhost1.sock \
++-netdev type=vhost-user,id=hostnet1,chardev=charnet1 \
++-device virtio-net-pci,netdev=hostnet1,id=net1,mac=52:54:00:ee:96:6c,bus=pci.0,addr=0x4
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-net-vhostuser.xml b/tests/qemuxml2argvdata/qemuxml2argv-net-vhostuser.xml
+index b49d48e..e5b6242 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-net-vhostuser.xml
++++ b/tests/qemuxml2argvdata/qemuxml2argv-net-vhostuser.xml
+@@ -25,7 +25,12 @@
+     <controller type='pci' index='0' model='pci-root'/>
+     <interface type='vhostuser'>
+       <mac address='52:54:00:ee:96:6b'/>
+-      <source type='unix' path='/tmp/vhost.sock' mode='server'/>
++      <source type='unix' path='/tmp/vhost0.sock' mode='server'/>
++      <model type='virtio'/>
++    </interface>
++    <interface type='vhostuser'>
++      <mac address='52:54:00:ee:96:6c'/>
++      <source type='unix' path='/tmp/vhost1.sock' mode='client'/>
+       <model type='virtio'/>
+     </interface>
+     <memballoon model='none'/>
+-- 
+2.1.3
+

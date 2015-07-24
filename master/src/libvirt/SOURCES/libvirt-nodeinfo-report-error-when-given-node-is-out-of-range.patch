@@ -1,0 +1,50 @@
+From 150db6173b1983eb77d9d40a541599dac4ecf0d4 Mon Sep 17 00:00:00 2001
+Message-Id: <150db6173b1983eb77d9d40a541599dac4ecf0d4@dist-git>
+From: Jincheng Miao <jmiao@redhat.com>
+Date: Tue, 23 Sep 2014 10:34:04 +0200
+Subject: [PATCH] nodeinfo: report error when given node is out of range
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1145050
+
+Signed-off-by: Jincheng Miao <jmiao@redhat.com>
+Signed-off-by: Michal Privoznik <mprivozn@redhat.com>
+(cherry picked from commit 7db19366423dcab388907c12caf766c6e5870d00)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/nodeinfo.c | 18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/src/nodeinfo.c b/src/nodeinfo.c
+index 92a3718..134fee7 100644
+--- a/src/nodeinfo.c
++++ b/src/nodeinfo.c
+@@ -2032,10 +2032,24 @@ nodeGetFreePages(unsigned int npages,
+                  unsigned long long *counts)
+ {
+     int ret = -1;
+-    int cell;
++    int cell, lastCell;
+     size_t i, ncounts = 0;
+ 
+-    for (cell = startCell; cell < (int) (startCell + cellCount); cell++) {
++    if ((lastCell = virNumaGetMaxNode()) < 0)
++        return 0;
++
++    if (startCell > lastCell) {
++        virReportError(VIR_ERR_INTERNAL_ERROR,
++                       _("start cell %d out of range (0-%d)"),
++                       startCell, lastCell);
++        goto cleanup;
++    }
++
++    lastCell = startCell + cellCount;
++    if (startCell + cellCount < lastCell)
++        lastCell = startCell + cellCount;
++
++    for (cell = startCell; cell < lastCell; cell++) {
+         for (i = 0; i < npages; i++) {
+             unsigned int page_size = pages[i];
+             unsigned int page_free;
+-- 
+2.1.1
+

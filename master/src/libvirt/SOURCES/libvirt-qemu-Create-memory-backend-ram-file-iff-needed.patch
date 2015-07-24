@@ -1,0 +1,128 @@
+From f3bb37db51fda463f584b989ad5faca570949fa2 Mon Sep 17 00:00:00 2001
+Message-Id: <f3bb37db51fda463f584b989ad5faca570949fa2@dist-git>
+From: Michal Privoznik <mprivozn@redhat.com>
+Date: Fri, 19 Dec 2014 08:21:42 +0100
+Subject: [PATCH] qemu: Create memory-backend-{ram, file} iff needed
+
+Libvirt BZ: https://bugzilla.redhat.com/show_bug.cgi?id=1175397
+QEMU BZ:    https://bugzilla.redhat.com/show_bug.cgi?id=1170093
+
+In qemu there are two interesting arguments:
+
+1) -numa to create a guest NUMA node
+2) -object memory-backend-{ram,file} to tell qemu which memory
+region on which host's NUMA node it should allocate the guest
+memory from.
+
+Combining these two together we can instruct qemu to create a
+guest NUMA node that is tied to a host NUMA node. And it works
+just fine. However, depending on machine type used, there might
+be some issued during migration when OVMF is enabled (see QEMU
+BZ). While this truly is a QEMU bug, we can help avoiding it. The
+problem lies within the memory backend objects somewhere. Having
+said that, fix on our side consists on putting those objects on
+the command line if and only if needed. For instance, while
+previously we would construct this (in all ways correct) command
+line:
+
+    -object memory-backend-ram,size=256M,id=ram-node0 \
+    -numa node,nodeid=0,cpus=0,memdev=ram-node0
+
+now we create just:
+
+    -numa node,nodeid=0,cpus=0,mem=256
+
+because the backend object is obviously not tied to any specific
+host NUMA node.
+
+Signed-off-by: Michal Privoznik <mprivozn@redhat.com>
+(cherry picked from commit f309db1f4d51009bad0d32e12efc75530b66836b)
+
+Conflicts:
+	src/qemu/qemu_command.c: Some context
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_command.c                                  | 16 +++++++++-------
+ .../qemuxml2argvdata/qemuxml2argv-hugepages-pages3.args  |  3 +--
+ .../qemuxml2argv-numatune-memnode-no-memory.args         |  3 +--
+ 3 files changed, 11 insertions(+), 11 deletions(-)
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index ed66cea..d3eb43b 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -6583,6 +6583,7 @@ qemuBuildNumaArgStr(virQEMUDriverConfigPtr cfg,
+     }
+ 
+     for (i = 0; i < def->cpu->ncells; i++) {
++        virDomainHugePagePtr hugepage = NULL;
+         int cellmem = VIR_DIV_UP(def->cpu->cells[i].mem, 1024);
+         def->cpu->cells[i].mem = cellmem * 1024;
+         virTristateSwitch memAccess = def->cpu->cells[i].memAccess;
+@@ -6604,7 +6605,6 @@ qemuBuildNumaArgStr(virQEMUDriverConfigPtr cfg,
+         if (virQEMUCapsGet(qemuCaps, QEMU_CAPS_OBJECT_MEMORY_RAM) ||
+             virQEMUCapsGet(qemuCaps, QEMU_CAPS_OBJECT_MEMORY_FILE)) {
+             virDomainNumatuneMemMode mode;
+-            virDomainHugePagePtr hugepage = NULL;
+             const char *policy = NULL;
+ 
+             mode = virDomainNumatuneGetMode(def->numatune, i);
+@@ -6714,8 +6714,12 @@ qemuBuildNumaArgStr(virQEMUDriverConfigPtr cfg,
+                 virBufferAsprintf(&buf, ",policy=%s", policy);
+             }
+ 
+-            virCommandAddArg(cmd, "-object");
+-            virCommandAddArgBuffer(cmd, &buf);
++            if (hugepage || nodemask) {
++                virCommandAddArg(cmd, "-object");
++                virCommandAddArgBuffer(cmd, &buf);
++            } else {
++                virBufferFreeAndReset(&buf);
++            }
+         } else {
+             if (memAccess) {
+                 virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+@@ -6735,12 +6739,10 @@ qemuBuildNumaArgStr(virQEMUDriverConfigPtr cfg,
+             virBufferAdd(&buf, tmpmask, -1);
+         }
+ 
+-        if (virQEMUCapsGet(qemuCaps, QEMU_CAPS_OBJECT_MEMORY_RAM) ||
+-            virQEMUCapsGet(qemuCaps, QEMU_CAPS_OBJECT_MEMORY_FILE)) {
++        if (hugepage || nodemask)
+             virBufferAsprintf(&buf, ",memdev=ram-node%zu", i);
+-        } else {
++        else
+             virBufferAsprintf(&buf, ",mem=%d", cellmem);
+-        }
+ 
+         virCommandAddArgBuffer(cmd, &buf);
+     }
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-hugepages-pages3.args b/tests/qemuxml2argvdata/qemuxml2argv-hugepages-pages3.args
+index 27b3f8e..f81947e 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-hugepages-pages3.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-hugepages-pages3.args
+@@ -1,7 +1,6 @@
+ LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=none \
+ /usr/bin/qemu -S -M pc -m 1024 -smp 2 \
+--object memory-backend-ram,size=256M,id=ram-node0 \
+--numa node,nodeid=0,cpus=0,memdev=ram-node0 \
++-numa node,nodeid=0,cpus=0,mem=256 \
+ -object memory-backend-file,prealloc=yes,\
+ mem-path=/dev/hugepages1G/libvirt/qemu,size=768M,id=ram-node1 \
+ -numa node,nodeid=1,cpus=1,memdev=ram-node1 \
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-numatune-memnode-no-memory.args b/tests/qemuxml2argvdata/qemuxml2argv-numatune-memnode-no-memory.args
+index b0e274c..2addf97 100644
+--- a/tests/qemuxml2argvdata/qemuxml2argv-numatune-memnode-no-memory.args
++++ b/tests/qemuxml2argvdata/qemuxml2argv-numatune-memnode-no-memory.args
+@@ -2,7 +2,6 @@ LC_ALL=C PATH=/bin HOME=/home/test USER=test LOGNAME=test QEMU_AUDIO_DRV=none \
+ /usr/bin/kvm -S -M pc -m 64 -smp 2 \
+ -object memory-backend-ram,size=32M,id=ram-node0,host-nodes=3,policy=preferred \
+ -numa node,nodeid=0,cpus=0,memdev=ram-node0 \
+--object memory-backend-ram,size=32M,id=ram-node1 \
+--numa node,nodeid=1,cpus=1,memdev=ram-node1 \
++-numa node,nodeid=1,cpus=1,mem=32 \
+ -nographic -monitor unix:/tmp/test-monitor,server,nowait \
+ -no-acpi -boot c -usb -net none -serial none -parallel none
+-- 
+2.2.1
+

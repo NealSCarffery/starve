@@ -1,0 +1,96 @@
+From 43c846034c4316cf53d193f52c59f4f9df484fe5 Mon Sep 17 00:00:00 2001
+Message-Id: <43c846034c4316cf53d193f52c59f4f9df484fe5@dist-git>
+From: Martin Kletzander <mkletzan@redhat.com>
+Date: Thu, 15 Jan 2015 15:03:49 +0100
+Subject: [PATCH] qemu: Fix hotplugging cpus with strict memory pinning
+
+When hot-plugging a VCPU into the guest, kvm needs to allocate some data
+from the DMA zone, which might be in a memory node that's not allowed in
+cpuset.mems.  Basically the same problem as there was with starting the
+domain and due to which commit 7e72ac787848b7434c9359a57c1e2789d92350f8
+exists.  This patch just extends it to hotplugging as well.
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1161540
+
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+(cherry picked from commit e3435caf6af41748204e542dee13ede8441d88c0)
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_driver.c | 29 +++++++++++++++++++++++++++++
+ 1 file changed, 29 insertions(+)
+
+diff --git a/src/qemu/qemu_driver.c b/src/qemu/qemu_driver.c
+index ea9368d..afcf326 100644
+--- a/src/qemu/qemu_driver.c
++++ b/src/qemu/qemu_driver.c
+@@ -97,6 +97,7 @@
+ #include "virhostdev.h"
+ #include "domain_capabilities.h"
+ #include "vircgroup.h"
++#include "virnuma.h"
+ 
+ #define VIR_FROM_THIS VIR_FROM_QEMU
+ 
+@@ -4641,6 +4642,11 @@ qemuDomainSetVcpusFlags(virDomainPtr dom, unsigned int nvcpus,
+     int ncpuinfo;
+     qemuDomainObjPrivatePtr priv;
+     size_t i;
++    virCgroupPtr cgroup_temp = NULL;
++    char *mem_mask = NULL;
++    char *all_nodes_str = NULL;
++    virBitmapPtr all_nodes = NULL;
++    virErrorPtr err = NULL;
+ 
+     virCheckFlags(VIR_DOMAIN_AFFECT_LIVE |
+                   VIR_DOMAIN_AFFECT_CONFIG |
+@@ -4666,9 +4672,22 @@ qemuDomainSetVcpusFlags(virDomainPtr dom, unsigned int nvcpus,
+ 
+     priv = vm->privateData;
+ 
++    if (virCgroupNewEmulator(priv->cgroup, false, &cgroup_temp) < 0)
++        goto cleanup;
++
++    if (!(all_nodes = virNumaGetHostNodeset()))
++        goto cleanup;
++
++    if (!(all_nodes_str = virBitmapFormat(all_nodes)))
++        goto cleanup;
++
+     if (qemuDomainObjBeginJob(driver, vm, QEMU_JOB_MODIFY) < 0)
+         goto cleanup;
+ 
++    if (virCgroupGetCpusetMems(cgroup_temp, &mem_mask) < 0 ||
++        virCgroupSetCpusetMems(cgroup_temp, all_nodes_str) < 0)
++        goto endjob;
++
+     maximum = (flags & VIR_DOMAIN_VCPU_MAXIMUM) != 0;
+     flags &= ~VIR_DOMAIN_VCPU_MAXIMUM;
+ 
+@@ -4778,6 +4797,12 @@ qemuDomainSetVcpusFlags(virDomainPtr dom, unsigned int nvcpus,
+     ret = 0;
+ 
+  endjob:
++    if (mem_mask) {
++        err = virSaveLastError();
++        virCgroupSetCpusetMems(cgroup_temp, mem_mask);
++        virSetError(err);
++    }
++
+     if (!qemuDomainObjEndJob(driver, vm))
+         vm = NULL;
+ 
+@@ -4786,6 +4811,10 @@ qemuDomainSetVcpusFlags(virDomainPtr dom, unsigned int nvcpus,
+         virObjectUnlock(vm);
+     virObjectUnref(caps);
+     VIR_FREE(cpuinfo);
++    VIR_FREE(mem_mask);
++    VIR_FREE(all_nodes_str);
++    virBitmapFree(all_nodes);
++    virCgroupFree(&cgroup_temp);
+     virObjectUnref(cfg);
+     return ret;
+ }
+-- 
+2.2.1
+

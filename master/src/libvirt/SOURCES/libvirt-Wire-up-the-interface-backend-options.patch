@@ -1,0 +1,363 @@
+From 0d1763b206f9ff068c26f3b75dfc494117fdd51b Mon Sep 17 00:00:00 2001
+Message-Id: <0d1763b206f9ff068c26f3b75dfc494117fdd51b@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Wed, 17 Sep 2014 19:15:59 +0200
+Subject: [PATCH] Wire up the interface backend options
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1139362
+
+Pass the user-specified tun path down when creating tap device
+when called from the qemu driver.
+
+Also honor the vhost device path specified by user.
+
+(cherry picked from commit b20d39a56f36ee41f585864587c97137363acc3e)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/bhyve/bhyve_command.c   |  2 +-
+ src/bhyve/bhyve_process.c   |  2 +-
+ src/network/bridge_driver.c |  6 +++---
+ src/qemu/qemu_command.c     | 22 +++++++++++++++-------
+ src/qemu/qemu_process.c     |  2 +-
+ src/uml/uml_conf.c          |  2 +-
+ src/uml/uml_driver.c        |  3 ++-
+ src/util/virnetdevtap.c     | 37 +++++++++++++++++++++++++++----------
+ src/util/virnetdevtap.h     |  5 ++++-
+ 9 files changed, 55 insertions(+), 26 deletions(-)
+
+diff --git a/src/bhyve/bhyve_command.c b/src/bhyve/bhyve_command.c
+index 94829e7..bea4a59 100644
+--- a/src/bhyve/bhyve_command.c
++++ b/src/bhyve/bhyve_command.c
+@@ -72,7 +72,7 @@ bhyveBuildNetArgStr(const virDomainDef *def,
+ 
+     if (!dryRun) {
+         if (virNetDevTapCreateInBridgePort(brname, &net->ifname, &net->mac,
+-                                           def->uuid, NULL, 0,
++                                           def->uuid, NULL, NULL, 0,
+                                            virDomainNetGetActualVirtPortProfile(net),
+                                            virDomainNetGetActualVlan(net),
+                                            VIR_NETDEV_TAP_CREATE_IFUP | VIR_NETDEV_TAP_CREATE_PERSIST) < 0) {
+diff --git a/src/bhyve/bhyve_process.c b/src/bhyve/bhyve_process.c
+index 6b5403d..0bbe388 100644
+--- a/src/bhyve/bhyve_process.c
++++ b/src/bhyve/bhyve_process.c
+@@ -82,7 +82,7 @@ bhyveNetCleanup(virDomainObjPtr vm)
+                 ignore_value(virNetDevBridgeRemovePort(
+                                 virDomainNetGetActualBridgeName(net),
+                                 net->ifname));
+-                ignore_value(virNetDevTapDelete(net->ifname));
++                ignore_value(virNetDevTapDelete(net->ifname, NULL));
+             }
+         }
+     }
+diff --git a/src/network/bridge_driver.c b/src/network/bridge_driver.c
+index 4b3f07f..b77dc76 100644
+--- a/src/network/bridge_driver.c
++++ b/src/network/bridge_driver.c
+@@ -1991,7 +1991,7 @@ networkStartNetworkVirtual(virNetworkDriverStatePtr driver,
+         /* Keep tun fd open and interface up to allow for IPv6 DAD to happen */
+         if (virNetDevTapCreateInBridgePort(network->def->bridge,
+                                            &macTapIfName, &network->def->mac,
+-                                           NULL, &tapfd, 1, NULL, NULL,
++                                           NULL, NULL, &tapfd, 1, NULL, NULL,
+                                            VIR_NETDEV_TAP_CREATE_USE_MAC_FOR_BRIDGE |
+                                            VIR_NETDEV_TAP_CREATE_IFUP |
+                                            VIR_NETDEV_TAP_CREATE_PERSIST) < 0) {
+@@ -2117,7 +2117,7 @@ networkStartNetworkVirtual(virNetworkDriverStatePtr driver,
+ 
+     if (macTapIfName) {
+         VIR_FORCE_CLOSE(tapfd);
+-        ignore_value(virNetDevTapDelete(macTapIfName));
++        ignore_value(virNetDevTapDelete(macTapIfName, NULL));
+         VIR_FREE(macTapIfName);
+     }
+ 
+@@ -2156,7 +2156,7 @@ static int networkShutdownNetworkVirtual(virNetworkDriverStatePtr driver ATTRIBU
+     if (network->def->mac_specified) {
+         char *macTapIfName = networkBridgeDummyNicName(network->def->bridge);
+         if (macTapIfName) {
+-            ignore_value(virNetDevTapDelete(macTapIfName));
++            ignore_value(virNetDevTapDelete(macTapIfName, NULL));
+             VIR_FREE(macTapIfName);
+         }
+     }
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index ce5daae..81395a8 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -288,6 +288,10 @@ qemuNetworkIfaceConnect(virDomainDefPtr def,
+     bool template_ifname = false;
+     int actualType = virDomainNetGetActualType(net);
+     virQEMUDriverConfigPtr cfg = virQEMUDriverGetConfig(driver);
++    const char *tunpath = "/dev/net/tun";
++
++    if (net->backend.tap)
++        tunpath = net->backend.tap;
+ 
+     if (actualType == VIR_DOMAIN_NET_TYPE_NETWORK) {
+         bool fail = false;
+@@ -336,18 +340,18 @@ qemuNetworkIfaceConnect(virDomainDefPtr def,
+ 
+     if (cfg->privileged) {
+         if (virNetDevTapCreateInBridgePort(brname, &net->ifname, &net->mac,
+-                                           def->uuid, tapfd, *tapfdSize,
++                                           def->uuid, tunpath, tapfd, *tapfdSize,
+                                            virDomainNetGetActualVirtPortProfile(net),
+                                            virDomainNetGetActualVlan(net),
+                                            tap_create_flags) < 0) {
+-            virDomainAuditNetDevice(def, net, "/dev/net/tun", false);
++            virDomainAuditNetDevice(def, net, tunpath, false);
+             goto cleanup;
+         }
+     } else {
+         if (qemuCreateInBridgePortWithHelper(cfg, brname,
+                                              &net->ifname,
+                                              tapfd, tap_create_flags) < 0) {
+-            virDomainAuditNetDevice(def, net, "/dev/net/tun", false);
++            virDomainAuditNetDevice(def, net, tunpath, false);
+             goto cleanup;
+         }
+         /* qemuCreateInBridgePortWithHelper can only create a single FD */
+@@ -357,7 +361,7 @@ qemuNetworkIfaceConnect(virDomainDefPtr def,
+         }
+     }
+ 
+-    virDomainAuditNetDevice(def, net, "/dev/net/tun", true);
++    virDomainAuditNetDevice(def, net, tunpath, true);
+ 
+     if (cfg->macFilter &&
+         ebtablesAddForwardAllowIn(driver->ebtables,
+@@ -441,6 +445,10 @@ qemuOpenVhostNet(virDomainDefPtr def,
+                  int *vhostfdSize)
+ {
+     size_t i;
++    const char *vhostnet_path = net->backend.vhost;
++
++    if (!vhostnet_path)
++        vhostnet_path = "/dev/vhost-net";
+ 
+     /* If running a plain QEMU guest, or
+      * if the config says explicitly to not use vhost, return now*/
+@@ -478,13 +486,13 @@ qemuOpenVhostNet(virDomainDefPtr def,
+     }
+ 
+     for (i = 0; i < *vhostfdSize; i++) {
+-        vhostfd[i] = open("/dev/vhost-net", O_RDWR);
++        vhostfd[i] = open(vhostnet_path, O_RDWR);
+ 
+         /* If the config says explicitly to use vhost and we couldn't open it,
+          * report an error.
+          */
+         if (vhostfd[i] < 0) {
+-            virDomainAuditNetDevice(def, net, "/dev/vhost-net", false);
++            virDomainAuditNetDevice(def, net, vhostnet_path, false);
+             if (net->driver.virtio.name == VIR_DOMAIN_NET_BACKEND_TYPE_VHOST) {
+                 virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                                "%s", _("vhost-net was requested for an interface, "
+@@ -497,7 +505,7 @@ qemuOpenVhostNet(virDomainDefPtr def,
+             break;
+         }
+     }
+-    virDomainAuditNetDevice(def, net, "/dev/vhost-net", *vhostfdSize);
++    virDomainAuditNetDevice(def, net, vhostnet_path, *vhostfdSize);
+     return 0;
+ 
+  error:
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index d7f6bdf..bf1f0de 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -4764,7 +4764,7 @@ void qemuProcessStop(virQEMUDriverPtr driver,
+         case VIR_DOMAIN_NET_TYPE_NETWORK:
+ #ifdef VIR_NETDEV_TAP_REQUIRE_MANUAL_CLEANUP
+             if (!(vport && vport->virtPortType == VIR_NETDEV_VPORT_PROFILE_OPENVSWITCH))
+-                ignore_value(virNetDevTapDelete(net->ifname));
++                ignore_value(virNetDevTapDelete(net->ifname, net->backend.tap));
+ #endif
+             break;
+         }
+diff --git a/src/uml/uml_conf.c b/src/uml/uml_conf.c
+index 41ce03c..a99e8e9 100644
+--- a/src/uml/uml_conf.c
++++ b/src/uml/uml_conf.c
+@@ -124,7 +124,7 @@ umlConnectTapDevice(virConnectPtr conn,
+     }
+ 
+     if (virNetDevTapCreateInBridgePort(bridge, &net->ifname, &net->mac,
+-                                       vm->uuid, &tapfd, 1,
++                                       vm->uuid, net->backend.tap, &tapfd, 1,
+                                        virDomainNetGetActualVirtPortProfile(net),
+                                        virDomainNetGetActualVlan(net),
+                                        VIR_NETDEV_TAP_CREATE_IFUP |
+diff --git a/src/uml/uml_driver.c b/src/uml/uml_driver.c
+index 7039afc..f9712e8 100644
+--- a/src/uml/uml_driver.c
++++ b/src/uml/uml_driver.c
+@@ -1032,7 +1032,8 @@ static void umlCleanupTapDevices(virDomainObjPtr vm)
+             def->type != VIR_DOMAIN_NET_TYPE_NETWORK)
+             continue;
+ 
+-        ignore_value(virNetDevTapDelete(def->ifname));
++        ignore_value(virNetDevTapDelete(def->ifname,
++                                        def->backend.tap));
+     }
+ }
+ 
+diff --git a/src/util/virnetdevtap.c b/src/util/virnetdevtap.c
+index d64e64f..3674f9b 100644
+--- a/src/util/virnetdevtap.c
++++ b/src/util/virnetdevtap.c
+@@ -216,6 +216,7 @@ virNetDevProbeVnetHdr(int tapfd)
+ /**
+  * virNetDevTapCreate:
+  * @ifname: the interface name
++ * @tunpath: path to the tun device (if NULL, /dev/net/tun is used)
+  * @tapfds: array of file descriptors return value for the new tap device
+  * @tapfdSize: number of file descriptors in @tapfd
+  * @flags: OR of virNetDevTapCreateFlags. Only one flag is recognized:
+@@ -233,6 +234,7 @@ virNetDevProbeVnetHdr(int tapfd)
+  * Returns 0 in case of success or -1 on failure.
+  */
+ int virNetDevTapCreate(char **ifname,
++                       const char *tunpath,
+                        int *tapfd,
+                        int tapfdSize,
+                        unsigned int flags)
+@@ -242,11 +244,15 @@ int virNetDevTapCreate(char **ifname,
+     int ret = -1;
+     int fd;
+ 
++    if (!tunpath)
++        tunpath = "/dev/net/tun";
++
+     memset(&ifr, 0, sizeof(ifr));
+     for (i = 0; i < tapfdSize; i++) {
+-        if ((fd = open("/dev/net/tun", O_RDWR)) < 0) {
+-            virReportSystemError(errno, "%s",
+-                                 _("Unable to open /dev/net/tun, is tun module loaded?"));
++        if ((fd = open(tunpath, O_RDWR)) < 0) {
++            virReportSystemError(errno,
++                                 _("Unable to open %s, is tun module loaded?"),
++                                 tunpath);
+             goto cleanup;
+         }
+ 
+@@ -316,15 +322,20 @@ int virNetDevTapCreate(char **ifname,
+ }
+ 
+ 
+-int virNetDevTapDelete(const char *ifname)
++int virNetDevTapDelete(const char *ifname,
++                       const char *tunpath)
+ {
+     struct ifreq try;
+     int fd;
+     int ret = -1;
+ 
+-    if ((fd = open("/dev/net/tun", O_RDWR)) < 0) {
+-        virReportSystemError(errno, "%s",
+-                             _("Unable to open /dev/net/tun, is tun module loaded?"));
++    if (!tunpath)
++        tunpath = "/dev/net/tun";
++
++    if ((fd = open(tunpath, O_RDWR)) < 0) {
++        virReportSystemError(errno,
++                             _("Unable to open %s, is tun module loaded?"),
++                             tunpath);
+         return -1;
+     }
+ 
+@@ -358,6 +369,7 @@ int virNetDevTapDelete(const char *ifname)
+ }
+ #elif defined(SIOCIFCREATE2) && defined(SIOCIFDESTROY) && defined(IF_MAXUNIT)
+ int virNetDevTapCreate(char **ifname,
++                       const char *tunpath ATTRIBUTE_UNUSED,
+                        int *tapfd,
+                        int tapfdSize,
+                        unsigned int flags ATTRIBUTE_UNUSED)
+@@ -444,7 +456,8 @@ int virNetDevTapCreate(char **ifname,
+     return ret;
+ }
+ 
+-int virNetDevTapDelete(const char *ifname)
++int virNetDevTapDelete(const char *ifname,
++                       const char *tunpath ATTRIBUTE_UNUSED)
+ {
+     int s;
+     struct ifreq ifr;
+@@ -468,6 +481,7 @@ int virNetDevTapDelete(const char *ifname)
+ 
+ #else
+ int virNetDevTapCreate(char **ifname ATTRIBUTE_UNUSED,
++                       const char *tunpath ATTRIBUTE_UNUSED,
+                        int *tapfd ATTRIBUTE_UNUSED,
+                        int tapfdSize ATTRIBUTE_UNUSED,
+                        unsigned int flags ATTRIBUTE_UNUSED)
+@@ -476,7 +490,8 @@ int virNetDevTapCreate(char **ifname ATTRIBUTE_UNUSED,
+                          _("Unable to create TAP devices on this platform"));
+     return -1;
+ }
+-int virNetDevTapDelete(const char *ifname ATTRIBUTE_UNUSED)
++int virNetDevTapDelete(const char *ifname ATTRIBUTE_UNUSED,
++                       const char *tunpath ATTRIBUTE_UNUSED)
+ {
+     virReportSystemError(ENOSYS, "%s",
+                          _("Unable to delete TAP devices on this platform"));
+@@ -490,6 +505,7 @@ int virNetDevTapDelete(const char *ifname ATTRIBUTE_UNUSED)
+  * @brname: the bridge name
+  * @ifname: the interface name (or name template)
+  * @macaddr: desired MAC address
++ * @tunpath: path to the tun device (if NULL, /dev/net/tun is used)
+  * @tapfd: array of file descriptor return value for the new tap device
+  * @tapfdSize: number of file descriptors in @tapfd
+  * @virtPortProfile: bridge/port specific configuration
+@@ -518,6 +534,7 @@ int virNetDevTapCreateInBridgePort(const char *brname,
+                                    char **ifname,
+                                    const virMacAddr *macaddr,
+                                    const unsigned char *vmuuid,
++                                   const char *tunpath,
+                                    int *tapfd,
+                                    int tapfdSize,
+                                    virNetDevVPortProfilePtr virtPortProfile,
+@@ -528,7 +545,7 @@ int virNetDevTapCreateInBridgePort(const char *brname,
+     char macaddrstr[VIR_MAC_STRING_BUFLEN];
+     size_t i;
+ 
+-    if (virNetDevTapCreate(ifname, tapfd, tapfdSize, flags) < 0)
++    if (virNetDevTapCreate(ifname, tunpath, tapfd, tapfdSize, flags) < 0)
+         return -1;
+ 
+     /* We need to set the interface MAC before adding it
+diff --git a/src/util/virnetdevtap.h b/src/util/virnetdevtap.h
+index 03fb5f8..c0a4e15 100644
+--- a/src/util/virnetdevtap.h
++++ b/src/util/virnetdevtap.h
+@@ -34,12 +34,14 @@
+ # endif
+ 
+ int virNetDevTapCreate(char **ifname,
++                       const char *tunpath,
+                        int *tapfd,
+                        int tapfdSize,
+                        unsigned int flags)
+     ATTRIBUTE_NONNULL(1) ATTRIBUTE_RETURN_CHECK;
+ 
+-int virNetDevTapDelete(const char *ifname)
++int virNetDevTapDelete(const char *ifname,
++                       const char *tunpath)
+     ATTRIBUTE_NONNULL(1) ATTRIBUTE_RETURN_CHECK;
+ 
+ int virNetDevTapGetName(int tapfd, char **ifname)
+@@ -64,6 +66,7 @@ int virNetDevTapCreateInBridgePort(const char *brname,
+                                    char **ifname,
+                                    const virMacAddr *macaddr,
+                                    const unsigned char *vmuuid,
++                                   const char *tunpath,
+                                    int *tapfd,
+                                    int tapfdSize,
+                                    virNetDevVPortProfilePtr virtPortProfile,
+-- 
+2.1.0
+

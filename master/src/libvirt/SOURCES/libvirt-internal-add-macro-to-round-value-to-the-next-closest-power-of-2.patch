@@ -1,0 +1,183 @@
+From b5bba7ab59381434ebf03bedd9ff4b22696b7384 Mon Sep 17 00:00:00 2001
+Message-Id: <b5bba7ab59381434ebf03bedd9ff4b22696b7384@dist-git>
+From: Pavel Hrdina <phrdina@redhat.com>
+Date: Tue, 25 Nov 2014 10:52:58 +0100
+Subject: [PATCH] internal: add macro to round value to the next closest power
+ of 2
+
+There are two special cases, if the input number is 0 or the number is
+larger then 2^31 (for 32bit unsigned int). For the special cases the
+return value is 0 because they cannot be rounded.
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+(cherry picked from commit ff28ebf13622ec3667f63fc0c0c22698331ced4b)
+
+I had to add the gnulib function 'count_leading_zeros' manually because
+we don't update the gnulib downstream.
+
+Conflicts:
+        bootstrap.conf - removed count-leading-zeros as we don't update
+                         the gnulib
+        src/util/virutil.h - add count_leading_zeros by hand from gnulib
+                             module
+
+Resolves: https://bugzilla.redhat.com/show_bug.cgi?id=1076098
+
+Signed-off-by: Pavel Hrdina <phrdina@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/internal.h     |  6 +++++
+ src/util/virutil.h | 64 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ tests/utiltest.c   | 39 +++++++++++++++++++++++++++++++++
+ 3 files changed, 109 insertions(+)
+
+diff --git a/src/internal.h b/src/internal.h
+index f6a88b2..09d8277 100644
+--- a/src/internal.h
++++ b/src/internal.h
+@@ -382,6 +382,12 @@
+ /* round up value to the closest multiple of size */
+ # define VIR_ROUND_UP(value, size) (VIR_DIV_UP(value, size) * (size))
+ 
++/* Round up to the next closest power of 2. It will return rounded number or 0
++ * for 0 or number more than 2^31 (for 32bit unsigned int). */
++# define VIR_ROUND_UP_POWER_OF_TWO(value)                                   \
++    ((value) > 0 && (value) <= 1U << (sizeof(unsigned int) * 8 - 1) ?       \
++     1U << (sizeof(unsigned int) * 8 - count_leading_zeros((value) - 1)) : 0)
++
+ 
+ /* Specific error values for use in forwarding programs such as
+  * virt-login-shell; these values match what GNU env does.  */
+diff --git a/src/util/virutil.h b/src/util/virutil.h
+index 105c519..ae49aef 100644
+--- a/src/util/virutil.h
++++ b/src/util/virutil.h
+@@ -244,4 +244,68 @@ VIR_ENUM_DECL(virTristateSwitch)
+ 
+ unsigned int virGetListenFDs(void);
+ 
++/* Borrow the code to count-leading-zeroes from gnulib LGPLv2+
++ * count-leading-zeroes.h. */
++
++/* Assuming the GCC builtin is BUILTIN and the MSC builtin is MSC_BUILTIN,
++   expand to code that computes the number of leading zeros of the local
++   variable 'x' of type TYPE (an unsigned integer type) and return it
++   from the current function.  */
++#if __GNUC__ > 3 || (__GNUC__ == 3 && __GNUC_MINOR__ >= 4)
++# define COUNT_LEADING_ZEROS(BUILTIN, MSC_BUILTIN, TYPE)                \
++  return x ? BUILTIN (x) : CHAR_BIT * sizeof x;
++#elif _MSC_VER
++# pragma intrinsic _BitReverse
++# pragma intrinsic _BitReverse64
++# define COUNT_LEADING_ZEROS(BUILTIN, MSC_BUILTIN, TYPE)                \
++    do                                                                  \
++      {                                                                 \
++        unsigned long result;                                           \
++        return MSC_BUILTIN (&result, x) ? result : CHAR_BIT * sizeof x; \
++      }                                                                 \
++    while (0)
++#else
++# define COUNT_LEADING_ZEROS(BUILTIN, MSC_BUILTIN, TYPE)                \
++    do                                                                  \
++      {                                                                 \
++        int count;                                                      \
++        unsigned int leading_32;                                        \
++        if (! x)                                                        \
++          return CHAR_BIT * sizeof x;                                   \
++        for (count = 0;                                                 \
++             (leading_32 = ((x >> (sizeof (TYPE) * CHAR_BIT - 32))      \
++                            & 0xffffffffU),                             \
++              count < CHAR_BIT * sizeof x - 32 && !leading_32);         \
++             count += 32)                                               \
++          x = x << 31 << 1;                                             \
++        return count + count_leading_zeros_32 (leading_32);             \
++      }                                                                 \
++    while (0)
++
++/* Compute and return the number of leading zeros in X,
++   where 0 < X < 2**32.  */
++static inline int
++count_leading_zeros_32 (unsigned int x)
++{
++  /* http://graphics.stanford.edu/~seander/bithacks.html */
++  static const char de_Bruijn_lookup[32] = {
++    31, 22, 30, 21, 18, 10, 29, 2, 20, 17, 15, 13, 9, 6, 28, 1,
++    23, 19, 11, 3, 16, 14, 7, 24, 12, 4, 8, 25, 5, 26, 27, 0
++  };
++
++  x |= x >> 1;
++  x |= x >> 2;
++  x |= x >> 4;
++  x |= x >> 8;
++  x |= x >> 16;
++  return de_Bruijn_lookup[((x * 0x07c4acddU) & 0xffffffffU) >> 27];
++}
++#endif
++/* Compute and return the number of leading zeros in X. */
++static inline int
++count_leading_zeros (unsigned int x)
++{
++  COUNT_LEADING_ZEROS (__builtin_clz, _BitScanReverse, unsigned int);
++}
++
+ #endif /* __VIR_UTIL_H__ */
+diff --git a/tests/utiltest.c b/tests/utiltest.c
+index 89e82aa..8274ed0 100644
+--- a/tests/utiltest.c
++++ b/tests/utiltest.c
+@@ -144,6 +144,44 @@ testParseVersionString(const void *data ATTRIBUTE_UNUSED)
+ 
+ 
+ 
++struct testRoundData {
++    unsigned int input;
++    unsigned int output;
++};
++
++static struct testRoundData roundData[] = {
++    { 0, 0 },
++    { 1, 1 },
++    { 1000, 1024 },
++    { 1024, 1024 },
++    { 1025, 2048 },
++    { UINT_MAX, 0 },
++};
++
++static int
++testRoundValueToPowerOfTwo(const void *data ATTRIBUTE_UNUSED)
++{
++    unsigned int result;
++    size_t i;
++
++    for (i = 0; i < ARRAY_CARDINALITY(roundData); i++) {
++        result = VIR_ROUND_UP_POWER_OF_TWO(roundData[i].input);
++        if (roundData[i].output != result) {
++            if (virTestGetDebug() > 0) {
++                fprintf(stderr, "\nInput number [%u]\n", roundData[i].input);
++                fprintf(stderr, "Expected number [%u]\n", roundData[i].output);
++                fprintf(stderr, "Actual number [%u]\n", result);
++            }
++
++            return -1;
++        }
++    }
++
++    return 0;
++}
++
++
++
+ 
+ static int
+ mymain(void)
+@@ -163,6 +201,7 @@ mymain(void)
+     DO_TEST(IndexToDiskName);
+     DO_TEST(DiskNameToIndex);
+     DO_TEST(ParseVersionString);
++    DO_TEST(RoundValueToPowerOfTwo);
+ 
+     return result == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+ }
+-- 
+2.1.3
+

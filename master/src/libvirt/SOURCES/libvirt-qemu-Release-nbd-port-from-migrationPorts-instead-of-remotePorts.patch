@@ -1,0 +1,75 @@
+From c93d91b3260e3211f19275380e773605af7681d2 Mon Sep 17 00:00:00 2001
+Message-Id: <c93d91b3260e3211f19275380e773605af7681d2@dist-git>
+From: weiwei li <weiweili821@gmail.com>
+Date: Fri, 31 Oct 2014 12:33:01 +0100
+Subject: [PATCH] qemu: Release nbd port from migrationPorts instead of
+ remotePorts
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+commit 3e1e16aa8d4238241a1806cb9bdb3b9ad60db777 (Use a port from the
+migration range for NBD as well) changed ndb port allocation from
+remotePorts to migrationPorts, but did not change the port releasing
+process, which makes an error when migrating several times (above 64):
+error: internal error: Unable to find an unused port in range
+'migration' (49152-49215)
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1159245
+
+Signed-off-by: Weiwei Li <nuonuoli@tencent.com>
+Signed-off-by: Ján Tomko <jtomko@redhat.com>
+(cherry picked from commit be598c5ff84656d3498b950d473fafe5b86f87b4)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_migration.c | 6 +++---
+ src/qemu/qemu_process.c   | 2 +-
+ 2 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/src/qemu/qemu_migration.c b/src/qemu/qemu_migration.c
+index 2b922fe..1998bc9 100644
+--- a/src/qemu/qemu_migration.c
++++ b/src/qemu/qemu_migration.c
+@@ -1389,7 +1389,7 @@ qemuMigrationStartNBDServer(virQEMUDriverPtr driver,
+  cleanup:
+     VIR_FREE(diskAlias);
+     if (ret < 0)
+-        virPortAllocatorRelease(driver->remotePorts, port);
++        virPortAllocatorRelease(driver->migrationPorts, port);
+     return ret;
+ }
+ 
+@@ -1595,7 +1595,7 @@ qemuMigrationStopNBDServer(virQEMUDriverPtr driver,
+ 
+     qemuDomainObjExitMonitor(driver, vm);
+ 
+-    virPortAllocatorRelease(driver->remotePorts, priv->nbdPort);
++    virPortAllocatorRelease(driver->migrationPorts, priv->nbdPort);
+     priv->nbdPort = 0;
+ }
+ 
+@@ -2821,7 +2821,7 @@ qemuMigrationPrepareAny(virQEMUDriverPtr driver,
+     VIR_FORCE_CLOSE(dataFD[1]);
+     if (vm) {
+         if (ret < 0) {
+-            virPortAllocatorRelease(driver->remotePorts, priv->nbdPort);
++            virPortAllocatorRelease(driver->migrationPorts, priv->nbdPort);
+             priv->nbdPort = 0;
+         }
+         if (ret >= 0 || vm->persistent)
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index 6565956..e711b5f 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -4794,7 +4794,7 @@ void qemuProcessStop(virQEMUDriverPtr driver,
+         }
+     }
+ 
+-    virPortAllocatorRelease(driver->remotePorts, priv->nbdPort);
++    virPortAllocatorRelease(driver->migrationPorts, priv->nbdPort);
+     priv->nbdPort = 0;
+ 
+     if (priv->agent) {
+-- 
+2.1.3
+

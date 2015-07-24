@@ -1,0 +1,71 @@
+From de4f1874ef3fc1e2f63559441d7c63a5e0ae9048 Mon Sep 17 00:00:00 2001
+Message-Id: <de4f1874ef3fc1e2f63559441d7c63a5e0ae9048@dist-git>
+From: Michal Privoznik <mprivozn@redhat.com>
+Date: Wed, 19 Nov 2014 09:37:01 +0100
+Subject: [PATCH] qemuPrepareNVRAM: Save domain conf only if domain's
+ persistent
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1026772
+
+In one of my previous patches (3a3c3780b) I've tried to fix the
+problem of nvram path disappearing on a domain that's been
+started and shut down again. I fixed this by explicitly saving
+domain's config file.  However, I did a bit of clumsy without
+realizing we have a transient domains for which we don't save the
+config file. Hence, any domain using UEFI became persistent.
+
+Signed-off-by: Michal Privoznik <mprivozn@redhat.com>
+(cherry picked from commit 54ddc08ddb3d86e90b48b655a51577761e20ac34)
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_process.c | 11 ++++++-----
+ 1 file changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/src/qemu/qemu_process.c b/src/qemu/qemu_process.c
+index 3eb1036..d6e10e3 100644
+--- a/src/qemu/qemu_process.c
++++ b/src/qemu/qemu_process.c
+@@ -3898,13 +3898,13 @@ qemuProcessVerifyGuestCPU(virQEMUDriverPtr driver,
+ 
+ static int
+ qemuPrepareNVRAM(virQEMUDriverConfigPtr cfg,
+-                 virDomainDefPtr def,
++                 virDomainObjPtr vm,
+                  bool migrated)
+ {
+     int ret = -1;
+     int srcFD = -1;
+     int dstFD = -1;
+-    virDomainLoaderDefPtr loader = def->os.loader;
++    virDomainLoaderDefPtr loader = vm->def->os.loader;
+     bool generated = false;
+     bool created = false;
+ 
+@@ -3931,12 +3931,13 @@ qemuPrepareNVRAM(virQEMUDriverConfigPtr cfg,
+     if (!loader->nvram) {
+         if (virAsprintf(&loader->nvram,
+                         "%s/lib/libvirt/qemu/nvram/%s_VARS.fd",
+-                        LOCALSTATEDIR, def->name) < 0)
++                        LOCALSTATEDIR, vm->def->name) < 0)
+             goto cleanup;
+ 
+         generated = true;
+ 
+-        if (virDomainSaveConfig(cfg->configDir, def) < 0)
++        if (vm->persistent &&
++            virDomainSaveConfig(cfg->configDir, vm->def) < 0)
+             goto cleanup;
+     }
+ 
+@@ -4101,7 +4102,7 @@ int qemuProcessStart(virConnectPtr conn,
+      * Fill them in prior to setting the domain def as transient. */
+     VIR_DEBUG("Generating paths");
+ 
+-    if (qemuPrepareNVRAM(cfg, vm->def, migrateFrom) < 0)
++    if (qemuPrepareNVRAM(cfg, vm, migrateFrom) < 0)
+         goto cleanup;
+ 
+     /* Do this upfront, so any part of the startup process can add
+-- 
+2.1.3
+

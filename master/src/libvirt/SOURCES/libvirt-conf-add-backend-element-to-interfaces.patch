@@ -1,0 +1,202 @@
+From 1f343ca2d34c0bd5f012079ab07a7c1cc9bf0fe4 Mon Sep 17 00:00:00 2001
+Message-Id: <1f343ca2d34c0bd5f012079ab07a7c1cc9bf0fe4@dist-git>
+From: =?UTF-8?q?J=C3=A1n=20Tomko?= <jtomko@redhat.com>
+Date: Wed, 17 Sep 2014 19:15:58 +0200
+Subject: [PATCH] conf: add backend element to interfaces
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1139362
+
+For tuning the network, alternative devices
+for creating tap and vhost devices can be specified via:
+<backend tap='/dev/net/tun' vhost='/dev/net-vhost'/>
+
+(cherry picked from commit af8b4a2e6fc264dda4c7fda9b1696a16e59caeb4)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ docs/formatdomain.html.in                         | 20 +++++++++
+ docs/schemas/domaincommon.rng                     | 10 +++++
+ src/conf/domain_conf.c                            | 11 +++++
+ src/conf/domain_conf.h                            |  4 ++
+ tests/qemuxml2argvdata/qemuxml2argv-tap-vhost.xml | 52 +++++++++++++++++++++++
+ tests/qemuxml2xmltest.c                           |  2 +
+ 6 files changed, 99 insertions(+)
+ create mode 100644 tests/qemuxml2argvdata/qemuxml2argv-tap-vhost.xml
+
+diff --git a/docs/formatdomain.html.in b/docs/formatdomain.html.in
+index ade40f3..a3ab5cf 100644
+--- a/docs/formatdomain.html.in
++++ b/docs/formatdomain.html.in
+@@ -3956,6 +3956,26 @@ qemu-kvm -net nic,model=? /dev/null
+       </dd>
+     </dl>
+ 
++    <h5><a name="elementsBackendOptions">Setting network backend-specific options</a></h5>
++
++<pre>
++  ...
++  &lt;devices&gt;
++    &lt;interface type='network'&gt;
++      &lt;source network='default'/&gt;
++      &lt;target dev='vnet1'/&gt;
++      &lt;model type='virtio'/&gt;
++      <b>&lt;backend tap='/dev/net/tun' vhost='/dev/net-vhost'/&gt;</b>
++      &lt;driver name='vhost' txmode='iothread' ioeventfd='on' event_idx='off' queues='5'/&gt;
++    &lt;/interface&gt;
++  &lt;/devices&gt;
++  ...</pre>
++
++    <p>
++      For tuning the backend of the network, the <code>backend</code> element
++      can be used. Supported attributes are <code>tap</code> and <code>vhost</code>,
++      allowing to override the default devices for creating tap and vhost devices.
++    </p>
+     <h5><a name="elementsNICSTargetOverride">Overriding the target element</a></h5>
+ 
+ <pre>
+diff --git a/docs/schemas/domaincommon.rng b/docs/schemas/domaincommon.rng
+index 75006f5..31974ac 100644
+--- a/docs/schemas/domaincommon.rng
++++ b/docs/schemas/domaincommon.rng
+@@ -2335,6 +2335,16 @@
+         </element>
+       </optional>
+       <optional>
++        <element name="backend">
++           <attribute name='tap'>
++             <ref name='absFilePath'/>
++           </attribute>
++           <attribute name='vhost'>
++             <ref name='absFilePath'/>
++           </attribute>
++        </element>
++      </optional>
++      <optional>
+         <element name="driver">
+           <choice>
+             <group>
+diff --git a/src/conf/domain_conf.c b/src/conf/domain_conf.c
+index ea727a1..7d78b0b 100644
+--- a/src/conf/domain_conf.c
++++ b/src/conf/domain_conf.c
+@@ -1412,6 +1412,8 @@ void virDomainNetDefFree(virDomainNetDefPtr def)
+         break;
+     }
+ 
++    VIR_FREE(def->backend.tap);
++    VIR_FREE(def->backend.vhost);
+     VIR_FREE(def->virtPortProfile);
+     VIR_FREE(def->script);
+     VIR_FREE(def->ifname);
+@@ -7033,6 +7035,9 @@ virDomainNetDefParseXML(virDomainXMLOptionPtr xmlopt,
+             } else if (xmlStrEqual(cur->name, BAD_CAST "vlan")) {
+                 if (virNetDevVlanParse(cur, ctxt, &def->vlan) < 0)
+                     goto error;
++            } else if (xmlStrEqual(cur->name, BAD_CAST "backend")) {
++                def->backend.tap = virXMLPropString(cur, "tap");
++                def->backend.vhost = virXMLPropString(cur, "vhost");
+             }
+         }
+         cur = cur->next;
+@@ -16550,6 +16555,12 @@ virDomainNetDefFormat(virBufferPtr buf,
+             virBufferAddLit(buf, "/>\n");
+         }
+     }
++    if (def->backend.tap || def->backend.vhost) {
++        virBufferAddLit(buf, "<backend");
++        virBufferEscapeString(buf, " tap='%s'", def->backend.tap);
++        virBufferEscapeString(buf, " vhost='%s'", def->backend.vhost);
++        virBufferAddLit(buf, "/>\n");
++    }
+     if (def->filter) {
+         if (virNWFilterFormatParamAttributes(buf, def->filterparams,
+                                              def->filter) < 0)
+diff --git a/src/conf/domain_conf.h b/src/conf/domain_conf.h
+index 3316fb6..c93b73c 100644
+--- a/src/conf/domain_conf.h
++++ b/src/conf/domain_conf.h
+@@ -897,6 +897,10 @@ struct _virDomainNetDef {
+             unsigned int queues; /* Multiqueue virtio-net */
+         } virtio;
+     } driver;
++    struct {
++        char *tap;
++        char *vhost;
++    } backend;
+     union {
+         struct {
+             char *dev;
+diff --git a/tests/qemuxml2argvdata/qemuxml2argv-tap-vhost.xml b/tests/qemuxml2argvdata/qemuxml2argv-tap-vhost.xml
+new file mode 100644
+index 0000000..3237c6a
+--- /dev/null
++++ b/tests/qemuxml2argvdata/qemuxml2argv-tap-vhost.xml
+@@ -0,0 +1,52 @@
++<domain type='qemu'>
++  <name>test</name>
++  <uuid>bba65c0e-c049-934f-b6aa-4e2c0582acdf</uuid>
++  <memory unit='KiB'>1048576</memory>
++  <currentMemory unit='KiB'>1048576</currentMemory>
++  <vcpu placement='static'>1</vcpu>
++  <os>
++    <type arch='x86_64' machine='pc-0.13'>hvm</type>
++    <boot dev='cdrom'/>
++    <boot dev='hd'/>
++    <bootmenu enable='yes'/>
++  </os>
++  <clock offset='utc'/>
++  <on_poweroff>destroy</on_poweroff>
++  <on_reboot>restart</on_reboot>
++  <on_crash>restart</on_crash>
++  <devices>
++    <emulator>/usr/bin/qemu</emulator>
++    <disk type='file' device='disk'>
++      <driver name='qemu' type='qcow2' event_idx='on'/>
++      <source file='/var/lib/libvirt/images/f14.img'/>
++      <target dev='vda' bus='virtio'/>
++      <address type='pci' domain='0x0000' bus='0x00' slot='0x04' function='0x0'/>
++    </disk>
++    <disk type='file' device='cdrom'>
++      <driver name='qemu' type='raw'/>
++      <source file='/var/lib/libvirt/Fedora-14-x86_64-Live-KDE.iso'/>
++      <target dev='hdc' bus='ide'/>
++      <readonly/>
++      <address type='drive' controller='0' bus='1' target='0' unit='0'/>
++    </disk>
++    <controller type='usb' index='0'/>
++    <controller type='virtio-serial' index='0'>
++      <address type='pci' domain='0x0000' bus='0x00' slot='0x06' function='0x0'/>
++    </controller>
++    <controller type='ide' index='0'/>
++    <controller type='pci' index='0' model='pci-root'/>
++    <interface type='user'>
++      <mac address='52:54:00:e5:48:58'/>
++      <model type='virtio'/>
++      <driver name='vhost' queues='5'/>
++      <backend tap='/dev/null' vhost='/dev/zero'/>
++    </interface>
++    <serial type='pty'>
++      <target port='0'/>
++    </serial>
++    <console type='pty'>
++      <target type='serial' port='0'/>
++    </console>
++    <memballoon model='virtio'/>
++  </devices>
++</domain>
+diff --git a/tests/qemuxml2xmltest.c b/tests/qemuxml2xmltest.c
+index 180665b..1e06f38 100644
+--- a/tests/qemuxml2xmltest.c
++++ b/tests/qemuxml2xmltest.c
+@@ -399,6 +399,8 @@ mymain(void)
+ 
+     DO_TEST("bios-nvram");
+ 
++    DO_TEST("tap-vhost");
++
+     virObjectUnref(driver.caps);
+     virObjectUnref(driver.xmlopt);
+ 
+-- 
+2.1.0
+

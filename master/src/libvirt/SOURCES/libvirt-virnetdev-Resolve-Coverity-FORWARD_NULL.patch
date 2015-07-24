@@ -1,0 +1,39 @@
+From 062d83e7ebeb22461e626b0bc267f8b36871cbb3 Mon Sep 17 00:00:00 2001
+Message-Id: <062d83e7ebeb22461e626b0bc267f8b36871cbb3@dist-git>
+From: John Ferlan <jferlan@redhat.com>
+Date: Mon, 3 Nov 2014 10:00:25 -0500
+Subject: [PATCH] virnetdev: Resolve Coverity FORWARD_NULL
+
+https://bugzilla.redhat.com/show_bug.cgi?id=848199
+
+The complaint is that if cleanup is called when virFileReadAll fails,
+then mcast->entries is NULL and could be dereferenced in the clear
+function. After following the code some - I saw that the caller to
+the function (virNetDevGetMulticastTable) will also call
+virNetDevMcastListClear if this function returns -1, so this
+isn't necessary, so I removed the call.
+
+(cherry picked from commit f099726c4684d76cde714bfc5edbd9bbec35da49)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/util/virnetdev.c | 3 ---
+ 1 file changed, 3 deletions(-)
+
+diff --git a/src/util/virnetdev.c b/src/util/virnetdev.c
+index 147ec5b..e3f6bd0 100644
+--- a/src/util/virnetdev.c
++++ b/src/util/virnetdev.c
+@@ -2193,9 +2193,6 @@ static int virNetDevGetMcastList(const char *ifname,
+ 
+     ret = 0;
+  cleanup:
+-    if (ret < 0)
+-        virNetDevMcastListClear(mcast);
+-
+     VIR_FREE(entry);
+ 
+     return ret;
+-- 
+2.1.3
+

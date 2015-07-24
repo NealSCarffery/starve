@@ -1,0 +1,40 @@
+From 1c369e232e7a9a7e631cbb059182b14c6fdea845 Mon Sep 17 00:00:00 2001
+Message-Id: <1c369e232e7a9a7e631cbb059182b14c6fdea845@dist-git>
+From: Martin Kletzander <mkletzan@redhat.com>
+Date: Wed, 21 Jan 2015 17:22:05 +0100
+Subject: [PATCH] qemu: Add missing goto error in qemuRestoreCgroupState
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1161540
+
+Commit af2a1f05 tried clearly separating each condition in
+qemuRestoreCgroupState() for the sake of readability, however somehow
+one condition body was missing.  That means that the body of the next
+condition got executed only if both of there were true, which is
+impossible, thus resulting in a dead code and a logic error.
+
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+(cherry picked from commit 86759ec61a77f545f9238d83adbfaa16d85fa830)
+Signed-off-by: Martin Kletzander <mkletzan@redhat.com>
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_cgroup.c | 4 +---
+ 1 file changed, 1 insertion(+), 3 deletions(-)
+
+diff --git a/src/qemu/qemu_cgroup.c b/src/qemu/qemu_cgroup.c
+index 0a4576a..8824426 100644
+--- a/src/qemu/qemu_cgroup.c
++++ b/src/qemu/qemu_cgroup.c
+@@ -796,9 +796,7 @@ qemuRestoreCgroupState(virDomainObjPtr vm)
+         goto error;
+ 
+     if ((empty = virCgroupHasEmptyTasks(priv->cgroup,
+-                                        VIR_CGROUP_CONTROLLER_CPUSET)) < 0)
+-
+-    if (!empty)
++                                        VIR_CGROUP_CONTROLLER_CPUSET)) <= 0)
+         goto error;
+ 
+     if (virCgroupSetCpusetMems(priv->cgroup, mem_mask) < 0)
+-- 
+2.2.1
+

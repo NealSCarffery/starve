@@ -1,0 +1,67 @@
+From 1f5ab1ab07d8e2ddf08dec964c401c49cc5d32c9 Mon Sep 17 00:00:00 2001
+Message-Id: <1f5ab1ab07d8e2ddf08dec964c401c49cc5d32c9@dist-git>
+From: Eric Blake <eblake@redhat.com>
+Date: Wed, 17 Dec 2014 03:09:00 -0700
+Subject: [PATCH] getstats: improve documentation
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1041569
+
+At least with 'virsh domstats --block' on an offline domain, we
+currently output no stats even though we recognize the stat
+category.  Although a later patch will improve this situation,
+it is better to document that this is expected behavior.
+
+Also, while the current implementation rejects filtering flags
+for virDomainListGetStats, this limitation may be lifted in the
+future and we do not enforce it at the API level.
+
+* src/libvirt-domain.c (virConnectGetAllDomainStats): Document
+that recognized stats might not be reported.
+(virDomainListGetStats): Likewise, and tweak filtering documentation.
+
+Signed-off-by: Eric Blake <eblake@redhat.com>
+(cherry picked from commit f301fe77c63b29b90ad478e328fb20394251f6a6)
+
+Conflicts:
+	src/libvirt-domain.c - file split from libvirt.c
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/libvirt.c | 14 +++++++++++---
+ 1 file changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/src/libvirt.c b/src/libvirt.c
+index b593c9b..1097693 100644
+--- a/src/libvirt.c
++++ b/src/libvirt.c
+@@ -21633,7 +21633,11 @@ virConnectGetDomainCapabilities(virConnectPtr conn,
+  *
+  * Specifying VIR_CONNECT_GET_ALL_DOMAINS_STATS_ENFORCE_STATS as @flags makes
+  * the function return error in case some of the stat types in @stats were
+- * not recognized by the daemon.
++ * not recognized by the daemon.  However, even with this flag, a hypervisor
++ * may omit individual fields within a known group if the information is not
++ * available; as an extreme example, a supported group may produce zero
++ * fields for offline domains if the statistics are meaningful only for a
++ * running domain.
+  *
+  * Similarly to virConnectListAllDomains, @flags can contain various flags to
+  * filter the list of domains to provide stats for.
+@@ -21713,9 +21717,13 @@ virConnectGetAllDomainStats(virConnectPtr conn,
+  *
+  * Specifying VIR_CONNECT_GET_ALL_DOMAINS_STATS_ENFORCE_STATS as @flags makes
+  * the function return error in case some of the stat types in @stats were
+- * not recognized by the daemon.
++ * not recognized by the daemon.  However, even with this flag, a hypervisor
++ * may omit individual fields within a known group if the information is not
++ * available; as an extreme example, a supported group may produce zero
++ * fields for offline domains if the statistics are meaningful only for a
++ * running domain.
+  *
+- * Note that any of the domain list filtering flags in @flags will be rejected
++ * Note that any of the domain list filtering flags in @flags may be rejected
+  * by this function.
+  *
+  * Returns the count of returned statistics structures on success, -1 on error.
+-- 
+2.2.0
+

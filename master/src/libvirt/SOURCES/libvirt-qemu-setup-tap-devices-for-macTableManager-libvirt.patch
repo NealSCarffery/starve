@@ -1,0 +1,89 @@
+From f5ee5251bed8e5ff62d58dd6e8ee56b29b6ce3b4 Mon Sep 17 00:00:00 2001
+Message-Id: <f5ee5251bed8e5ff62d58dd6e8ee56b29b6ce3b4@dist-git>
+From: Laine Stump <laine@laine.org>
+Date: Mon, 15 Dec 2014 10:51:31 -0500
+Subject: [PATCH] qemu: setup tap devices for macTableManager='libvirt'
+
+This is part of the fix for:
+
+  https://bugzilla.redhat.com/show_bug.cgi?id=1099210
+
+When libvirt is managing the MAC table of a Linux host bridge, it must
+turn off learning and unicast_flood for each tap device attached to
+that bridge, then add a Forwarding Database (fdb) entry for the tap
+device using the MAC address from the domain interface config.
+
+Once we have disabled learning and flooding, any packet that has a
+destination MAC address not present in the fdb will be dropped by the
+bridge. This, along with the opportunistic disabling of promiscuous
+mode[*], can result in enhanced network performance. and a potential
+slight security improvement.
+
+[*] If there is only one device on the bridge with learning/unicast_flood
+enabled, then that device will automatically have promiscuous mode
+disabled. If there are *no* devices with learning/unicast_flood
+enabled (e.g. for a libvirt "route", "nat", or isolated network that
+has no physical device attached), then all non-tap devices will have
+promiscuous mode disabled (tap devices always have promiscuous mode
+enabled, which may be a bug in the kernel, but in practice has 0
+effect).
+
+None of this has any effect for kernels prior to 3.15 (upstream kernel
+commit 2796d0c648c940b4796f84384fbcfb0a2399db84 "bridge: Automatically
+manage port promiscuous mode"). Even after that, until kernel 3.17
+(upstream commit 5be5a2df40f005ea7fb7e280e87bbbcfcf1c2fc0 "bridge: Add
+filtering support for default_pvid") traffic will not be properly
+forwarded without manually adding vlan table entries. Unfortunately,
+although the presence of the first patch is signalled by existence of
+the "learning" and "unicast_flood" options in sysfs, there is no
+reliable way to query whether or not the system's kernel has the
+second of those patches installed, the only thing that can be done is
+to try the setting and see if traffic continues to pass.
+
+(cherry picked from commit 7cb822c2a5f697823764aee94524243e8ed5e165)
+
+Signed-off-by: Jiri Denemark <jdenemar@redhat.com>
+---
+ src/qemu/qemu_command.c | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/src/qemu/qemu_command.c b/src/qemu/qemu_command.c
+index cd87812..a9c4271 100644
+--- a/src/qemu/qemu_command.c
++++ b/src/qemu/qemu_command.c
+@@ -35,6 +35,7 @@
+ #include "virerror.h"
+ #include "virfile.h"
+ #include "virnetdev.h"
++#include "virnetdevbridge.h"
+ #include "virstring.h"
+ #include "virtime.h"
+ #include "viruuid.h"
+@@ -349,6 +350,24 @@ qemuNetworkIfaceConnect(virDomainDefPtr def,
+             virDomainAuditNetDevice(def, net, tunpath, false);
+             goto cleanup;
+         }
++        if (virDomainNetGetActualBridgeMACTableManager(net)
++            == VIR_NETWORK_BRIDGE_MAC_TABLE_MANAGER_LIBVIRT) {
++            /* libvirt is managing the FDB of the bridge this device
++             * is attaching to, so we need to turn off learning and
++             * unicast_flood on the device to prevent the kernel from
++             * adding any FDB entries for it, then add an fdb entry
++             * outselves, using the MAC address from the interface
++             * config.
++             */
++            if (virNetDevBridgePortSetLearning(brname, net->ifname, false) < 0)
++                goto cleanup;
++            if (virNetDevBridgePortSetUnicastFlood(brname, net->ifname, false) < 0)
++                goto cleanup;
++            if (virNetDevBridgeFDBAdd(&net->mac, net->ifname,
++                                      VIR_NETDEVBRIDGE_FDB_FLAG_MASTER |
++                                      VIR_NETDEVBRIDGE_FDB_FLAG_TEMP) < 0)
++                goto cleanup;
++        }
+     } else {
+         if (qemuCreateInBridgePortWithHelper(cfg, brname,
+                                              &net->ifname,
+-- 
+2.2.0
+
