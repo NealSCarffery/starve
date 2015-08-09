@@ -1,0 +1,12 @@
+4552c4552
+<         cp -a %{kvm_target}-softmmu/qemu-system-%{kvm_target} qemu-kvm
+---
+>         cp -a %{kvm_target}-softmmu/qemu-system-%{kvm_target} qemu-aostar-kvm
+4591c4591
+<     install -m 0755 qemu-kvm $RPM_BUILD_ROOT%{_libexecdir}/
+---
+>     install -m 0755 qemu-aostar-kvm $RPM_BUILD_ROOT%{_libexecdir}/
+4765c4765
+< %{_libexecdir}/qemu-kvm \
+---
+> %{_libexecdir}/qemu-aostar-kvm \
